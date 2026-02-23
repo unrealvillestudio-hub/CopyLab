@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-accent: #FFAB00;
+  --color-uv-bg: #0A0A0A;
+  --color-uv-card: #141414;
+  --color-uv-border: #262626;
+  --color-uv-text: #EDEDED;
+  --color-uv-text-muted: #A1A1AA;
+}
+
+@layer base {
+  body {
+    @apply bg-uv-bg text-uv-text font-sans antialiased;
+  }
+}
+
+@import "./styles/uv_theme.css";
+@import "./styles/uv_typography.css";

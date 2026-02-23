@@ -1,0 +1,13 @@
+:root {
+  --uv-accent: #FFAB00;
+  --uv-bg: #0A0A0A;
+  --uv-card: #141414;
+  --uv-border: #262626;
+  --uv-text: #EDEDED;
+}
+
+.uv-glass {
+  background: rgba(20, 20, 20, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
