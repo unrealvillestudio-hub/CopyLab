@@ -1,20 +1,61 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CopyLab — Unreal>ille Studio
 
-# Run and deploy your AI Studio app
+Generador de copy para ads, emails y captions del ecosistema Unreal>ille Studio.
 
-This contains everything you need to run your app locally.
+**Deploy:** Google AI Studio
+**Contexto completo del ecosistema:** [`CoreProject/CONTEXT.md`](https://github.com/unrealvillestudio-hub/CoreProject/blob/main/CONTEXT.md)
 
-View your app in AI Studio: https://ai.studio/apps/d9c10a06-0179-4ca9-825f-fa8d954637ef
+---
 
-## Run Locally
+## Rol en el ecosistema
 
-**Prerequisites:**  Node.js
+CopyLab produce la capa textual de activación: copies para anuncios pagados, secuencias de email, captions para redes sociales, y CTAs. Integra BP_COPY_1.0 para mantener consistencia de voz por marca.
 
+```
+BluePrints (BP_PERSON voz + tono) ──→ CopyLab (copy activación)
+DB_VARIABLES (brand tokens)              ↓
+                                  Ads / Email / Captions
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## Stack
+
+- React 18 + TypeScript + Vite + Tailwind
+- AI: Gemini 2.0 Flash (Gemini API)
+- Deploy: Google AI Studio
+
+---
+
+## Estado
+
+✅ v1.1 — BP_COPY_1.0 integrado
+
+---
+
+## Dependencias
+
+| Consume | Provee |
+|---------|--------|
+| BP_PERSON (voz, tono, compliance) | Copy listo para activación |
+| DB_VARIABLES (brand voice tokens) | — |
+| Humanize Layer | Copy con autenticidad humana |
+
+---
+
+## Changelog
+
+| Fecha | Cambio |
+|---|---|
+| 2026-03-20 | README actualizado con arquitectura de ecosistema |
+| — | v1.1 — BP_COPY_1.0 integrado |
+
+---
+
+## Desarrollo local
+
+```bash
+npm install
+cp .env.example .env.local  # añade GEMINI_API_KEY
+npm run dev
+```
