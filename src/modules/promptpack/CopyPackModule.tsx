@@ -6,17 +6,20 @@ import {
   CopyOutput,
   BrandProfile
 } from '../../core/types';
-import { BRANDS } from '../../config/brands';
+// ── BRANDS ahora viene de Supabase, no de config/brands.ts ──
+import { useBrands } from '../../hooks/useBrands';
 import { COPY_PACKS } from '../../config/packs';
 import { TONE_PRESETS, FORMAT_PRESETS } from '../../config/presets';
 import { Card, Button, cn } from '../../ui/components';
 import { RunControlButton } from '../../ui/RunControlButton';
 import { runCopyPack } from '../../services/promptpack';
 import { useSessionOutputsStore } from '../../state/sessionOutputsStore';
-import { Copy, Save, CheckCircle2, AlertCircle, Globe, Zap, Type, Download, User, Mic } from 'lucide-react';
+import { Copy, Save, CheckCircle2, AlertCircle, Globe, Zap, Type, Download, User, Mic, Loader2 } from 'lucide-react';
 
 export const CopyPackModule = () => {
-  const [brandId, setBrandId] = useState(BRANDS[0].id);
+  const { brands, loading: brandsLoading, toBrandProfile } = useBrands();
+
+  const [brandId, setBrandId] = useState('');
   const [language, setLanguage] = useState<CopyLanguage>("ES");
   const [packId, setPackId] = useState(Object.keys(COPY_PACKS)[0]);
   const [productContext, setProductContext] = useState('');
@@ -25,6 +28,11 @@ export const CopyPackModule = () => {
   const [outputFormat, setOutputFormat] = useState<CopyOutputFormat>("markdown");
   const [isGenerating, setIsGenerating] = useState(false);
   const [outputs, setOutputs] = useState<CopyOutput[]>([]);
+
+  // Set default brand once loaded
+  React.useEffect(() => {
+    if (brands.length > 0 && !brandId) setBrandId(brands[0].id);
+  }, [brands]);
 
   // VideoPodcast specific state
   const [personaA, setPersonaA] = useState({ name: '', expertise: '' });
@@ -39,7 +47,9 @@ export const CopyPackModule = () => {
   const handleRun = async () => {
     setIsGenerating(true);
     try {
-      const brand = BRANDS.find(b => b.id === brandId) as BrandProfile;
+      const brand = toBrandProfile(brandId) as BrandProfile;
+      if (!brand) throw new Error(`Marca '${brandId}' no encontrada`);
+
       const pack = COPY_PACKS[packId];
       
       let finalContext = productContext;
@@ -109,13 +119,19 @@ export const CopyPackModule = () => {
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="space-y-2">
           <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider">Marca</label>
-          <select 
-            value={brandId} 
-            onChange={(e) => setBrandId(e.target.value)}
-            className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent"
-          >
-            {BRANDS.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          {brandsLoading ? (
+            <div className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm flex items-center gap-2 text-uv-text-muted">
+              <Loader2 className="w-3 h-3 animate-spin" /> Cargando marcas...
+            </div>
+          ) : (
+            <select 
+              value={brandId} 
+              onChange={(e) => setBrandId(e.target.value)}
+              className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent"
+            >
+              {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          )}
         </div>
         <div className="space-y-2">
           <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider">Idioma</label>
@@ -220,17 +236,17 @@ export const CopyPackModule = () => {
               <textarea 
                 value={productContext}
                 onChange={(e) => setProductContext(e.target.value)}
-                placeholder="Pega aquí el contexto de marca o describe el producto/servicio para esta campaña"
+                placeholder="Describe el producto/servicio para esta campaña — el contexto de marca se carga automáticamente desde Supabase"
                 className="w-full h-32 bg-uv-card border border-uv-border rounded-xl p-4 text-sm outline-none focus:border-accent resize-none"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider">Keywords</label>
+              <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider">Keywords adicionales</label>
               <input 
                 type="text"
                 value={keywords}
                 onChange={(e) => setKeywords(e.target.value)}
-                placeholder="keyword1, keyword2, keyword3"
+                placeholder="keyword1, keyword2 — opcionales, Supabase ya tiene las keywords de la marca"
                 className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent"
               />
             </div>
@@ -274,9 +290,9 @@ export const CopyPackModule = () => {
         </div>
       </section>
 
-      {/* 5. OUTPUT AREA */}
+      {/* 4. OUTPUT AREA */}
       <section className="space-y-6">
-        {outputs.map((output, idx) => {
+        {outputs.map((output) => {
           const speaker = getSpeakerForJob(output.metadata?.job_id);
           return (
             <Card key={output.id} className="p-6 space-y-4">
