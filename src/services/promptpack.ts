@@ -6,7 +6,7 @@
  * Fase 5b · 2026-03-26
  */
 
-import { generateCopyFromInput, validateCompliance } from '../core/copyEngine'
+import { generateCopyFromInput, validateCompliance } from './copyEngine'
 import type {
   CopyOutput,
   CopyPackSpec,
