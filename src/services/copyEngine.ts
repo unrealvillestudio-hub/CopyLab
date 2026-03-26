@@ -1,101 +1,155 @@
-import { GoogleGenAI } from "@google/genai";
-import { 
-  BrandProfile, 
-  CopyPackSpec, 
-  CopyJob, 
-  CopyLanguage, 
-  CopyTone, 
-  CopyOutputFormat 
-} from "../core/types";
+/**
+ * UNRLVL CopyLab — copyEngine.ts
+ * Motor de generación de copy.
+ * Swap: Gemini → Claude (/api/claude proxy)
+ * buildCopyPrompt: hardcoded → Supabase (fetchBrandContext)
+ * Fase 5b · 2026-03-26
+ */
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+import {
+  buildCopyPrompt as buildCopyPromptFromSupabase,
+} from '../lib/buildCopyPrompt'
 
-export async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+import type { CopyPromptInput } from '../lib/db/types'
+
+// Re-exportamos CopyPromptInput como el nuevo contrato de entrada
+export type { CopyPromptInput }
+
+// ─── Config ──────────────────────────────────────────────────
+const CLAUDE_PROXY_URL = '/api/claude'
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
+const MAX_TOKENS = 2048
+
+// ─── Retry helper ────────────────────────────────────────────
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  delay = 1000
+): Promise<T> {
   try {
-    return await fn();
+    return await fn()
   } catch (error: any) {
-    const status = error?.status || error?.response?.status;
+    const status = error?.status || error?.response?.status
     if ((status === 429 || status === 503) && retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return withRetry(fn, retries - 1, delay * 2);
+      await new Promise(resolve => setTimeout(resolve, delay))
+      return withRetry(fn, retries - 1, delay * 2)
     }
-    throw error;
+    throw error
   }
 }
 
-export function buildCopyPrompt(params: {
-  brand: BrandProfile,
-  pack: CopyPackSpec,
-  job: CopyJob,
-  language: CopyLanguage,
-  keywords: string[],
-  productContext: string,
-  channelBlock: string,
-  complianceRules: string,
-  geo: string,
-  tone: CopyTone,
-  ctaBase: string,
-  extraNotes?: string
-}): string {
-  const sections = [
-    `ROLE: You are an expert copywriter for ${params.brand.name}.`,
-    `LANGUAGE: ${params.language}`,
-    `GEOGRAPHY: ${params.geo}`,
-    `TONE: ${params.tone}`,
-    `BRAND CONTEXT: ${params.productContext}`,
-    `KEYWORDS: ${params.keywords.join(", ")}`,
-    `CHANNEL INSTRUCTIONS: ${params.channelBlock}`,
-    `COMPLIANCE RULES: ${params.complianceRules}`,
-    `CTA BASE: ${params.ctaBase}`,
-    `TASK: Generate ${params.job.outputs} variants for the following job: ${params.job.label} (${params.job.prompt_type}).`,
-    `OUTPUT FORMAT: Please provide the output in ${params.job.channel} style.`
-  ];
+// ─── buildCopyPrompt ─────────────────────────────────────────
+/**
+ * Construye el prompt completo a partir de Supabase.
+ * Reemplaza la versión hardcoded anterior.
+ * Retorna el prompt string + metadata (temperatura, word count, etc.)
+ */
+export { buildCopyPromptFromSupabase as buildCopyPrompt }
 
-  if (params.extraNotes) {
-    sections.push(`EXTRA NOTES: ${params.extraNotes}`);
-  }
-
-  return sections.join("\n\n");
-}
-
+// ─── generateCopy ────────────────────────────────────────────
+/**
+ * Envía el prompt a Claude vía proxy Vercel.
+ * Mantiene la misma firma que la versión Gemini para compatibilidad
+ * con los módulos existentes.
+ */
 export async function generateCopy(params: {
-  prompt: string,
-  outputFormat: CopyOutputFormat,
+  prompt: string
+  temperature?: number
+  systemPrompt?: string
   signal?: AbortSignal
 }): Promise<string> {
   return withRetry(async () => {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [{ parts: [{ text: params.prompt }] }],
-      config: {
-        temperature: 0.8,
-        maxOutputTokens: 2048,
-      }
-    });
+    const res = await fetch(CLAUDE_PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: params.signal,
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: MAX_TOKENS,
+        temperature: params.temperature ?? 1.0,
+        ...(params.systemPrompt
+          ? { system: params.systemPrompt }
+          : {}),
+        messages: [
+          { role: 'user', content: params.prompt },
+        ],
+      }),
+    })
 
-    return response.text || "";
-  });
+    if (!res.ok) {
+      const body = await res.text()
+      const error: any = new Error(`[Claude Proxy] ${res.status}: ${body}`)
+      error.status = res.status
+      throw error
+    }
+
+    const data = await res.json()
+    const textBlock = data.content?.find((b: { type: string }) => b.type === 'text')
+    if (!textBlock?.text) throw new Error('[Claude Proxy] Respuesta sin bloque de texto')
+    return textBlock.text as string
+  })
 }
 
-export function validateCompliance(text: string, complianceRules: string): {
-  passed: boolean,
-  warnings: string[]
-} {
-  const prohibitedWords = ["cura", "elimina", "garantizado", "100%", "médico", "trata"];
-  const warnings: string[] = [];
+// ─── generateCopyFromInput ───────────────────────────────────
+/**
+ * Helper de alto nivel: recibe CopyPromptInput, carga Supabase,
+ * construye el prompt y genera el copy en un solo call.
+ * Para usar directamente desde módulos sin el hook.
+ */
+export async function generateCopyFromInput(
+  input: CopyPromptInput,
+  signal?: AbortSignal
+): Promise<{ text: string; temperature: number; metadata: Record<string, unknown> }> {
+  const promptResult = await buildCopyPromptFromSupabase(input)
 
-  const lowerText = text.toLowerCase();
-  prohibitedWords.forEach(word => {
-    if (lowerText.includes(word.toLowerCase())) {
-      warnings.push(`Prohibited word found: "${word}"`);
-    }
-  });
+  const systemPrompt = [
+    `Eres el motor de copy de ${promptResult.brandName} — generás copy auténtico, estratégico y listo para publicar.`,
+    ``,
+    `REGLAS ABSOLUTAS:`,
+    `- Entregá SOLO el copy solicitado. Sin explicaciones, sin comentarios meta.`,
+    `- Seguí la estructura del template al pie de la letra.`,
+    `- Aplicá HUMANIZE F2.5 y COMPLIANCE sin excepción.`,
+    `- Nunca uses: "innovador", "revolucionario", "transformador", "es importante destacar".`,
+  ].join('\n')
 
-  // Also check if any specific rules from complianceRules are violated (simple check)
-  // In a real app, this would be more sophisticated.
+  const text = await generateCopy({
+    prompt: promptResult.prompt,
+    temperature: promptResult.temperature,
+    systemPrompt,
+    signal,
+  })
 
   return {
-    passed: warnings.length === 0,
-    warnings
-  };
+    text,
+    temperature: promptResult.temperature,
+    metadata: promptResult.metadata as Record<string, unknown>,
+  }
+}
+
+// ─── validateCompliance ──────────────────────────────────────
+/**
+ * Validación client-side de compliance.
+ * Lista base de palabras prohibidas — se complementa con las reglas
+ * de Supabase (compliance_rules) que ya se inyectan en el prompt.
+ */
+export function validateCompliance(
+  text: string,
+  extraForbiddenWords: string[] = []
+): { passed: boolean; warnings: string[] } {
+  const baseProhibited = [
+    'cura', 'elimina', 'garantizado', '100%', 'médico', 'trata',
+    'revolucionario', 'innovador', 'transformador',
+  ]
+
+  const allProhibited = [...baseProhibited, ...extraForbiddenWords]
+  const warnings: string[] = []
+  const lowerText = text.toLowerCase()
+
+  allProhibited.forEach(word => {
+    if (lowerText.includes(word.toLowerCase())) {
+      warnings.push(`Palabra prohibida: "${word}"`)
+    }
+  })
+
+  return { passed: warnings.length === 0, warnings }
 }
