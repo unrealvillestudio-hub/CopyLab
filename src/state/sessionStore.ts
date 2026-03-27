@@ -1,100 +1,121 @@
 /**
  * UNRLVL CopyLab — state/sessionStore.ts
- * Store global de sesión compartido entre CopyPackModule,
- * CopyToolsModule y CopyCustomizeModule.
- * Persiste durante la sesión del browser (sessionStorage).
- * NO persiste entre recargas de página — intencional.
+ * Store global de sesión compartido entre todos los módulos.
+ * Customize es el punto de entrada — configura el contexto.
+ * CopyPack genera. Tools refina.
  */
 
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { CopyOutput, CopyLanguage, CopyTone, CopyOutputFormat } from '../core/types'
 
-// ─── Tipos ───────────────────────────────────────────────────
+export interface CustomizeOptions {
+  compliance_mode: 'strict' | 'standard'
+  variant_style: 'conservative' | 'balanced' | 'creative'
+  include_hashtags: boolean
+  include_emojis: boolean
+  include_cta: boolean
+  extra_notes: string
+}
+
+export const DEFAULT_CUSTOMIZE_OPTIONS: CustomizeOptions = {
+  compliance_mode: 'standard',
+  variant_style: 'balanced',
+  include_hashtags: true,
+  include_emojis: true,
+  include_cta: true,
+  extra_notes: '',
+}
+
+// Temperatura según variant_style (capeada a 1.0)
+export const VARIANT_TEMPERATURE: Record<string, number> = {
+  conservative: 0.5,
+  balanced:     0.8,
+  creative:     1.0,
+}
 
 export interface SessionState {
-  // Marca activa — compartida entre todos los módulos
-  activeBrandId: string
-  setActiveBrandId: (id: string) => void
+  // ── Contexto de campaña — configurado en Customize ──
+  activeBrandId:      string
+  setActiveBrandId:   (id: string) => void
 
-  // Configuración activa — se mantiene al cambiar de tab
-  activeLanguage: CopyLanguage
-  setActiveLanguage: (lang: CopyLanguage) => void
+  activeLanguage:     CopyLanguage
+  setActiveLanguage:  (lang: CopyLanguage) => void
 
-  activeTone: CopyTone
-  setActiveTone: (tone: CopyTone) => void
+  activePackId:       string
+  setActivePackId:    (id: string) => void
+
+  activeServicio:     string
+  setActiveServicio:  (s: string) => void
+
+  activeKeywords:     string
+  setActiveKeywords:  (kw: string) => void
+
+  activeTone:         CopyTone
+  setActiveTone:      (tone: CopyTone) => void
 
   activeOutputFormat: CopyOutputFormat
   setActiveOutputFormat: (format: CopyOutputFormat) => void
 
-  // Outputs generados en esta sesión
-  sessionOutputs: CopyOutput[]
-  addSessionOutput: (output: CopyOutput) => void
-  addSessionOutputs: (outputs: CopyOutput[]) => void
+  activeExtraContext: string
+  setActiveExtraContext: (ctx: string) => void
+
+  // ── Opciones avanzadas de Customize ──
+  customizeOptions:   CustomizeOptions
+  setCustomizeOptions: (opts: Partial<CustomizeOptions>) => void
+
+  // ── Outputs generados en esta sesión ──
+  sessionOutputs:     CopyOutput[]
+  addSessionOutputs:  (outputs: CopyOutput[]) => void
   clearSessionOutputs: () => void
-  removeSessionOutput: (id: string) => void
 
-  // Último pack generado — para retomar en Tools
-  lastPackId: string
-  setLastPackId: (id: string) => void
-
-  lastProductContext: string
-  setLastProductContext: (ctx: string) => void
-
-  lastKeywords: string
-  setLastKeywords: (kw: string) => void
-
-  // Estado de generación cross-módulo
-  isGenerating: boolean
-  setIsGenerating: (v: boolean) => void
+  // ── Estado de generación ──
+  isGenerating:       boolean
+  setIsGenerating:    (v: boolean) => void
 }
-
-// ─── Store ───────────────────────────────────────────────────
 
 export const useSessionStore = create<SessionState>()(
   persist(
     (set) => ({
-      // Marca activa
-      activeBrandId: '',
+      activeBrandId:    '',
       setActiveBrandId: (id) => set({ activeBrandId: id }),
 
-      // Config
-      activeLanguage: 'ES',
+      activeLanguage:    'ES',
       setActiveLanguage: (lang) => set({ activeLanguage: lang }),
 
-      activeTone: 'conversational',
+      activePackId:    '',
+      setActivePackId: (id) => set({ activePackId: id }),
+
+      activeServicio:    '',
+      setActiveServicio: (s) => set({ activeServicio: s }),
+
+      activeKeywords:    '',
+      setActiveKeywords: (kw) => set({ activeKeywords: kw }),
+
+      activeTone:    'conversational',
       setActiveTone: (tone) => set({ activeTone: tone }),
 
-      activeOutputFormat: 'markdown',
+      activeOutputFormat:    'markdown',
       setActiveOutputFormat: (format) => set({ activeOutputFormat: format }),
 
-      // Outputs
-      sessionOutputs: [],
-      addSessionOutput: (output) =>
-        set((state) => ({ sessionOutputs: [output, ...state.sessionOutputs] })),
-      addSessionOutputs: (outputs) =>
+      activeExtraContext:    '',
+      setActiveExtraContext: (ctx) => set({ activeExtraContext: ctx }),
+
+      customizeOptions: DEFAULT_CUSTOMIZE_OPTIONS,
+      setCustomizeOptions: (opts) =>
+        set((state) => ({ customizeOptions: { ...state.customizeOptions, ...opts } })),
+
+      sessionOutputs:      [],
+      addSessionOutputs:   (outputs) =>
         set((state) => ({ sessionOutputs: [...outputs, ...state.sessionOutputs] })),
       clearSessionOutputs: () => set({ sessionOutputs: [] }),
-      removeSessionOutput: (id) =>
-        set((state) => ({ sessionOutputs: state.sessionOutputs.filter((o) => o.id !== id) })),
 
-      // Último contexto
-      lastPackId: '',
-      setLastPackId: (id) => set({ lastPackId: id }),
-
-      lastProductContext: '',
-      setLastProductContext: (ctx) => set({ lastProductContext: ctx }),
-
-      lastKeywords: '',
-      setLastKeywords: (kw) => set({ lastKeywords: kw }),
-
-      // Generación
-      isGenerating: false,
+      isGenerating:    false,
       setIsGenerating: (v) => set({ isGenerating: v }),
     }),
     {
-      name: 'copylab-session',
-      storage: createJSONStorage(() => sessionStorage), // se borra al cerrar el tab
+      name:    'copylab-session',
+      storage: createJSONStorage(() => sessionStorage),
     }
   )
 )
