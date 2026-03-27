@@ -1,13 +1,38 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, cn } from '../../ui/components';
 import { CopyOutputFormat } from '../../core/types';
-import { DEFAULT_CUSTOMIZE_OPTIONS, CustomizeOptions } from '../../config/customizeOutputs';
 import { Settings2, Hash, Smile, ShieldCheck, Palette, FileText } from 'lucide-react';
 
+// ─── Tipos e defaults inlineados (elimina dependencia de customizeOutputs.ts) ─
+interface CustomizeOptions {
+  output_format: CopyOutputFormat
+  include_hashtags: boolean
+  include_emojis: boolean
+  include_cta: boolean
+  compliance_mode: 'strict' | 'standard'
+  variant_style: 'conservative' | 'balanced' | 'creative'
+  extra_notes: string
+}
+
+const DEFAULT_CUSTOMIZE_OPTIONS: CustomizeOptions = {
+  output_format: 'markdown',
+  include_hashtags: true,
+  include_emojis: true,
+  include_cta: true,
+  compliance_mode: 'standard',
+  variant_style: 'balanced',
+  extra_notes: '',
+}
+
+// ─── Módulo ───────────────────────────────────────────────────
 export const CopyCustomizeModule = () => {
   const [options, setOptions] = useState<CustomizeOptions>(() => {
-    const saved = localStorage.getItem('copylab_customize');
-    return saved ? JSON.parse(saved) : DEFAULT_CUSTOMIZE_OPTIONS;
+    try {
+      const saved = localStorage.getItem('copylab_customize');
+      return saved ? JSON.parse(saved) : DEFAULT_CUSTOMIZE_OPTIONS;
+    } catch {
+      return DEFAULT_CUSTOMIZE_OPTIONS;
+    }
   });
 
   useEffect(() => {
@@ -18,22 +43,28 @@ export const CopyCustomizeModule = () => {
     setOptions(prev => ({ ...prev, [key]: value }));
   };
 
+  const handleReset = () => {
+    setOptions(DEFAULT_CUSTOMIZE_OPTIONS);
+    localStorage.removeItem('copylab_customize');
+  };
+
   return (
     <div className="max-w-3xl space-y-8">
+
       {/* 1. OUTPUT FORMAT */}
       <section className="space-y-4">
         <h3 className="text-sm font-mono text-uv-text-muted uppercase tracking-widest flex items-center gap-2">
           <FileText className="w-4 h-4" /> Output Format
         </h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {['markdown', 'plain', 'json', 'html'].map((f) => (
+          {(['markdown', 'plain', 'json', 'html'] as CopyOutputFormat[]).map((f) => (
             <button
               key={f}
               onClick={() => updateOption('output_format', f)}
               className={cn(
                 "px-4 py-3 rounded-xl border text-sm font-medium transition-all",
-                options.output_format === f 
-                  ? "bg-accent border-accent text-black" 
+                options.output_format === f
+                  ? "bg-accent border-accent text-black"
                   : "bg-uv-card border-uv-border text-uv-text-muted hover:border-accent/50"
               )}
             >
@@ -54,30 +85,21 @@ export const CopyCustomizeModule = () => {
               <p className="text-sm font-bold">Incluir Hashtags</p>
               <p className="text-xs text-uv-text-muted">Genera automáticamente hashtags relevantes.</p>
             </div>
-            <Toggle 
-              active={options.include_hashtags} 
-              onToggle={(v) => updateOption('include_hashtags', v)} 
-            />
+            <Toggle active={options.include_hashtags} onToggle={(v) => updateOption('include_hashtags', v)} />
           </div>
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
               <p className="text-sm font-bold">Incluir Emojis</p>
               <p className="text-xs text-uv-text-muted">Añade emojis para mejorar el engagement visual.</p>
             </div>
-            <Toggle 
-              active={options.include_emojis} 
-              onToggle={(v) => updateOption('include_emojis', v)} 
-            />
+            <Toggle active={options.include_emojis} onToggle={(v) => updateOption('include_emojis', v)} />
           </div>
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
               <p className="text-sm font-bold">Incluir CTA</p>
               <p className="text-xs text-uv-text-muted">Añade una llamada a la acción al final.</p>
             </div>
-            <Toggle 
-              active={options.include_cta} 
-              onToggle={(v) => updateOption('include_cta', v)} 
-            />
+            <Toggle active={options.include_cta} onToggle={(v) => updateOption('include_cta', v)} />
           </div>
         </Card>
       </section>
@@ -88,14 +110,14 @@ export const CopyCustomizeModule = () => {
           <ShieldCheck className="w-4 h-4" /> Compliance Mode
         </h3>
         <div className="grid grid-cols-2 gap-3">
-          {['strict', 'standard'].map((m) => (
+          {(['strict', 'standard'] as const).map((m) => (
             <button
               key={m}
               onClick={() => updateOption('compliance_mode', m)}
               className={cn(
                 "px-4 py-4 rounded-xl border text-left transition-all",
-                options.compliance_mode === m 
-                  ? "bg-accent/10 border-accent" 
+                options.compliance_mode === m
+                  ? "bg-accent/10 border-accent"
                   : "bg-uv-card border-uv-border hover:border-accent/50"
               )}
             >
@@ -116,14 +138,14 @@ export const CopyCustomizeModule = () => {
           <Palette className="w-4 h-4" /> Variant Style
         </h3>
         <div className="grid grid-cols-3 gap-3">
-          {['conservative', 'balanced', 'creative'].map((s) => (
+          {(['conservative', 'balanced', 'creative'] as const).map((s) => (
             <button
               key={s}
               onClick={() => updateOption('variant_style', s)}
               className={cn(
                 "px-4 py-3 rounded-xl border text-sm font-medium transition-all",
-                options.variant_style === s 
-                  ? "bg-accent border-accent text-black" 
+                options.variant_style === s
+                  ? "bg-accent border-accent text-black"
                   : "bg-uv-card border-uv-border text-uv-text-muted hover:border-accent/50"
               )}
             >
@@ -133,31 +155,35 @@ export const CopyCustomizeModule = () => {
         </div>
       </section>
 
-      {/* 5. EXTRA NOTES */}
+      {/* 5. EXTRA INSTRUCTIONS */}
       <section className="space-y-4">
         <h3 className="text-sm font-mono text-uv-text-muted uppercase tracking-widest flex items-center gap-2">
           <Settings2 className="w-4 h-4" /> Extra Instructions
         </h3>
-        <textarea 
+        <textarea
+          value={options.extra_notes}
+          onChange={(e) => updateOption('extra_notes', e.target.value)}
           placeholder="Añade aquí cualquier instrucción adicional que deba aplicarse a todas las generaciones..."
           className="w-full h-32 bg-uv-card border border-uv-border rounded-xl p-4 text-sm outline-none focus:border-accent resize-none"
         />
       </section>
+
+      {/* RESET */}
+      <div className="flex justify-end">
+        <Button variant="ghost" onClick={handleReset} className="text-xs text-uv-text-muted">
+          Restaurar defaults
+        </Button>
+      </div>
+
     </div>
   );
 };
 
-const Toggle = ({ active, onToggle }: { active: boolean, onToggle: (v: boolean) => void }) => (
-  <button 
+const Toggle = ({ active, onToggle }: { active: boolean; onToggle: (v: boolean) => void }) => (
+  <button
     onClick={() => onToggle(!active)}
-    className={cn(
-      "w-10 h-5 rounded-full relative transition-colors",
-      active ? "bg-accent" : "bg-uv-border"
-    )}
+    className={cn("w-10 h-5 rounded-full relative transition-colors", active ? "bg-accent" : "bg-uv-border")}
   >
-    <div className={cn(
-      "absolute top-1 w-3 h-3 rounded-full bg-white transition-all",
-      active ? "right-1" : "left-1"
-    )} />
+    <div className={cn("absolute top-1 w-3 h-3 rounded-full bg-white transition-all", active ? "right-1" : "left-1")} />
   </button>
 );
