@@ -12,46 +12,32 @@ import {
 
 import type { CopyPromptInput } from '../lib/db/types'
 
-// Re-exportamos CopyPromptInput como el nuevo contrato de entrada
 export type { CopyPromptInput }
 
-// ─── Config ──────────────────────────────────────────────────
 const CLAUDE_PROXY_URL = '/api/claude'
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
 const MAX_TOKENS = 2048
 
-// ─── Retry helper ────────────────────────────────────────────
+// ─── Retry — handles 429, 503, 529 (Anthropic overloaded) ───
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  retries = 3,
-  delay = 1000
+  retries = 4,
+  delay = 1500
 ): Promise<T> {
   try {
     return await fn()
   } catch (error: any) {
     const status = error?.status || error?.response?.status
-    if ((status === 429 || status === 503) && retries > 0) {
+    if ((status === 429 || status === 503 || status === 529) && retries > 0) {
       await new Promise(resolve => setTimeout(resolve, delay))
-      return withRetry(fn, retries - 1, delay * 2)
+      return withRetry(fn, retries - 1, delay * 1.5)
     }
     throw error
   }
 }
 
-// ─── buildCopyPrompt ─────────────────────────────────────────
-/**
- * Construye el prompt completo a partir de Supabase.
- * Reemplaza la versión hardcoded anterior.
- * Retorna el prompt string + metadata (temperatura, word count, etc.)
- */
 export { buildCopyPromptFromSupabase as buildCopyPrompt }
 
-// ─── generateCopy ────────────────────────────────────────────
-/**
- * Envía el prompt a Claude vía proxy Vercel.
- * Mantiene la misma firma que la versión Gemini para compatibilidad
- * con los módulos existentes.
- */
 export async function generateCopy(params: {
   prompt: string
   temperature?: number
@@ -67,12 +53,8 @@ export async function generateCopy(params: {
         model: CLAUDE_MODEL,
         max_tokens: MAX_TOKENS,
         temperature: params.temperature ?? 1.0,
-        ...(params.systemPrompt
-          ? { system: params.systemPrompt }
-          : {}),
-        messages: [
-          { role: 'user', content: params.prompt },
-        ],
+        ...(params.systemPrompt ? { system: params.systemPrompt } : {}),
+        messages: [{ role: 'user', content: params.prompt }],
       }),
     })
 
@@ -90,12 +72,6 @@ export async function generateCopy(params: {
   })
 }
 
-// ─── generateCopyFromInput ───────────────────────────────────
-/**
- * Helper de alto nivel: recibe CopyPromptInput, carga Supabase,
- * construye el prompt y genera el copy en un solo call.
- * Para usar directamente desde módulos sin el hook.
- */
 export async function generateCopyFromInput(
   input: CopyPromptInput,
   signal?: AbortSignal
@@ -126,12 +102,6 @@ export async function generateCopyFromInput(
   }
 }
 
-// ─── validateCompliance ──────────────────────────────────────
-/**
- * Validación client-side de compliance.
- * Lista base de palabras prohibidas — se complementa con las reglas
- * de Supabase (compliance_rules) que ya se inyectan en el prompt.
- */
 export function validateCompliance(
   text: string,
   extraForbiddenWords: string[] = []
@@ -140,16 +110,13 @@ export function validateCompliance(
     'cura', 'elimina', 'garantizado', '100%', 'médico', 'trata',
     'revolucionario', 'innovador', 'transformador',
   ]
-
   const allProhibited = [...baseProhibited, ...extraForbiddenWords]
   const warnings: string[] = []
   const lowerText = text.toLowerCase()
-
   allProhibited.forEach(word => {
     if (lowerText.includes(word.toLowerCase())) {
       warnings.push(`Palabra prohibida: "${word}"`)
     }
   })
-
   return { passed: warnings.length === 0, warnings }
 }
