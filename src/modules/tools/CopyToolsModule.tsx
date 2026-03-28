@@ -6,7 +6,31 @@ import { useSessionStore } from '../../state/sessionStore';
 import { validateCompliance, generateCopy } from '../../services/copyEngine';
 import { Search, Zap, RefreshCw, Copy, CheckCircle2, AlertCircle, Wand2, Loader2 } from 'lucide-react';
 
+// FIX 2026-03-28d: los 3 tools llaman generateCopy() directamente (bypasan
+// buildCopyPrompt/buildLanguageBlock). Solución: inyectar instrucción de idioma
+// explícita en cada prompt usando activeLanguage del sessionStore.
+
 type ToolId = 'analyzer' | 'cta' | 'adapter';
+
+// Mismo mapa que buildCopyPrompt.ts — mantener sincronizado
+const LANGUAGE_LABELS: Record<string, string> = {
+  'ES':    'Español (neutro)',
+  'es-ES': 'Español de España',
+  'es-FL': 'Español — mercado Florida/Miami',
+  'es-PA': 'Español de Panamá',
+  'es-MX': 'Español de México',
+  'EN':    'English (neutral)',
+  'en-US': 'English — US market',
+  'en-FL': 'English — Florida market',
+  'SPANG': 'Spanglish (Spanish-English mix)',
+  'PT':    'Português',
+  'FR':    'Français',
+}
+
+function langInstruction(language: string): string {
+  const label = LANGUAGE_LABELS[language] ?? language
+  return `IDIOMA DE OUTPUT: Genera TODO el contenido exclusivamente en ${label}. Prioridad absoluta.`
+}
 
 export const CopyToolsModule = () => {
   const [activeTool, setActiveTool] = useState<ToolId>('analyzer');
@@ -37,7 +61,7 @@ const SubToolButton = ({ active, onClick, icon: Icon, label }: any) => (
 // ─── Analizador ───────────────────────────────────────────────
 const CopyAnalyzerTool = () => {
   const { brands, loading: brandsLoading } = useBrands();
-  const { activeBrandId, setActiveBrandId, sessionOutputs } = useSessionStore();
+  const { activeBrandId, setActiveBrandId, sessionOutputs, activeLanguage } = useSessionStore();
   const [text, setText] = useState('');
   const [result, setResult] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -56,7 +80,8 @@ const CopyAnalyzerTool = () => {
       const compliance = validateCompliance(text);
       const suggestions = await generateCopy({
         prompt: `Analiza este copy y sugiere 3 mejoras concretas para mejor conversión y alineación de marca:\n\n${text}`,
-        systemPrompt: 'Eres experto en copywriting. Responde en español. Sé específico y accionable. Sin preámbulos.',
+        // FIX: idioma explícito en systemPrompt
+        systemPrompt: `Eres experto en copywriting. ${langInstruction(activeLanguage)} Sé específico y accionable. Sin preámbulos.`,
         temperature: 0.7,
       });
       setResult({ compliance, suggestions });
@@ -125,7 +150,7 @@ const CopyAnalyzerTool = () => {
 
 // ─── CTAs ─────────────────────────────────────────────────────
 const CtaGeneratorTool = () => {
-  const { activeBrandId } = useSessionStore();
+  const { activeBrandId, activeLanguage } = useSessionStore();
   const { brands } = useBrands();
   const [objective, setObjective] = useState('');
   const [variants, setVariants] = useState(5);
@@ -139,7 +164,8 @@ const CtaGeneratorTool = () => {
     try {
       const content = await generateCopy({
         prompt: `Genera ${variants} CTAs de alta conversión${brandName ? ` para ${brandName}` : ''} con este objetivo: ${objective}.\n\nDevuelve SOLO una lista numerada, un CTA por línea. Sin explicaciones.`,
-        systemPrompt: 'Eres experto en copywriting de conversión. Responde en español. SOLO la lista numerada.',
+        // FIX: idioma explícito en systemPrompt
+        systemPrompt: `Eres experto en copywriting de conversión. ${langInstruction(activeLanguage)} SOLO la lista numerada.`,
         temperature: 0.9,
       });
       setResults(content.split('\n').filter(l => l.trim()));
@@ -191,7 +217,7 @@ const CtaGeneratorTool = () => {
 // ─── Adaptador de Canal ───────────────────────────────────────
 const ChannelAdapterTool = () => {
   const { blocks, loading: blocksLoading } = useChannelBlocks();
-  const { sessionOutputs } = useSessionStore();
+  const { sessionOutputs, activeLanguage } = useSessionStore();
   const [text, setText] = useState('');
   const [targetChannelId, setTargetChannelId] = useState('');
   const [result, setResult] = useState('');
@@ -212,8 +238,9 @@ const ChannelAdapterTool = () => {
       if (!block) return;
       const charInfo = block.char_limit ? `Límite: ${block.char_limit} caracteres.` : '';
       const content = await generateCopy({
-        prompt: `Adapta el siguiente copy para el canal "${block.name}".\n\nInstrucciones del canal: ${block.block_text || ''}\n${charInfo}\n\nCopy original:\n${text}`,
-        systemPrompt: 'Eres experto en copywriting multicanal. Entrega SOLO el copy adaptado, sin explicaciones previas.',
+        // FIX: idioma inyectado explícitamente en el prompt
+        prompt: `${langInstruction(activeLanguage)}\n\nAdapta el siguiente copy para el canal "${block.name}".\n\nInstrucciones del canal: ${block.block_text || ''}\n${charInfo}\n\nCopy original:\n${text}`,
+        systemPrompt: `Eres experto en copywriting multicanal. ${langInstruction(activeLanguage)} Entrega SOLO el copy adaptado, sin explicaciones previas.`,
         temperature: 0.8,
       });
       setResult(content);
