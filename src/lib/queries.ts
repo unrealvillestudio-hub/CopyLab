@@ -325,9 +325,9 @@ export function resolveTemplate(ctx: BrandContext, templateId: string): OutputTe
   return ctx.outputTemplates.find((t) => t.id === templateId) ?? null
 }
 
-/** Resuelve canal block por canal_id */
+/** Resuelve canal block por id (e.g. 'YOUTUBE', 'META_ADS') */
 export function resolveCanalBlock(ctx: BrandContext, canalId: string): CanalBlock | null {
-  return ctx.canalBlocks.find((c) => c.canal_id === canalId) ?? null
+  return ctx.canalBlocks.find((c) => c.id === canalId) ?? null
 }
 
 /**
