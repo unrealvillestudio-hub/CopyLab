@@ -320,9 +320,9 @@ export function resolveHumanize(
   ) ?? null
 }
 
-/** Resuelve output template por output_type */
+/** Resuelve output template por id (e.g. 'YouTube_Ideas', 'SMPC_full') */
 export function resolveTemplate(ctx: BrandContext, templateId: string): OutputTemplate | null {
-  return ctx.outputTemplates.find((t) => t.output_type === templateId) ?? null
+  return ctx.outputTemplates.find((t) => t.id === templateId) ?? null
 }
 
 /** Resuelve canal block por canal_id */
