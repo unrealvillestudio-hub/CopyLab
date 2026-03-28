@@ -1,12 +1,16 @@
 // ============================================================
 // UNRLVL CopyLab — buildCopyPrompt.ts
 // SMPC: construye el prompt final a partir de BrandContext
+// Updated: 2026-03-28b — fixes:
+//   · FIX: template.output_type → template.id (campo no existía)
+//   · FIX: templateName usa template.name ?? template.id
+//   · FIX: error message lista templates por t.id (no t.output_type)
 // Updated: 2026-03-27 — v7 fixes:
-//   · FIX: buildBrandBlock usa campos v7 (brand_context, tono_base,
+//   · buildBrandBlock usa campos v7 (brand_context, tono_base,
 //     geo_principal, cta_base, canales_activos, diferenciador_base)
-//   · FIX: buildHumanizeBlock usa schema real (parameter/value)
-//   · FIX: buildGeomixBlock usa schema real (servicio_1..servicio_6)
-//   · FIX: resolveTemplateVariables soporta {{var}} doble-brace
+//   · buildHumanizeBlock usa schema real (parameter/value)
+//   · buildGeomixBlock usa schema real (servicio_1..servicio_6)
+//   · resolveTemplateVariables soporta {{var}} doble-brace
 //   · temperatura capeada a 1.0 (Claude API max)
 // ============================================================
 
@@ -30,7 +34,7 @@ import type {
   GeoMix,
 } from './db/types'
 
-// ─── Temperatura por tipo de output ─────────────────────────
+// ─── Temperatura por tipo de output ──────────────────────────
 // Claude API acepta 0.0–1.0 únicamente
 const TEMPERATURE_BY_TEMPLATE: Record<string, number> = {
   Ads_FullPro:         0.5,
@@ -64,11 +68,12 @@ export async function buildCopyPrompt(input: CopyPromptInput): Promise<CopyPromp
     throw new Error(`[buildCopyPrompt] Brand '${brandId}' no encontrado en Supabase`)
   }
 
+  // FIX: resolveTemplate busca por t.id (no t.output_type — columna no existe)
   const template = resolveTemplate(ctx, templateId)
   if (!template) {
     throw new Error(
       `[buildCopyPrompt] OutputTemplate '${templateId}' no encontrado. ` +
-      `Disponibles: ${ctx.outputTemplates.map((t) => t.output_type).join(', ')}`
+      `Disponibles: ${ctx.outputTemplates.map((t) => t.id).join(', ')}`
     )
   }
 
@@ -80,14 +85,14 @@ export async function buildCopyPrompt(input: CopyPromptInput): Promise<CopyPromp
     )
   }
 
-  const humanize      = resolveHumanize(ctx, medium)
-  const geomix        = resolveGeoMix(ctx, input.geo)
-  const keywords      = getKeywords(ctx)
-  const grupo3        = getGrupo3(ctx)
-  const cta           = getCta(ctx, ctaTypeForCanal(canalId), servicio)
+  const humanize        = resolveHumanize(ctx, medium)
+  const geomix          = resolveGeoMix(ctx, input.geo)
+  const keywords        = getKeywords(ctx)
+  const grupo3          = getGrupo3(ctx)
+  const cta             = getCta(ctx, ctaTypeForCanal(canalId), servicio)
   const complianceRules = getComplianceRules(ctx)
   // Cap temperature — Claude API max is 1.0
-  const temperature   = Math.min(
+  const temperature     = Math.min(
     TEMPERATURE_BY_TEMPLATE[templateId] ?? DEFAULT_TEMPERATURE,
     1.0
   )
@@ -99,21 +104,22 @@ export async function buildCopyPrompt(input: CopyPromptInput): Promise<CopyPromp
 
   return {
     prompt,
-    templateName: template.output_type,
-    canalName: canal.canal_id,
-    brandName: ctx.brand.display_name,
+    // FIX: era template.output_type — usar name (legible) con fallback a id
+    templateName: template.name ?? template.id,
+    canalName:    canal.canal_id,
+    brandName:    ctx.brand.display_name,
     temperature,
     metadata: {
-      keywordsInjected: keywords.length,
-      ctasInjected: cta ? 1 : 0,
+      keywordsInjected:        keywords.length,
+      ctasInjected:            cta ? 1 : 0,
       complianceRulesInjected: complianceRules.length,
-      humanizeApplied: !!humanize,
-      geomixApplied: !!geomix,
+      humanizeApplied:         !!humanize,
+      geomixApplied:           !!geomix,
     },
   }
 }
 
-// ─── assemblePrompt ──────────────────────────────────────────
+// ─── assemblePrompt ───────────────────────────────────────────
 
 interface AssembleParams {
   ctx: BrandContext
@@ -172,13 +178,16 @@ function assemblePrompt(p: AssembleParams): string {
   }
 
   // 9. Template con variables resueltas (doble-brace {{var}})
-  const resolvedTemplate = resolveTemplateVariables(template, buildVarMap(brand, cta, keywords, grupo3, input))
+  const resolvedTemplate = resolveTemplateVariables(
+    template,
+    buildVarMap(brand, cta, keywords, grupo3, input)
+  )
   sections.push(`## INSTRUCCIÓN\n${resolvedTemplate}`)
 
   return sections.join('\n\n---\n\n')
 }
 
-// ─── buildBrandBlock — usa campos v7 ────────────────────────
+// ─── buildBrandBlock — usa campos v7 ─────────────────────────
 
 function buildBrandBlock(brand: NonNullable<BrandContext['brand']>): string {
   const lines: string[] = [`## MARCA: ${brand.display_name}`]
@@ -197,10 +206,9 @@ function buildBrandBlock(brand: NonNullable<BrandContext['brand']>): string {
   return lines.join('\n')
 }
 
-// ─── buildHumanizeBlock — usa schema real (parameter/value) ─
+// ─── buildHumanizeBlock — usa schema real (parameter/value) ──
 
 function buildHumanizeBlock(h: HumanizeProfile): string {
-  // Schema: parameter='humanize_instructions', value=texto completo de instrucciones
   return [
     '## HUMANIZE F2.5 — VOZ AUTÉNTICA',
     h.value,
@@ -255,9 +263,9 @@ function buildVarMap(
     servicio:           input.servicio           ?? '',
     objetivo:           input.objetivo           ?? '',
     // keywords
-    keyword_principal:  keywords[0]              ?? '',
+    keyword_principal:     keywords[0]              ?? '',
     keywords_prioritarias: keywords.slice(0, 5).join(', '),
-    grupo_3_keywords:   grupo3,
+    grupo_3_keywords:      grupo3,
     // cta
     cta_smpc:           cta,
     // extra
@@ -279,7 +287,7 @@ function resolveTemplateVariables(
     .replace(/\{(\w+)\}/g,     (match, key) => vars[key] !== undefined ? vars[key] : match)
 }
 
-// ─── Helpers ─────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────
 
 function ctaTypeForCanal(
   canalId: string
@@ -291,8 +299,8 @@ function ctaTypeForCanal(
   const SEO_CANALES = ['BLOG', 'BLOG_HTML', 'WEB', 'WEB_HTML', 'LANDING_PAGE', 'LANDING_HTML']
   const STORY_CANALES = ['INSTAGRAM_ORGANICO', 'TIKTOK_ORGANICO']
 
-  if (ADS_CANALES.includes(canalId))   return 'cta_ads'  as any
-  if (SEO_CANALES.includes(canalId))   return 'cta_seo'  as any
+  if (ADS_CANALES.includes(canalId))   return 'cta_ads'   as any
+  if (SEO_CANALES.includes(canalId))   return 'cta_seo'   as any
   if (STORY_CANALES.includes(canalId)) return 'cta_story' as any
   return 'cta_smpc' as any
 }
