@@ -1,18 +1,14 @@
 // ============================================================
 // UNRLVL CopyLab — db/types.ts
-// Schema Supabase v7 — Updated: 2026-03-27
-// Changes vs previous:
-//   · Brand: added geo_principal, tono_base, canal_base,
-//     canales_activos, formatos_activos, cta_base, cta_ab_testing,
-//     cta_ads, cta_ultrashort, disclaimer_base, url_base,
-//     cta_url_base, diferenciador_base + full imagelab/videolab/voicelab
-//   · HumanizeProfile: updated to real schema (parameter/value)
-//   · GeoMix: updated to real schema (servicio_1..servicio_6)
-//   · NEW: BrandLanguage, BrandService, ChannelPromptRule (v7)
-//   · NEW: CopyPromptInput, CopyPromptResult
+// Schema Supabase v7 — Updated: 2026-03-28
+// Changes vs 2026-03-27:
+//   · BrandService: added item_type field
+//   · NEW: ProductBlueprint (full schema with linea, sku catalog fields)
+//   · BrandContext: added optional productBlueprints[]
+//   · CopyPromptInput: added optional selectedProduct
 // ============================================================
 
-// ─── Core tables ─────────────────────────────────────────────
+// ─── Core tables ──────────────────────────────────────────────
 
 export interface Brand {
   id: string
@@ -177,7 +173,7 @@ export interface ImagelabPreset {
   id: string
   preset_id: string
   channel: string | null
-  canal: string | null       // alias used in some rows
+  canal: string | null
   preset_name: string | null
   realism_level: string | null
   film_look: string | null
@@ -257,7 +253,7 @@ export interface BrandTypography {
   usage: string | null
 }
 
-// ─── NEW v7 tables ───────────────────────────────────────────
+// ─── NEW v7 tables ────────────────────────────────────────────
 
 export interface BrandLanguage {
   id: string
@@ -277,6 +273,8 @@ export interface BrandService {
   idioma: string | null
   is_primary: boolean
   active: boolean
+  /** 'producto' | 'servicio' | 'ambos' */
+  item_type: 'producto' | 'servicio' | 'ambos'
 }
 
 export interface ChannelPromptRule {
@@ -288,7 +286,62 @@ export interface ChannelPromptRule {
   note: string | null
 }
 
-// ─── BrandContext — assembled by fetchBrandContext ────────────
+// ─── ProductBlueprint — full schema v7 ───────────────────────
+
+/**
+ * Producto del catálogo NeuroneSCF (y futuros catálogos).
+ * is_variant = false → visible en selector de apps.
+ * is_variant = true  → talla alternativa, solo e-commerce.
+ * b2b_only = true    → solo Portal Pro.
+ */
+export interface ProductBlueprint {
+  id: string
+  brand_id: string
+  schema_version: string | null
+  sku: string | null
+  name: string
+  // Catálogo
+  linea: string | null                  // Moisture | Restore | Styling | Scalp | Color_Rescue | Pro_Salon
+  line_family: string | null            // sub-familia dentro de la línea (Humit, Kerasin HB, etc.)
+  subcategory: string | null
+  size: string | null
+  barcode: string | null
+  is_variant: boolean                   // false = principal visible en selector
+  b2b_only: boolean                     // true = solo Portal Pro
+  shopify_visibility: 'public' | 'b2b_only' | 'hidden'
+  // Contenido
+  description_en: string | null
+  description_es: string | null
+  benefit_claims: string[] | null       // JSONB array
+  hair_type: string[] | null            // JSONB array
+  // Imágenes
+  image_filename: string | null         // estándar / fondo blanco
+  image_dark_filename: string | null    // campaña / fondo oscuro
+  dominant_hex: string | null
+  packaging_style: string | null
+  lifestyle_context: string | null
+  // Comercial
+  price: number | null
+  msrp: number | null
+  cross_sell: string[] | null           // JSONB array de product IDs
+  related_skus: Array<{ sku: string; size: string; barcode?: string }> | null
+  // Compliance
+  compliance_flags: { category_risk: string; notes: string } | null
+  // Legacy/extra
+  category: string | null
+  tagline: string | null
+  description_short: string | null
+  description_long: string | null
+  ingredients: Record<string, unknown>[] | null
+  claims: string[] | null
+  has_reference_photos: boolean
+  reference_photos: string[] | null
+  imagelab_params: Record<string, unknown> | null
+  raw_config: Record<string, unknown> | null
+  active: boolean
+}
+
+// ─── BrandContext — assembled by fetchBrandContext ─────────────
 
 export interface BrandContext {
   brand: Brand | null
@@ -312,18 +365,18 @@ export interface BrandContext {
   channelPromptRules: ChannelPromptRule[]
 }
 
-// ─── CopyLab input/output types ──────────────────────────────
+// ─── CopyLab input/output types ───────────────────────────────
 
 export interface CopyPromptInput {
   brandId: string
-  templateId: string     // output_type key (e.g. 'SMPC_full', 'Ads_FullPro')
-  canalId: string        // canal_id key (e.g. 'META_ADS', 'BLOG')
-  language?: string      // e.g. 'ES', 'es-FL' — for keyword filtering
+  templateId: string
+  canalId: string
+  language?: string
   producto?: string
-  servicio?: string      // e.g. 'tintado de lunas' — for keyword + CTA filtering
+  servicio?: string
   objetivo?: string
-  geo?: string           // for geomix resolution
-  medium?: string        // 'copy' | 'image' | 'video' | 'voice' | 'web'
+  geo?: string
+  medium?: string
   extraContext?: string
   extraNotes?: string
   complianceMode?: 'strict' | 'balanced'
@@ -331,6 +384,8 @@ export interface CopyPromptInput {
   includeHashtags?: boolean
   includeEmojis?: boolean
   includeCta?: boolean
+  /** Producto seleccionado del catálogo — inyectado en extraContext */
+  selectedProduct?: ProductBlueprint | null
 }
 
 export interface CopyPromptResult {
