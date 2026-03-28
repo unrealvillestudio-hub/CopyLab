@@ -212,6 +212,7 @@ export const CopyCustomizeModule = () => {
     setActiveStep1('')
     setActiveSelectedSku('')
     setActiveCustomText('')
+    setActiveExtraContext('')   // FIX: extraContext no se limpiaba en reset ni tras F5
   }
 
   const isReady = !!activeBrandId && !!activeServicio.trim()
