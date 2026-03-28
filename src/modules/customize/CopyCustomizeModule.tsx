@@ -116,13 +116,19 @@ export const CopyCustomizeModule = () => {
     [catalog]
   )
 
-  // Servicios puros (sin productos — ya manejados por colecciones)
-  const pureServices = services.filter(s => s.item_type === 'servicio')
+  // MEMOIZED — evita nuevo array en cada render (causaba React #185)
+  const pureServices = React.useMemo(
+    () => services.filter(s => s.item_type === 'servicio'),
+    [services]
+  )
 
-  // Productos de la colección seleccionada
-  const productsInLine = step1.startsWith('line:')
-    ? catalog.filter(p => p.linea === step1.replace('line:', ''))
-    : []
+  // MEMOIZED — idem
+  const productsInLine = React.useMemo(
+    () => step1.startsWith('line:')
+      ? catalog.filter(p => p.linea === step1.replace('line:', ''))
+      : [],
+    [step1, catalog]
+  )
 
   // ─── Effects ───────────────────────────────────────────────────
 
