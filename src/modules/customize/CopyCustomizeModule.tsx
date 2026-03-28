@@ -1,5 +1,9 @@
 /**
  * UNRLVL CopyLab — CopyCustomizeModule.tsx
+ * Updated: 2026-03-28d
+ *   · FIX: step1, selectedSku, customText movidos al sessionStore
+ *     → ya no se pierden al navegar entre pestañas
+ *     → solo se limpian en reset explícito o cambio de marca/idioma
  * Updated: 2026-03-28b — Rediseño selector producto
  *   · Paso 1: Colección (líneas del catálogo) ó Servicio ó Texto libre
  *   · Paso 2: Producto específico (filtrado por colección seleccionada)
@@ -46,7 +50,6 @@ function useBrandServices(brandId: string) {
   React.useEffect(() => {
     if (!brandId) return
     setLoading(true)
-    // Sin filtro de idioma — los servicios están disponibles en todos los idiomas
     fetch(`${SB_URL}/rest/v1/brand_services?brand_id=eq.${encodeURIComponent(brandId)}&active=eq.true&order=item_type.asc,is_primary.desc`, { headers: SB_HDR })
       .then(r => r.json())
       .then(data => { setServices(data); setLoading(false) })
@@ -93,16 +96,13 @@ export const CopyCustomizeModule = () => {
     activeExtraContext, setActiveExtraContext,
     customizeOptions, setCustomizeOptions,
     clearSessionOutputs,
+    // FIX: selector de producto desde store (antes useState local → se perdía al navegar)
+    activeStep1, setActiveStep1,
+    activeSelectedSku, setActiveSelectedSku,
+    activeCustomText, setActiveCustomText,
   } = useSessionStore()
 
-  // ─── Estado del selector de producto ──────────────────────────
-  // Paso 1: colección elegida (línea) ó servicio ó '__custom__'
-  const [step1, setStep1] = React.useState<string>('')
-  // Paso 2: SKU elegido dentro de la colección
-  const [selectedSku, setSelectedSku] = React.useState<string>('')
-  // Para "Otro (texto libre)"
-  const [customText, setCustomText] = React.useState<string>('')
-  // Catálogo cargado desde Supabase
+  // ─── Catálogo (no necesita persistir — se recarga al montar) ──
   const [catalog, setCatalog] = React.useState<ProductBlueprint[]>([])
   const [catalogLoading, setCatalogLoading] = React.useState(false)
 
@@ -116,18 +116,16 @@ export const CopyCustomizeModule = () => {
     [catalog]
   )
 
-  // MEMOIZED — evita nuevo array en cada render (causaba React #185)
   const pureServices = React.useMemo(
     () => services.filter(s => s.item_type === 'servicio'),
     [services]
   )
 
-  // MEMOIZED — idem
   const productsInLine = React.useMemo(
-    () => step1.startsWith('line:')
-      ? catalog.filter(p => p.linea === step1.replace('line:', ''))
+    () => activeStep1.startsWith('line:')
+      ? catalog.filter(p => p.linea === activeStep1.replace('line:', ''))
       : [],
-    [step1, catalog]
+    [activeStep1, catalog]
   )
 
   // ─── Effects ───────────────────────────────────────────────────
@@ -140,11 +138,11 @@ export const CopyCustomizeModule = () => {
     if (!activePackId) setActivePackId(Object.keys(COPY_PACKS)[0])
   }, [])
 
-  // Cuando cambia la marca: resetear todo y cargar catálogo
+  // Cuando cambia la marca: resetear selector y recargar catálogo
   React.useEffect(() => {
-    setStep1('')
-    setSelectedSku('')
-    setCustomText('')
+    setActiveStep1('')
+    setActiveSelectedSku('')
+    setActiveCustomText('')
     setCatalog([])
     if (!activeBrandId) return
     setCatalogLoading(true)
@@ -153,63 +151,71 @@ export const CopyCustomizeModule = () => {
       .catch(() => setCatalogLoading(false))
   }, [activeBrandId])
 
-  // Cuando cambia idioma: resetear selección de producto/servicio (no el catálogo)
+  // Recargar catálogo al montar (el catálogo no persiste, solo el estado del selector)
   React.useEffect(() => {
-    setStep1('')
-    setSelectedSku('')
+    if (!activeBrandId) return
+    setCatalogLoading(true)
+    fetchProductCatalog(activeBrandId)
+      .then(data => { setCatalog(data); setCatalogLoading(false) })
+      .catch(() => setCatalogLoading(false))
+  }, [])
+
+  // Cuando cambia idioma: resetear selector de producto/servicio
+  React.useEffect(() => {
+    setActiveStep1('')
+    setActiveSelectedSku('')
   }, [activeLanguage])
 
   // Sincronizar activeServicio al store
   React.useEffect(() => {
-    if (step1 === '__custom__') {
-      setActiveServicio(customText)
+    if (activeStep1 === '__custom__') {
+      setActiveServicio(activeCustomText)
       return
     }
-    if (step1.startsWith('svc:')) {
-      const svc = pureServices.find(s => s.id === step1.replace('svc:', ''))
+    if (activeStep1.startsWith('svc:')) {
+      const svc = pureServices.find(s => s.id === activeStep1.replace('svc:', ''))
       setActiveServicio(svc?.servicio ?? '')
       return
     }
-    if (step1.startsWith('line:') && selectedSku) {
-      const product = catalog.find(p => p.sku === selectedSku)
+    if (activeStep1.startsWith('line:') && activeSelectedSku) {
+      const product = catalog.find(p => p.sku === activeSelectedSku)
       setActiveServicio(product?.name ?? '')
       return
     }
-    if (step1.startsWith('line:') && !selectedSku) {
-      // Línea seleccionada pero sin producto específico → usa el nombre de línea
-      const lineName = step1.replace('line:', '')
+    if (activeStep1.startsWith('line:') && !activeSelectedSku) {
+      const lineName = activeStep1.replace('line:', '')
       setActiveServicio(`Colección ${lineName}`)
       return
     }
     setActiveServicio('')
-  }, [step1, selectedSku, customText, pureServices, catalog])
+  }, [activeStep1, activeSelectedSku, activeCustomText, pureServices, catalog])
 
   // Inyectar datos del producto en extraContext cuando se elige un SKU
   React.useEffect(() => {
-    if (!selectedSku) return
-    const product = catalog.find(p => p.sku === selectedSku)
+    if (!activeSelectedSku) return
+    const product = catalog.find(p => p.sku === activeSelectedSku)
     if (product && !activeExtraContext) {
       setActiveExtraContext(formatProductForPrompt(product))
     }
-  }, [selectedSku])
+  }, [activeSelectedSku, catalog])
 
   // ─── Handlers ──────────────────────────────────────────────────
   const handleStep1Change = (value: string) => {
-    setStep1(value)
-    setSelectedSku('')
-    if (value !== '__custom__') setCustomText('')
+    setActiveStep1(value)
+    setActiveSelectedSku('')
+    if (value !== '__custom__') setActiveCustomText('')
   }
 
   const handleReset = () => {
     setCustomizeOptions(DEFAULT_CUSTOMIZE_OPTIONS)
     clearSessionOutputs()
-    setStep1('')
-    setSelectedSku('')
-    setCustomText('')
+    setActiveStep1('')
+    setActiveSelectedSku('')
+    setActiveCustomText('')
   }
 
   const isReady = !!activeBrandId && !!activeServicio.trim()
-  const selectedProduct = catalog.find(p => p.sku === selectedSku) ?? null
+  const selectedProduct = catalog.find(p => p.sku === activeSelectedSku) ?? null
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -299,16 +305,15 @@ export const CopyCustomizeModule = () => {
               </div>
             ) : (
               <select
-                value={step1}
+                value={activeStep1}
                 onChange={e => handleStep1Change(e.target.value)}
                 className={cn(
                   "w-full bg-uv-card border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent transition-colors",
-                  !step1 ? "border-amber-500/40" : "border-uv-border"
+                  !activeStep1 ? "border-amber-500/40" : "border-uv-border"
                 )}
               >
                 <option value="">— Elige —</option>
 
-                {/* Colecciones del catálogo */}
                 {lines.length > 0 && (
                   <optgroup label="📦 Colecciones">
                     {lines.map(linea => (
@@ -319,7 +324,6 @@ export const CopyCustomizeModule = () => {
                   </optgroup>
                 )}
 
-                {/* Servicios puros */}
                 {pureServices.length > 0 && (
                   <optgroup label="🔧 Servicios">
                     {pureServices.map(s => (
@@ -337,16 +341,16 @@ export const CopyCustomizeModule = () => {
             )}
           </div>
 
-          {/* PASO 2 — Producto específico (solo cuando línea seleccionada) */}
+          {/* PASO 2 — Producto específico */}
           <div className="space-y-2">
             <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider flex items-center gap-1">
               <Tag className="w-3 h-3" /> Producto
               <span className="text-uv-text-muted normal-case font-normal text-[10px]">(opcional)</span>
             </label>
-            {step1.startsWith('line:') ? (
+            {activeStep1.startsWith('line:') ? (
               <select
-                value={selectedSku}
-                onChange={e => setSelectedSku(e.target.value)}
+                value={activeSelectedSku}
+                onChange={e => setActiveSelectedSku(e.target.value)}
                 className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent"
               >
                 <option value="">— Copy general de colección —</option>
@@ -358,23 +362,23 @@ export const CopyCustomizeModule = () => {
               </select>
             ) : (
               <div className="w-full bg-uv-card/40 border border-uv-border/50 rounded-lg px-3 py-2 text-sm text-uv-text-muted italic">
-                {step1 ? 'No aplica' : 'Elige una colección primero'}
+                {activeStep1 ? 'No aplica' : 'Elige una colección primero'}
               </div>
             )}
           </div>
         </div>
 
-        {/* Texto libre cuando se selecciona "Otro" */}
-        {step1 === '__custom__' && (
+        {/* Texto libre */}
+        {activeStep1 === '__custom__' && (
           <input
             type="text"
-            value={customText}
-            onChange={e => setCustomText(e.target.value)}
+            value={activeCustomText}
+            onChange={e => setActiveCustomText(e.target.value)}
             placeholder="e.g. Shampoo anticaída · Tratamiento de keratina · Servicio B2B"
             autoFocus
             className={cn(
               "w-full bg-uv-card border rounded-lg px-3 py-2 text-sm outline-none focus:border-accent transition-colors",
-              !customText.trim() ? "border-amber-500/40" : "border-uv-border"
+              !activeCustomText.trim() ? "border-amber-500/40" : "border-uv-border"
             )}
           />
         )}
