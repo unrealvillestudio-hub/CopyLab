@@ -6,5 +6,13 @@
     stroke-width="5.5"
     stroke-linecap="square"
     stroke-linejoin="miter"
-  />
+  >
+    <animate
+      attributeName="opacity"
+      values="1;1;0.1;1;0.1;1;1;1"
+      keyTimes="0;0.35;0.40;0.45;0.50;0.55;0.75;1"
+      dur="3s"
+      repeatCount="indefinite"
+    />
+  </polyline>
 </svg>
