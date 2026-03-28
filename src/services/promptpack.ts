@@ -1,11 +1,14 @@
 /**
  * UNRLVL CopyLab — services/promptpack.ts
  * Orquestador de packs — conectado a Supabase + Claude.
- * Acepta extraNotes desde Customize.
+ * Updated: 2026-03-28
+ *   · NEW: selectedProductData — inyecta datos del SKU seleccionado en extraContext
  */
 
 import { generateCopyFromInput, validateCompliance } from './copyEngine'
 import type { CopyOutput, CopyPackSpec, CopyTone, CopyLanguage, CopyOutputFormat, BrandProfile } from '../core/types'
+import type { ProductBlueprint } from '../lib/db/types'
+import { formatProductForPrompt } from '../modules/customize/CopyCustomizeModule'
 
 const PROMPT_TYPE_MAP: Record<string, string> = {
   prompt_SMPC_full:           'SMPC_full',
@@ -58,13 +61,24 @@ export interface RunCopyPackParams {
   ctaBase?:       string
   outputFormat?:  CopyOutputFormat
   geo?:           string
-  extraNotes?:    string   // ← from Customize
+  extraNotes?:    string
+  /** Producto seleccionado del catálogo — inyectado como contexto estructurado */
+  selectedProductData?: ProductBlueprint | null
   signal?:        AbortSignal
 }
 
 export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput[]> {
-  const { brand, pack, language, keywords, productContext, tone, geo, extraNotes, signal } = params
+  const {
+    brand, pack, language, keywords, productContext,
+    tone, geo, extraNotes, selectedProductData, signal
+  } = params
+
   const results: CopyOutput[] = []
+
+  // Build product block once — reused in every job
+  const productBlock = selectedProductData
+    ? `\n--- DATOS DEL PRODUCTO ---\n${formatProductForPrompt(selectedProductData)}\n---\n`
+    : ''
 
   for (const job of pack.jobs) {
     const templateId = resolveTemplateId(job.prompt_type)
@@ -80,6 +94,7 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
           objetivo: `Generar ${job.label} — ${job.outputs} variante${job.outputs > 1 ? 's' : ''}`,
           extraContext: [
             keywords.length ? `Keywords adicionales: ${keywords.join(', ')}` : '',
+            productBlock,
             extraNotes || '',
           ].filter(Boolean).join('\n') || undefined,
           medium: 'copy',
@@ -109,6 +124,7 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
             compliance_warnings:   compliance.warnings,
             keywords_injected:     (metadata as any).keywordsInjected ?? 0,
             temperature:           (metadata as any).temperature,
+            product_sku:           selectedProductData?.sku ?? null,
           },
         })
       })
