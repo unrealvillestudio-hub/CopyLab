@@ -1,58 +1,45 @@
 // ============================================================
 // UNRLVL CopyLab — db/types.ts
-// Schema Supabase v7 — Updated: 2026-03-28
-// Changes vs 2026-03-27:
-//   · BrandService: added item_type field
-//   · NEW: ProductBlueprint (full schema with linea, sku catalog fields)
-//   · BrandContext: added optional productBlueprints[]
-//   · CopyPromptInput: added optional selectedProduct
-// FIX 2026-03-28b — columnas verificadas contra schema real:
-//   · Brand: brand_id removido (PK es 'id'), brand_type → type,
-//             active removido (no existe), cta_ultrashort removido
-//   · OutputTemplate: output_type removido (no existe);
-//     id ES el identificador (e.g. 'YouTube_Ideas');
-//     añadidos name, category, variables, applies_to, platforms,
-//     word_count_min, word_count_max
+// Schema Supabase — Updated: 2026-03-28c (audit completo)
+// FIXES aplicados contra schema real verificado:
+//   · Brand: brand_id→id, brand_type→type, -active, -cta_ultrashort
+//   · OutputTemplate: -output_type; id ES el identifier; +name,category,etc.
+//   · CanalBlock: -canal_id; id ES el identifier; +name,platform,format,etc.
+//   · GeoMix: -servicio_1..6 → +servicios:string[], +combos:string[],
+//             +country,region,city,language,lighting,color_mood,
+//             +aesthetic,local_slang,avoid_slang,cultural_refs,active
+//   · ImagelabPreset: -channel,-preset_name; +humidity_level,sweat_level,
+//             grain_level,lighting_style,color_grading,aspect_ratio,
+//             resolution,negative_prompt,extra_params,notes
 // ============================================================
 
 // ─── Core tables ──────────────────────────────────────────────
 
 export interface Brand {
-  id: string           // PK canónico, e.g. 'NeuroneSCF'
+  id: string
   display_name: string
-  type: string | null  // FIX: era brand_type — columna real es 'type'
+  type: string | null
   market: string | null
   language_primary: string | null
   status: string | null
-  // NOTE: 'active' no existe en brands — usar status === 'active'
-
-  // Context & identity
   brand_context: string | null
   brand_story: string | null
   icp: string | null
   key_messages: string | null
   competitors: string | null
   differentiators: string | null
-
-  // Geo & tone (v7)
   geo_principal: string | null
   tono_base: string | null
   canal_base: string | null
   canales_activos: string | null
   formatos_activos: string | null
-
-  // CTAs (v7) — NOTE: cta_ultrashort no existe en schema
   cta_base: string | null
   cta_ab_testing: string | null
   cta_ads: string | null
-
-  // Legal (v7)
   disclaimer_base: string | null
   url_base: string | null
   cta_url_base: string | null
   diferenciador_base: string | null
-
-  // ImageLab
   imagelab_industry: string | null
   imagelab_visual_identity: string | null
   imagelab_realism_level: string | null
@@ -66,8 +53,6 @@ export interface Brand {
   imagelab_grain_level: number | null
   imagelab_requires_product_lock: boolean
   imagelab_compliance_rules: string | null
-
-  // VideoLab
   videolab_motion_style_default: string | null
   videolab_duration_default: number | null
   videolab_aspect_ratio: string | null
@@ -75,8 +60,6 @@ export interface Brand {
   videolab_model_preferred: string | null
   videolab_cut_rhythm: string | null
   videolab_compliance_rules: string | null
-
-  // VoiceLab
   voicelab_voice_id: string | null
   voicelab_language: string | null
   voicelab_speed_default: number | null
@@ -87,13 +70,6 @@ export interface Brand {
   voicelab_compliance_rules: string | null
 }
 
-/**
- * HumanizeProfile — schema real Supabase:
- *   brand_id = 'DEFAULT' o brand_id canónico
- *   medium   = 'copy' | 'image' | 'video' | 'voice' | 'web'
- *   parameter = 'humanize_instructions'
- *   value    = texto completo de instrucciones de autenticidad
- */
 export interface HumanizeProfile {
   id: string
   brand_id: string
@@ -113,13 +89,9 @@ export interface ComplianceRule {
   active: boolean
 }
 
-/**
- * OutputTemplate — schema real Supabase:
- *   id = identificador funcional, e.g. 'YouTube_Ideas', 'SMPC_full'
- *   FIX: output_type no existe — usar id directamente
- */
+/** id ES el identificador funcional, e.g. 'YouTube_Ideas' */
 export interface OutputTemplate {
-  id: string                              // FIX: era output_type — la PK text ES el identificador
+  id: string
   name: string | null
   category: string | null
   template_text: string
@@ -131,11 +103,20 @@ export interface OutputTemplate {
   active: boolean
 }
 
+/** id ES el identificador funcional, e.g. 'YOUTUBE', 'META_ADS' */
 export interface CanalBlock {
   id: string
-  canal_id: string
+  name: string | null
+  platform: string | null
+  format: string | null
+  char_limit: number | null
+  tone_modifier: string | null
+  restrictions: string | null
+  media_types: string[] | null
+  aspect_ratios: string[] | null
   block_text: string
   active: boolean
+  version: string | null
 }
 
 export interface Keyword {
@@ -169,28 +150,38 @@ export interface CTA {
 }
 
 /**
- * GeoMix — schema real Supabase:
- *   geo = nombre del área geográfica
- *   servicio_1..servicio_6 = servicios disponibles en esa zona
+ * GeoMix — schema real (verificado 2026-03-28):
+ *   servicios = array de servicios disponibles en la zona
+ *   combos    = array de frases SEO "servicio + geo"
  */
 export interface GeoMix {
   id: string
   brand_id: string
   geo: string
-  servicio_1: string | null
-  servicio_2: string | null
-  servicio_3: string | null
-  servicio_4: string | null
-  servicio_5: string | null
-  servicio_6: string | null
+  country: string | null
+  region: string | null
+  city: string | null
+  language: string | null
+  servicios: string[] | null
+  combos: string[] | null
+  lighting: string | null
+  color_mood: string | null
+  aesthetic: string | null
+  local_slang: string | null
+  avoid_slang: string | null
+  cultural_refs: string | null
+  active: boolean
 }
 
+/**
+ * ImagelabPreset — schema real (verificado 2026-03-28):
+ *   canal (no channel), sin preset_name
+ */
 export interface ImagelabPreset {
   id: string
-  preset_id: string
-  channel: string | null
+  brand_id: string | null
   canal: string | null
-  preset_name: string | null
+  preset_id: string
   realism_level: string | null
   film_look: string | null
   lens_preset: string | null
@@ -198,6 +189,16 @@ export interface ImagelabPreset {
   framing: string | null
   skin_detail: string | null
   imperfections: string | null
+  humidity_level: number | null
+  sweat_level: number | null
+  grain_level: number | null
+  lighting_style: string | null
+  color_grading: string | null
+  aspect_ratio: string | null
+  resolution: string | null
+  negative_prompt: string | null
+  extra_params: Record<string, unknown> | null
+  notes: string | null
 }
 
 export interface VoicelabParam {
@@ -219,6 +220,7 @@ export interface BlueprintSchema {
   type: string | null
   description: string | null
   labs_using: string[] | null
+  active: boolean
 }
 
 export interface PersonBlueprint {
@@ -235,6 +237,7 @@ export interface PersonBlueprint {
   imagelab_lens_preset: string | null
   imagelab_depth_of_field: string | null
   voicelab_voice_id: string | null
+  active: boolean
 }
 
 export interface LocationBlueprint {
@@ -249,6 +252,7 @@ export interface LocationBlueprint {
   visual_description: string | null
   materials: string | null
   color_palette: string | null
+  active: boolean
 }
 
 export interface BrandPalette {
@@ -269,8 +273,6 @@ export interface BrandTypography {
   usage: string | null
 }
 
-// ─── NEW v7 tables ────────────────────────────────────────────
-
 export interface BrandLanguage {
   id: string
   brand_id: string
@@ -289,7 +291,6 @@ export interface BrandService {
   idioma: string | null
   is_primary: boolean
   active: boolean
-  /** 'producto' | 'servicio' | 'ambos' */
   item_type: 'producto' | 'servicio' | 'ambos'
 }
 
@@ -302,48 +303,34 @@ export interface ChannelPromptRule {
   note: string | null
 }
 
-// ─── ProductBlueprint — full schema v7 ───────────────────────
-
-/**
- * Producto del catálogo NeuroneSCF (y futuros catálogos).
- * is_variant = false → visible en selector de apps.
- * is_variant = true  → talla alternativa, solo e-commerce.
- * b2b_only = true    → solo Portal Pro.
- */
 export interface ProductBlueprint {
   id: string
   brand_id: string
   schema_version: string | null
   sku: string | null
   name: string
-  // Catálogo
-  linea: string | null                  // Moisture | Restore | Styling | Scalp | Color_Rescue | Pro_Salon
-  line_family: string | null            // sub-familia dentro de la línea (Humit, Kerasin HB, etc.)
+  linea: string | null
+  line_family: string | null
   subcategory: string | null
   size: string | null
   barcode: string | null
-  is_variant: boolean                   // false = principal visible en selector
-  b2b_only: boolean                     // true = solo Portal Pro
+  is_variant: boolean
+  b2b_only: boolean
   shopify_visibility: 'public' | 'b2b_only' | 'hidden'
-  // Contenido
   description_en: string | null
   description_es: string | null
-  benefit_claims: string[] | null       // JSONB array
-  hair_type: string[] | null            // JSONB array
-  // Imágenes
-  image_filename: string | null         // estándar / fondo blanco
-  image_dark_filename: string | null    // campaña / fondo oscuro
+  benefit_claims: string[] | null
+  hair_type: string[] | null
+  image_filename: string | null
+  image_dark_filename: string | null
   dominant_hex: string | null
   packaging_style: string | null
   lifestyle_context: string | null
-  // Comercial
   price: number | null
   msrp: number | null
-  cross_sell: string[] | null           // JSONB array de product IDs
+  cross_sell: string[] | null
   related_skus: Array<{ sku: string; size: string; barcode?: string }> | null
-  // Compliance
   compliance_flags: { category_risk: string; notes: string } | null
-  // Legacy/extra
   category: string | null
   tagline: string | null
   description_short: string | null
@@ -357,7 +344,7 @@ export interface ProductBlueprint {
   active: boolean
 }
 
-// ─── BrandContext — assembled by fetchBrandContext ────────────
+// ─── BrandContext ─────────────────────────────────────────────
 
 export interface BrandContext {
   brand: Brand | null
@@ -375,13 +362,12 @@ export interface BrandContext {
   locationBlueprints: LocationBlueprint[]
   brandPalette: BrandPalette[]
   brandTypography: BrandTypography[]
-  // v7
   brandLanguages: BrandLanguage[]
   brandServices: BrandService[]
   channelPromptRules: ChannelPromptRule[]
 }
 
-// ─── CopyLab input/output types ──────────────────────────────
+// ─── CopyLab input/output ─────────────────────────────────────
 
 export interface CopyPromptInput {
   brandId: string
@@ -400,7 +386,6 @@ export interface CopyPromptInput {
   includeHashtags?: boolean
   includeEmojis?: boolean
   includeCta?: boolean
-  /** Producto seleccionado del catálogo — inyectado en extraContext */
   selectedProduct?: ProductBlueprint | null
 }
 
