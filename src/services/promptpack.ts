@@ -1,6 +1,9 @@
 /**
  * UNRLVL CopyLab — services/promptpack.ts
  * Orquestador de packs — conectado a Supabase + Claude.
+ * Updated: 2026-03-28d
+ *   · FIX: language pasado a generateCopyFromInput → buildCopyPrompt
+ *     → buildLanguageBlock inyecta instrucción de idioma en el prompt
  * Updated: 2026-03-28
  *   · NEW: selectedProductData — inyecta datos del SKU seleccionado en extraContext
  */
@@ -62,7 +65,6 @@ export interface RunCopyPackParams {
   outputFormat?:  CopyOutputFormat
   geo?:           string
   extraNotes?:    string
-  /** Producto seleccionado del catálogo — inyectado como contexto estructurado */
   selectedProductData?: ProductBlueprint | null
   signal?:        AbortSignal
 }
@@ -75,7 +77,6 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
 
   const results: CopyOutput[] = []
 
-  // Build product block once — reused in every job
   const productBlock = selectedProductData
     ? `\n--- DATOS DEL PRODUCTO ---\n${formatProductForPrompt(selectedProductData)}\n---\n`
     : ''
@@ -87,9 +88,10 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
     try {
       const { text, metadata } = await generateCopyFromInput(
         {
-          brandId: brand.id,
+          brandId:  brand.id,
           templateId,
           canalId,
+          language,                          // FIX: era undefined → buildLanguageBlock no aplicaba
           servicio: productContext || 'General',
           objetivo: `Generar ${job.label} — ${job.outputs} variante${job.outputs > 1 ? 's' : ''}`,
           extraContext: [
