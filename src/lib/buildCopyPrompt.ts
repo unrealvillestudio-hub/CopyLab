@@ -133,6 +133,9 @@ function assemblePrompt(p: AssembleParams): string {
 
   sections.push(buildBrandBlock(brand))
 
+  // IDIOMA — sección #2, prioridad absoluta antes de cualquier otro contexto
+  sections.push(buildLanguageBlock(input.language, ctx))
+
   if (canal?.block_text) {
     sections.push(`## CANAL: ${canal.id}\n${canal.block_text}`)
   }
@@ -167,6 +170,37 @@ function assemblePrompt(p: AssembleParams): string {
   sections.push(`## INSTRUCCIÓN\n${resolvedTemplate}`)
 
   return sections.join('\n\n---\n\n')
+}
+
+// ─── buildLanguageBlock — instrucción explícita de output ────
+// Mapa de códigos → etiqueta legible para Claude
+const LANGUAGE_LABELS: Record<string, string> = {
+  'ES':    'Español (neutro)',
+  'es-ES': 'Español de España',
+  'es-FL': 'Español — mercado Florida/Miami (es-FL)',
+  'es-PA': 'Español de Panamá',
+  'es-MX': 'Español de México',
+  'EN':    'English (neutral)',
+  'en-US': 'English — US market',
+  'en-FL': 'English — Florida market',
+  'PT':    'Português',
+  'FR':    'Français',
+}
+
+function buildLanguageBlock(language: string | undefined, ctx: BrandContext): string {
+  // Resolución: input.language → brand.language_primary → 'ES'
+  const lang = language
+    ?? ctx.brand?.language_primary
+    ?? 'ES'
+
+  const label = LANGUAGE_LABELS[lang] ?? lang
+
+  return [
+    `## IDIOMA DE OUTPUT`,
+    `Genera TODO el contenido exclusivamente en: **${label}**`,
+    `Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.`,
+    `No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.`,
+  ].join('\n')
 }
 
 // ─── buildBrandBlock ──────────────────────────────────────────
@@ -240,6 +274,7 @@ function buildVarMap(
     cta_url_base:          brand.cta_url_base        ?? '[CTA_URL_BASE]',
     market:                brand.market              ?? '',
     idioma:                brand.language_primary    ?? 'ES',
+    idioma_output:         input.language ?? brand.language_primary ?? 'ES',
     producto:              input.producto            ?? '',
     servicio:              input.servicio            ?? '',
     objetivo:              input.objetivo            ?? '',
