@@ -6,19 +6,25 @@
 //   · NEW: ProductBlueprint (full schema with linea, sku catalog fields)
 //   · BrandContext: added optional productBlueprints[]
 //   · CopyPromptInput: added optional selectedProduct
+// FIX 2026-03-28b — columnas verificadas contra schema real:
+//   · Brand: brand_id removido (PK es 'id'), brand_type → type,
+//             active removido (no existe), cta_ultrashort removido
+//   · OutputTemplate: output_type removido (no existe);
+//     id ES el identificador (e.g. 'YouTube_Ideas');
+//     añadidos name, category, variables, applies_to, platforms,
+//     word_count_min, word_count_max
 // ============================================================
 
 // ─── Core tables ──────────────────────────────────────────────
 
 export interface Brand {
-  id: string
-  brand_id: string
+  id: string           // PK canónico, e.g. 'NeuroneSCF'
   display_name: string
-  brand_type: string | null
+  type: string | null  // FIX: era brand_type — columna real es 'type'
   market: string | null
   language_primary: string | null
   status: string | null
-  active: boolean
+  // NOTE: 'active' no existe en brands — usar status === 'active'
 
   // Context & identity
   brand_context: string | null
@@ -35,11 +41,10 @@ export interface Brand {
   canales_activos: string | null
   formatos_activos: string | null
 
-  // CTAs (v7)
+  // CTAs (v7) — NOTE: cta_ultrashort no existe en schema
   cta_base: string | null
   cta_ab_testing: string | null
   cta_ads: string | null
-  cta_ultrashort: string | null
 
   // Legal (v7)
   disclaimer_base: string | null
@@ -108,10 +113,21 @@ export interface ComplianceRule {
   active: boolean
 }
 
+/**
+ * OutputTemplate — schema real Supabase:
+ *   id = identificador funcional, e.g. 'YouTube_Ideas', 'SMPC_full'
+ *   FIX: output_type no existe — usar id directamente
+ */
 export interface OutputTemplate {
-  id: string
-  output_type: string
+  id: string                              // FIX: era output_type — la PK text ES el identificador
+  name: string | null
+  category: string | null
   template_text: string
+  variables: Record<string, unknown> | null
+  applies_to: string[] | null
+  platforms: string[] | null
+  word_count_min: number | null
+  word_count_max: number | null
   active: boolean
 }
 
@@ -341,7 +357,7 @@ export interface ProductBlueprint {
   active: boolean
 }
 
-// ─── BrandContext — assembled by fetchBrandContext ─────────────
+// ─── BrandContext — assembled by fetchBrandContext ────────────
 
 export interface BrandContext {
   brand: Brand | null
@@ -365,7 +381,7 @@ export interface BrandContext {
   channelPromptRules: ChannelPromptRule[]
 }
 
-// ─── CopyLab input/output types ───────────────────────────────
+// ─── CopyLab input/output types ──────────────────────────────
 
 export interface CopyPromptInput {
   brandId: string
