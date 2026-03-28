@@ -48,19 +48,20 @@ function useBrandLanguages(brandId: string) {
   return { languages, loading }
 }
 
-function useBrandServices(brandId: string, idioma: string) {
+function useBrandServices(brandId: string) {
   const [services, setServices] = React.useState<BrandService[]>([])
   const [loading, setLoading] = React.useState(false)
   React.useEffect(() => {
     if (!brandId) return
     setLoading(true)
-    let path = `${SB_URL}/rest/v1/brand_services?brand_id=eq.${encodeURIComponent(brandId)}&active=eq.true&order=item_type.asc,is_primary.desc`
-    if (idioma) path += `&idioma=eq.${encodeURIComponent(idioma)}`
+    // No filtrar por idioma — los productos/servicios están disponibles en todos los idiomas.
+    // El idioma solo afecta la generación del copy, no qué productos se muestran.
+    const path = `${SB_URL}/rest/v1/brand_services?brand_id=eq.${encodeURIComponent(brandId)}&active=eq.true&order=item_type.asc,is_primary.desc`
     fetch(path, { headers: SB_HDR })
       .then(r => r.json())
       .then((data: BrandService[]) => { setServices(data); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [brandId, idioma])
+  }, [brandId])
   return { services, loading }
 }
 
@@ -137,7 +138,6 @@ export const CopyCustomizeModule = () => {
   const { languages } = useBrandLanguages(activeBrandId ?? '')
   const { services, loading: servicesLoading } = useBrandServices(
     activeBrandId ?? '',
-    activeLanguage ?? ''
   )
 
   // ─── Effects ──────────────────────────────────────────────────
