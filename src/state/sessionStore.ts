@@ -3,8 +3,11 @@
  * Store global de sesión compartido entre todos los módulos.
  * Customize es el punto de entrada — configura el contexto.
  * CopyPack genera. Tools refina.
+ * Updated: 2026-03-28d
+ *   · NEW: activeStep1, activeSelectedSku, activeCustomText
+ *     Movidos desde useState local de CopyCustomizeModule al store
+ *     para sobrevivir la navegación entre pestañas.
  */
-
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { CopyOutput, CopyLanguage, CopyTone, CopyOutputFormat } from '../core/types'
@@ -38,27 +41,29 @@ export interface SessionState {
   // ── Contexto de campaña — configurado en Customize ──
   activeBrandId:      string
   setActiveBrandId:   (id: string) => void
-
   activeLanguage:     CopyLanguage
   setActiveLanguage:  (lang: CopyLanguage) => void
-
   activePackId:       string
   setActivePackId:    (id: string) => void
-
   activeServicio:     string
   setActiveServicio:  (s: string) => void
-
   activeKeywords:     string
   setActiveKeywords:  (kw: string) => void
-
   activeTone:         CopyTone
   setActiveTone:      (tone: CopyTone) => void
-
   activeOutputFormat: CopyOutputFormat
   setActiveOutputFormat: (format: CopyOutputFormat) => void
-
   activeExtraContext: string
   setActiveExtraContext: (ctx: string) => void
+
+  // ── Selector de producto — persistido para sobrevivir navegación ──
+  // Antes eran useState local en CopyCustomizeModule (se perdían al navegar)
+  activeStep1:       string   // 'line:Moisture' | 'svc:uuid' | '__custom__' | ''
+  setActiveStep1:    (v: string) => void
+  activeSelectedSku: string   // SKU del producto específico seleccionado
+  setActiveSelectedSku: (v: string) => void
+  activeCustomText:  string   // texto libre cuando step1 === '__custom__'
+  setActiveCustomText: (v: string) => void
 
   // ── Opciones avanzadas de Customize ──
   customizeOptions:   CustomizeOptions
@@ -100,6 +105,14 @@ export const useSessionStore = create<SessionState>()(
 
       activeExtraContext:    '',
       setActiveExtraContext: (ctx) => set({ activeExtraContext: ctx }),
+
+      // Selector de producto — persistido
+      activeStep1:       '',
+      setActiveStep1:    (v) => set({ activeStep1: v }),
+      activeSelectedSku: '',
+      setActiveSelectedSku: (v) => set({ activeSelectedSku: v }),
+      activeCustomText:  '',
+      setActiveCustomText: (v) => set({ activeCustomText: v }),
 
       customizeOptions: DEFAULT_CUSTOMIZE_OPTIONS,
       setCustomizeOptions: (opts) =>
