@@ -402,4 +402,40 @@ export interface CopyPromptResult {
     humanizeApplied: boolean
     geomixApplied: boolean
   }
+// ── brand_goals ───────────────────────────────────────────────
+export interface BrandGoal {
+  id: string
+  brand_id: string | null
+  horizon: '6m' | '12m' | '24m'
+  category: string
+  goal: string
+  kpi: string | null
+  target: string | null
+  priority: 1 | 2 | 3
+  status: string | null
+  notes: string | null
+}
+
+// ── brand_personas ────────────────────────────────────────────
+export interface BrandPersona {
+  id: string
+  brand_id: string | null
+  persona_key: string
+  label: string
+  segment_type: 'b2c' | 'b2b' | 'both' | null
+  priority: 1 | 2 | 3
+  age_range: string | null
+  gender: string | null
+  location: string | null
+  pain_points: string[] | null
+  motivations: string[] | null
+  objections: string[] | null
+  channels: string[] | null
+  buying_trigger: string | null
+  tone_for_segment: string | null
+  copy_hooks: string[] | null
+  avoid: string[] | null
+  confidence: 1 | 2 | 3
+  active: boolean
+}
 }
