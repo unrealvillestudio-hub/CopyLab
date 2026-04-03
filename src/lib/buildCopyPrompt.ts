@@ -1,16 +1,12 @@
 // ============================================================
 // UNRLVL CopyLab — buildCopyPrompt.ts
 // SMPC: construye el prompt final a partir de BrandContext
-// Updated: 2026-03-28c — fixes audit completo:
-//   · canal.canal_id → canal.id (columna no existía)
-//   · canalName: canal.name ?? canal.id
-//   · buildGeomixBlock: servicio_1..6 → servicios[], combos[]
-// Updated: 2026-03-28b:
-//   · template.output_type → template.id
-//   · templateName: template.name ?? template.id
-// Updated: 2026-03-27 — v7 initial
+// Updated: 2026-04-03 — v7.1: brand_goals + brand_personas inyectados en el prompt
+//   · buildGoalsBlock: inyecta objetivos 6m/12m/24m como contexto estratégico
+//   · buildPersonasBlock: inyecta segmentos ICP (pain_points, motivations, copy_hooks)
+//   · Orden SMPC: Brand → Goals → Personas → Idioma → Canal → Humanize → GeoMix → Keywords → CTA → Compliance → Extra → Template
+// Updated: 2026-03-28c — fixes audit completo
 // ============================================================
-
 import {
   fetchBrandContext,
   resolveHumanize,
@@ -22,13 +18,14 @@ import {
   getComplianceRules,
   resolveGeoMix,
 } from './queries'
-
 import type {
   BrandContext,
   CopyPromptInput,
   CopyPromptResult,
   HumanizeProfile,
   GeoMix,
+  BrandGoal,
+  BrandPersona,
 } from './db/types'
 
 // ─── Temperatura por tipo de output ──────────────────────────
@@ -107,12 +104,13 @@ export async function buildCopyPrompt(input: CopyPromptInput): Promise<CopyPromp
       complianceRulesInjected: complianceRules.length,
       humanizeApplied:         !!humanize,
       geomixApplied:           !!geomix,
+      goalsInjected:           ctx.brandGoals?.length ?? 0,
+      personasInjected:        ctx.brandPersonas?.length ?? 0,
     },
   }
 }
 
-// ─── assemblePrompt ───────────────────────────────────────────
-
+// ─── assemblePrompt ────────────────────────────────────────────
 interface AssembleParams {
   ctx: BrandContext
   template: string
@@ -131,18 +129,34 @@ function assemblePrompt(p: AssembleParams): string {
   const brand = ctx.brand!
   const sections: string[] = []
 
+  // 1. Brand
   sections.push(buildBrandBlock(brand))
 
-  // IDIOMA — sección #2, prioridad absoluta antes de cualquier otro contexto
+  // 2. Goals — objetivos estratégicos (NUEVO)
+  if (ctx.brandGoals && ctx.brandGoals.length > 0) {
+    sections.push(buildGoalsBlock(ctx.brandGoals))
+  }
+
+  // 3. Personas / ICP — segmentos objetivo (NUEVO)
+  if (ctx.brandPersonas && ctx.brandPersonas.length > 0) {
+    sections.push(buildPersonasBlock(ctx.brandPersonas))
+  }
+
+  // 4. Idioma — prioridad absoluta antes de cualquier otro contexto
   sections.push(buildLanguageBlock(input.language, ctx))
 
+  // 5. Canal
   if (canal?.block_text) {
     sections.push(`## CANAL: ${canal.id}\n${canal.block_text}`)
   }
 
+  // 6. Humanize F2.5
   if (humanize) sections.push(buildHumanizeBlock(humanize))
-  if (geomix)   sections.push(buildGeomixBlock(geomix))
 
+  // 7. GeoMix
+  if (geomix) sections.push(buildGeomixBlock(geomix))
+
+  // 8. Keywords
   if (keywords.length > 0) {
     sections.push(
       `## KEYWORDS\nPrincipales: ${keywords.slice(0, 5).join(', ')}` +
@@ -150,8 +164,10 @@ function assemblePrompt(p: AssembleParams): string {
     )
   }
 
+  // 9. CTA
   if (cta) sections.push(`## CTA ACTIVO\n${cta}`)
 
+  // 10. Compliance
   if (complianceRules.length > 0) {
     sections.push(
       `## COMPLIANCE — REGLAS OBLIGATORIAS\n` +
@@ -159,10 +175,12 @@ function assemblePrompt(p: AssembleParams): string {
     )
   }
 
+  // 11. Notas extra
   if (input.extraNotes) {
     sections.push(`## CONTEXTO ADICIONAL\n${input.extraNotes}`)
   }
 
+  // 12. Template
   const resolvedTemplate = resolveTemplateVariables(
     template,
     buildVarMap(brand, cta, keywords, grupo3, input)
@@ -172,8 +190,86 @@ function assemblePrompt(p: AssembleParams): string {
   return sections.join('\n\n---\n\n')
 }
 
-// ─── buildLanguageBlock — instrucción explícita de output ────
-// Mapa de códigos → etiqueta legible para Claude
+// ─── buildGoalsBlock — objetivos estratégicos ─────────────────
+function buildGoalsBlock(goals: BrandGoal[]): string {
+  const HORIZON_LABEL: Record<string, string> = {
+    '6m':  '6 meses',
+    '12m': '12 meses (año 1)',
+    '24m': '24 meses (año 2)',
+  }
+
+  const lines = ['## OBJETIVOS ESTRATÉGICOS DE LA MARCA']
+  lines.push('Estos objetivos deben guiar el enfoque del copy — priorizar mensajes que acerquen al lector a estos resultados.')
+
+  // Agrupar por horizonte
+  const byHorizon = goals.reduce<Record<string, BrandGoal[]>>((acc, g) => {
+    const h = g.horizon ?? 'general'
+    ;(acc[h] = acc[h] ?? []).push(g)
+    return acc
+  }, {})
+
+  for (const [horizon, hGoals] of Object.entries(byHorizon)) {
+    const label = HORIZON_LABEL[horizon] ?? horizon
+    lines.push(`\n**Horizonte ${label}:**`)
+    for (const goal of hGoals.slice(0, 3)) { // máx 3 por horizonte
+      const kpiStr = goal.kpi && goal.target ? ` → KPI: ${goal.kpi} ${goal.target}` : ''
+      lines.push(`- [${goal.category?.toUpperCase() ?? 'GENERAL'}] ${goal.goal}${kpiStr}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
+// ─── buildPersonasBlock — segmentos ICP ──────────────────────
+function buildPersonasBlock(personas: BrandPersona[]): string {
+  const lines = ['## SEGMENTOS OBJETIVO (ICP)']
+  lines.push('Escribe para estas personas. Sus dolores, motivaciones y objeciones deben resonar en el copy.')
+
+  // Mostrar máx 3 personas por prioridad (B2C primero, luego B2B)
+  const sorted = [...personas].sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2))
+  const top = sorted.slice(0, 3)
+
+  for (const p of top) {
+    lines.push(`\n**${p.label}** (${p.segment_type?.toUpperCase() ?? 'B2C'})`)
+
+    if (p.age_range || p.gender || p.location) {
+      const demo = [p.age_range, p.gender, p.location].filter(Boolean).join(' · ')
+      lines.push(`  Perfil: ${demo}`)
+    }
+
+    if (p.pain_points && p.pain_points.length > 0) {
+      lines.push(`  Dolores: ${p.pain_points.slice(0, 2).join(' | ')}`)
+    }
+
+    if (p.motivations && p.motivations.length > 0) {
+      lines.push(`  Motivaciones: ${p.motivations.slice(0, 2).join(' | ')}`)
+    }
+
+    if (p.objections && p.objections.length > 0) {
+      lines.push(`  Objeciones a superar: ${p.objections.slice(0, 2).join(' | ')}`)
+    }
+
+    if (p.copy_hooks && p.copy_hooks.length > 0) {
+      lines.push(`  Hooks que convierten: ${p.copy_hooks.slice(0, 2).join(' | ')}`)
+    }
+
+    if (p.tone_for_segment) {
+      lines.push(`  Tono recomendado: ${p.tone_for_segment}`)
+    }
+
+    if (p.avoid && p.avoid.length > 0) {
+      lines.push(`  Evitar: ${p.avoid.slice(0, 2).join(' | ')}`)
+    }
+
+    if (p.buying_trigger) {
+      lines.push(`  Trigger de compra: ${p.buying_trigger}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
+// ─── buildLanguageBlock ───────────────────────────────────────
 const LANGUAGE_LABELS: Record<string, string> = {
   'ES':    'Español (neutro)',
   'es-ES': 'Español de España',
@@ -188,13 +284,8 @@ const LANGUAGE_LABELS: Record<string, string> = {
 }
 
 function buildLanguageBlock(language: string | undefined, ctx: BrandContext): string {
-  // Resolución: input.language → brand.language_primary → 'ES'
-  const lang = language
-    ?? ctx.brand?.language_primary
-    ?? 'ES'
-
+  const lang = language ?? ctx.brand?.language_primary ?? 'ES'
   const label = LANGUAGE_LABELS[lang] ?? lang
-
   return [
     `## IDIOMA DE OUTPUT`,
     `Genera TODO el contenido exclusivamente en: **${label}**`,
@@ -204,7 +295,6 @@ function buildLanguageBlock(language: string | undefined, ctx: BrandContext): st
 }
 
 // ─── buildBrandBlock ──────────────────────────────────────────
-
 function buildBrandBlock(brand: NonNullable<BrandContext['brand']>): string {
   const lines: string[] = [`## MARCA: ${brand.display_name}`]
   if (brand.brand_context)      lines.push(`Contexto: ${brand.brand_context}`)
@@ -221,7 +311,6 @@ function buildBrandBlock(brand: NonNullable<BrandContext['brand']>): string {
 }
 
 // ─── buildHumanizeBlock ───────────────────────────────────────
-
 function buildHumanizeBlock(h: HumanizeProfile): string {
   return [
     '## HUMANIZE F2.5 — VOZ AUTÉNTICA',
@@ -231,10 +320,8 @@ function buildHumanizeBlock(h: HumanizeProfile): string {
 }
 
 // ─── buildGeomixBlock — schema real: servicios[], combos[] ────
-
 function buildGeomixBlock(g: GeoMix): string {
   const lines = [`## GEOMIX — ${g.geo}`]
-
   if (g.servicios && g.servicios.length > 0) {
     lines.push(`Servicios en esta zona: ${g.servicios.join(', ')}`)
   }
@@ -245,12 +332,10 @@ function buildGeomixBlock(g: GeoMix): string {
   if (g.local_slang)    lines.push(`Lenguaje local: ${g.local_slang}`)
   if (g.cultural_refs)  lines.push(`Referencias culturales: ${g.cultural_refs}`)
   if (g.color_mood)     lines.push(`Color mood: ${g.color_mood}`)
-
   return lines.join('\n')
 }
 
 // ─── Variable resolution ──────────────────────────────────────
-
 function buildVarMap(
   brand: NonNullable<BrandContext['brand']>,
   cta: string,
@@ -297,14 +382,12 @@ function resolveTemplateVariables(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
-
 function ctaTypeForCanal(
   canalId: string
 ): keyof Omit<ReturnType<typeof getCta> extends string ? never : never, never> {
   const ADS    = ['META_ADS','META_FEED','META_STORY','META_REEL','TIKTOK_ADS','GOOGLE_SEARCH_(RSA)','GOOGLE_PMAX']
   const SEO    = ['BLOG','BLOG_HTML','WEB','WEB_HTML','LANDING_PAGE','LANDING_HTML']
   const STORY  = ['INSTAGRAM_ORGANICO','TIKTOK_ORGANICO']
-
   if (ADS.includes(canalId))   return 'cta_ads'   as any
   if (SEO.includes(canalId))   return 'cta_seo'   as any
   if (STORY.includes(canalId)) return 'cta_story' as any
