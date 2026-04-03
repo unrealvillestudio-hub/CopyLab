@@ -1,20 +1,10 @@
 // ============================================================
 // UNRLVL CopyLab — db/types.ts
-// Schema Supabase — Updated: 2026-03-28c (audit completo)
-// FIXES aplicados contra schema real verificado:
-//   · Brand: brand_id→id, brand_type→type, -active, -cta_ultrashort
-//   · OutputTemplate: -output_type; id ES el identifier; +name,category,etc.
-//   · CanalBlock: -canal_id; id ES el identifier; +name,platform,format,etc.
-//   · GeoMix: -servicio_1..6 → +servicios:string[], +combos:string[],
-//             +country,region,city,language,lighting,color_mood,
-//             +aesthetic,local_slang,avoid_slang,cultural_refs,active
-//   · ImagelabPreset: -channel,-preset_name; +humidity_level,sweat_level,
-//             grain_level,lighting_style,color_grading,aspect_ratio,
-//             resolution,negative_prompt,extra_params,notes
+// Schema Supabase — Updated: 2026-04-03 (brand_goals + brand_personas)
+// Updated: 2026-03-28c (audit completo)
 // ============================================================
 
 // ─── Core tables ──────────────────────────────────────────────
-
 export interface Brand {
   id: string
   display_name: string
@@ -344,8 +334,44 @@ export interface ProductBlueprint {
   active: boolean
 }
 
-// ─── BrandContext ─────────────────────────────────────────────
+// ─── brand_goals ──────────────────────────────────────────────
+export interface BrandGoal {
+  id: string
+  brand_id: string | null
+  horizon: '6m' | '12m' | '24m'
+  category: string
+  goal: string
+  kpi: string | null
+  target: string | null
+  priority: 1 | 2 | 3
+  status: string | null
+  notes: string | null
+}
 
+// ─── brand_personas ───────────────────────────────────────────
+export interface BrandPersona {
+  id: string
+  brand_id: string | null
+  persona_key: string
+  label: string
+  segment_type: 'b2c' | 'b2b' | 'both' | null
+  priority: 1 | 2 | 3
+  age_range: string | null
+  gender: string | null
+  location: string | null
+  pain_points: string[] | null
+  motivations: string[] | null
+  objections: string[] | null
+  channels: string[] | null
+  buying_trigger: string | null
+  tone_for_segment: string | null
+  copy_hooks: string[] | null
+  avoid: string[] | null
+  confidence: 1 | 2 | 3
+  active: boolean
+}
+
+// ─── BrandContext ─────────────────────────────────────────────
 export interface BrandContext {
   brand: Brand | null
   humanize: HumanizeProfile[]
@@ -365,10 +391,11 @@ export interface BrandContext {
   brandLanguages: BrandLanguage[]
   brandServices: BrandService[]
   channelPromptRules: ChannelPromptRule[]
+  brandGoals: BrandGoal[]
+  brandPersonas: BrandPersona[]
 }
 
 // ─── CopyLab input/output ─────────────────────────────────────
-
 export interface CopyPromptInput {
   brandId: string
   templateId: string
@@ -401,41 +428,7 @@ export interface CopyPromptResult {
     complianceRulesInjected: number
     humanizeApplied: boolean
     geomixApplied: boolean
+    goalsInjected: number
+    personasInjected: number
   }
-// ── brand_goals ───────────────────────────────────────────────
-export interface BrandGoal {
-  id: string
-  brand_id: string | null
-  horizon: '6m' | '12m' | '24m'
-  category: string
-  goal: string
-  kpi: string | null
-  target: string | null
-  priority: 1 | 2 | 3
-  status: string | null
-  notes: string | null
-}
-
-// ── brand_personas ────────────────────────────────────────────
-export interface BrandPersona {
-  id: string
-  brand_id: string | null
-  persona_key: string
-  label: string
-  segment_type: 'b2c' | 'b2b' | 'both' | null
-  priority: 1 | 2 | 3
-  age_range: string | null
-  gender: string | null
-  location: string | null
-  pain_points: string[] | null
-  motivations: string[] | null
-  objections: string[] | null
-  channels: string[] | null
-  buying_trigger: string | null
-  tone_for_segment: string | null
-  copy_hooks: string[] | null
-  avoid: string[] | null
-  confidence: 1 | 2 | 3
-  active: boolean
-}
 }
