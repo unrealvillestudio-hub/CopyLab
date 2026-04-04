@@ -1,10 +1,28 @@
 // src/lib/queries.ts
 // CopyLab v8.0 — 100% Supabase-driven
 // Modificación 2026-04-04: query #24 brand_copy_profiles → SMPC Layer 13
+// Fix: sbFetch definido inline — no importa de supabaseClient.ts
 
-import { sbFetch } from './supabaseClient';
+// ─── Supabase fetch helper (inline — no depende de @supabase/supabase-js) ────
+const SUPABASE_URL      = (import.meta as any).env.VITE_SUPABASE_URL      as string;
+const SUPABASE_ANON_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY as string;
 
-// ─── Brand select fields ────────────────────────────────────────────────────
+async function sbFetch(path: string): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: {
+      apikey:         SUPABASE_ANON_KEY,
+      Authorization:  `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`[sbFetch] ${path} → ${res.status}: ${err}`);
+  }
+  return res.json();
+}
+
+// ─── Brand select fields ─────────────────────────────────────────────────────
 const BRAND_SELECT_FIELDS = [
   'id', 'display_name', 'type', 'market', 'language_primary', 'status',
   'brand_context', 'brand_story', 'icp', 'key_messages', 'competitors',
@@ -24,7 +42,7 @@ const BRAND_SELECT_FIELDS = [
   'voicelab_format_default', 'voicelab_script_style', 'voicelab_compliance_rules',
 ];
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function mergeHumanizeProfiles(defaults: any[], brand: any[]) {
   const key = (p: any) => `${p.medium}::${p.parameter}`;
@@ -41,7 +59,7 @@ function mergeImagelabPresets(global: any[], brand: any[]) {
   return Array.from(map.values());
 }
 
-// ─── fetchBrandContext ───────────────────────────────────────────────────────
+// ─── fetchBrandContext ────────────────────────────────────────────────────────
 
 export async function fetchBrandContext(
   brandId: string,
@@ -50,7 +68,6 @@ export async function fetchBrandContext(
 ) {
   const enc = encodeURIComponent;
 
-  // Build keywords path with optional filters
   let keywordsPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
   if (language) keywordsPath += `&language=eq.${enc(language)}`;
   if (servicio) keywordsPath += `&servicio=eq.${enc(servicio)}`;
@@ -79,7 +96,7 @@ export async function fetchBrandContext(
     channelPromptRules,
     brandGoals,
     brandPersonas,
-    copyProfileResult,                           // ← NEW query #24
+    copyProfileResult,
   ] = await Promise.all([
     sbFetch(`brands?id=eq.${enc(brandId)}&select=${BRAND_SELECT_FIELDS.join(',')}&limit=1`),
     sbFetch('humanize_profiles?brand_id=eq.DEFAULT&select=*'),
@@ -104,31 +121,31 @@ export async function fetchBrandContext(
     sbFetch('channel_prompt_rules?select=*&order=channel_id.asc'),
     sbFetch(`brand_goals?brand_id=eq.${enc(brandId)}&status=eq.active&order=priority.asc,horizon.asc&select=*`),
     sbFetch(`brand_personas?brand_id=eq.${enc(brandId)}&active=eq.true&order=priority.asc&select=*`),
-    sbFetch(`brand_copy_profiles?brand_id=eq.${enc(brandId)}&active=eq.true&limit=1&select=id,brand_id,voice_tone_primary,voice_tone_secondary,voice_writing_style,voice_pov,style_sentence_length,style_emoji_usage,style_hashtag_style,style_cta_style,style_hooks,style_signature_phrases,style_avoid_phrases,compliance_rules,compliance_prohibited_words,compliance_required_disclaimers`), // ← NEW
+    sbFetch(`brand_copy_profiles?brand_id=eq.${enc(brandId)}&active=eq.true&limit=1&select=id,brand_id,voice_tone_primary,voice_tone_secondary,voice_writing_style,voice_pov,style_sentence_length,style_emoji_usage,style_hashtag_style,style_cta_style,style_hooks,style_signature_phrases,style_avoid_phrases,compliance_rules,compliance_prohibited_words,compliance_required_disclaimers`),
   ]);
 
   return {
-    brand:              (brandsResult as any[])[0] ?? null,
-    humanize:           mergeHumanizeProfiles(humanizeDEFAULT as any[], humanizeBrand as any[]),
-    outputTemplates:    outputTemplates as any[],
-    canalBlocks:        canalBlocks as any[],
-    keywords:           keywords as any[],
-    ctas:               ctas as any[],
-    compliance:         [...(complianceDEFAULT as any[]), ...(complianceBrand as any[])],
-    geomix:             geomix as any[],
-    imagelabPresets:    mergeImagelabPresets(imagelabPresetsGlobal as any[], imagelabPresetsBrand as any[]),
-    blueprintSchemas:   blueprintSchemas as any[],
-    personBlueprints:   personBlueprints as any[],
-    locationBlueprints: locationBlueprints as any[],
-    brandPalette:       brandPalette as any[],
-    brandTypography:    brandTypography as any[],
-    voicelabParams:     voicelabParams as any[],
-    brandLanguages:     brandLanguages as any[],
-    brandServices:      brandServices as any[],
-    channelPromptRules: channelPromptRules as any[],
-    brandGoals:         brandGoals as any[],
-    brandPersonas:      brandPersonas as any[],
-    copyProfile:        (copyProfileResult as any[])[0] ?? null,  // ← NEW
+    brand:              brandsResult[0] ?? null,
+    humanize:           mergeHumanizeProfiles(humanizeDEFAULT, humanizeBrand),
+    outputTemplates,
+    canalBlocks,
+    keywords,
+    ctas,
+    compliance:         [...complianceDEFAULT, ...complianceBrand],
+    geomix,
+    imagelabPresets:    mergeImagelabPresets(imagelabPresetsGlobal, imagelabPresetsBrand),
+    blueprintSchemas,
+    personBlueprints,
+    locationBlueprints,
+    brandPalette,
+    brandTypography,
+    voicelabParams,
+    brandLanguages,
+    brandServices,
+    channelPromptRules,
+    brandGoals,
+    brandPersonas,
+    copyProfile:        copyProfileResult[0] ?? null,
   };
 }
 
