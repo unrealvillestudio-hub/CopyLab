@@ -1,9 +1,9 @@
 // src/lib/queries.ts
 // CopyLab v8.0 — 100% Supabase-driven
 // Modificación 2026-04-04: query #24 brand_copy_profiles → SMPC Layer 13
-// Fix: sbFetch definido inline — no importa de supabaseClient.ts
+// Fix v2: fetchProductCatalog reincorporado + sbFetch inline (no depende de supabaseClient.ts)
 
-// ─── Supabase fetch helper (inline — no depende de @supabase/supabase-js) ────
+// ─── Supabase fetch helper (inline — no importa de supabaseClient.ts) ─────────
 const SUPABASE_URL      = (import.meta as any).env.VITE_SUPABASE_URL      as string;
 const SUPABASE_ANON_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY as string;
 
@@ -22,7 +22,7 @@ async function sbFetch(path: string): Promise<any[]> {
   return res.json();
 }
 
-// ─── Brand select fields ─────────────────────────────────────────────────────
+// ─── Brand select fields ──────────────────────────────────────────────────────
 const BRAND_SELECT_FIELDS = [
   'id', 'display_name', 'type', 'market', 'language_primary', 'status',
   'brand_context', 'brand_story', 'icp', 'key_messages', 'competitors',
@@ -42,7 +42,7 @@ const BRAND_SELECT_FIELDS = [
   'voicelab_format_default', 'voicelab_script_style', 'voicelab_compliance_rules',
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function mergeHumanizeProfiles(defaults: any[], brand: any[]) {
   const key = (p: any) => `${p.medium}::${p.parameter}`;
@@ -150,3 +150,17 @@ export async function fetchBrandContext(
 }
 
 export type BrandContext = Awaited<ReturnType<typeof fetchBrandContext>>;
+
+// ─── fetchProductCatalog ──────────────────────────────────────────────────────
+// Usado por CopyCustomizeModule.tsx para el selector de producto/SKU
+
+export async function fetchProductCatalog(brandId: string): Promise<any[]> {
+  const enc = encodeURIComponent;
+  return sbFetch(
+    `product_blueprints?brand_id=eq.${enc(brandId)}&is_variant=eq.false&active=eq.true` +
+    `&order=linea.asc,name.asc` +
+    `&select=id,brand_id,sku,name,linea,line_family,subcategory,size,b2b_only,` +
+    `shopify_visibility,image_filename,description_en,description_es,` +
+    `benefit_claims,hair_type,dominant_hex`,
+  );
+}
