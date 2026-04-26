@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/execute.ts": {
+      "maxDuration": 60
+    },
+    "api/claude.ts": {
+      "maxDuration": 60
+    }
+  }
+}
