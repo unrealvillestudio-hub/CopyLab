@@ -252,7 +252,7 @@ async function callClaude(system: string, user: string, temperature: number): Pr
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1500,
+      max_tokens: 800, // 800 keeps Claude response under 15s (Supabase Deno has 30s outbound fetch timeout)
       temperature,
       system,
       messages: [{ role: 'user', content: user }],
