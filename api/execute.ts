@@ -1,3 +1,7 @@
+// Vercel function timeout — required for Claude API calls (~10-15s)
+// Without this, Vercel kills the function at the default (10s Hobby / 15s Pro default)
+export const maxDuration = 60;
+
 /**
  * CopyLab – POST /api/execute  v8.1
  * Context Cache integration: if previousOutputs.brandContext exists,
