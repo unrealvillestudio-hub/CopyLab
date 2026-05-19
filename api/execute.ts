@@ -24,8 +24,8 @@ export const maxDuration = 300;
 declare const process: { env: Record<string, string | undefined> };
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const SB_URL  = () => process.env.VITE_SUPABASE_URL ?? '';
-const SB_KEY  = () => process.env.VITE_SUPABASE_ANON_KEY ?? '';
+const SB_URL  = () => process.env.SUPABASE_URL ?? '';
+const SB_KEY  = () => process.env.SUPABASE_ANON_KEY ?? '';
 const ANT_KEY = () => process.env.ANTHROPIC_API_KEY ?? '';
 
 interface ExecuteRequest {
@@ -311,6 +311,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{ system: string; user:
       seo_meta_pack: 'Title (máx 60) + Meta description (máx 155) + H1 + 3 títulos alternativos.',
       video_podcast_script: 'Intro hook (15s) + Bloques HOST/GUEST + Outro + CTA.',
       landing_page_pack: 'Hero headline + Subheadline + 3 beneficios + SP placeholder + CTA.',
+      product_description_pack: 'Título SEO del producto (máx 70 chars) + Descripción corta (2-3 líneas, beneficio principal) + Descripción larga (3-4 párrafos: pain point, mecanismo, beneficio sentido, social proof) + Bullet points de características (5-7 bullets, orientados al beneficio no a la feature) + CTA de ficha.',
     };
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;
   }
