@@ -1,4 +1,4 @@
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * CopyLab – POST /api/execute  v9.1
