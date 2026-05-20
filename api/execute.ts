@@ -1,29 +1,16 @@
 export const maxDuration = 300;
 
 /**
- * CopyLab – POST /api/execute  v9.3
+ * CopyLab – POST /api/execute  v9.4
+ *
+ * v9.4 (2026-05-20) — Dual mode async/sync:
+ * - async: true  → INSERT copylab_jobs + fire-and-forget /api/process-job → { job_id, status: 'queued' }
+ * - async: false → flujo sync v9.3 intacto (browser path, sin cambios)
  *
  * v9.3 (2026-05-20) — UNRLVL Content Pipeline v2.6 sync:
- * - L1.5 VOICE_GENOME_INJECTION: carga brand_voice_genome activo y lo inyecta entre WRITE y H+AIFE
- *   Respeta reglas críticas: trademark_word MAX 1x, syntactic_signatures MAX 1x, voice ≠ vector
- * - layers_applied en respuesta: array de layer_codes que se ejecutaron → alimenta PipelineLayerTracker UI
- * - creative_seed en respuesta: vector/tension/aggro usados → permite no_repeat en próximas piezas
- * - product_description_b2c: content_type correcto para kit descriptions (Restore Therapy Plus, etc.)
- * - output_templates: soporte para template_text cuando el content_type tiene template activo en DB
- * - Versión del voice genome declarada en metadata de respuesta
- *
- * v9.2 (2026-05-20):
- * - VITE_SUPABASE_URL → SUPABASE_URL / VITE_SUPABASE_ANON_KEY → SUPABASE_ANON_KEY
- *   (VITE_ prefix no disponible en serverless — era el root cause del timeout)
- * - product_description_pack añadido
- *
- * v9.1 fix (2026-05-19):
- * - brandContext mapping corregido (bc.humanize_profiles[0], bc.brand_personas, etc.)
- * - 24 queries → ~50% menos tiempo cuando cache está disponible
- *
- * v9.0 (2026-05-18):
- * - Creative Engine: L14 CREATIVE_VECTOR, L15 TENSION_ARCHITECTURE, L16 AGGRO_DIAL
- * - email_sequence handling: sequence awareness, SEQUENCE RULE, previous_mechanism check
+ * - L1.5 VOICE_GENOME_INJECTION
+ * - layers_applied, creative_seed en respuesta
+ * - product_description_b2c, output_templates
  *
  * Env vars: ANTHROPIC_API_KEY · SUPABASE_URL · SUPABASE_ANON_KEY
  */
@@ -34,6 +21,41 @@ const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const SB_URL  = () => process.env.SUPABASE_URL ?? '';
 const SB_KEY  = () => process.env.SUPABASE_ANON_KEY ?? '';
 const ANT_KEY = () => process.env.ANTHROPIC_API_KEY ?? '';
+
+// ── ASYNC MODE HELPERS v9.4 ───────────────────────────────────────────────
+
+async function createJob(input: unknown): Promise<string> {
+  const b = input as any;
+  const res = await fetch(`${SB_URL()}/rest/v1/copylab_jobs`, {
+    method:  'POST',
+    headers: {
+      apikey:         SB_KEY(),
+      Authorization:  `Bearer ${SB_KEY()}`,
+      'Content-Type': 'application/json',
+      Prefer:         'return=representation',
+    },
+    body: JSON.stringify({
+      brand_id: b.brandId ?? 'unknown',
+      pack:     b.params?.pack ?? 'unknown',
+      input,
+      status:   'queued',
+    }),
+  });
+  if (!res.ok) throw new Error(`createJob ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data[0].id : data.id;
+}
+
+function fireProcessor(jobId: string): void {
+  // Job 2 — fire-and-forget. Sin await, sin timeout.
+  fetch('https://unrlvl-copy-lab.vercel.app/api/process-job', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ job_id: jobId }),
+  }).catch(() => {});
+}
+
+// ── INTERFACES ────────────────────────────────────────────────────────────
 
 interface ExecuteRequest {
   brandId: string | null;
@@ -100,8 +122,6 @@ async function sbArray<T>(path: string): Promise<T[]> {
 }
 
 // ── PIPELINE LAYER RESOLVER ────────────────────────────────────────────────
-// Determina qué layers aplican para un content_type desde la DB (pipeline_skills v2.6)
-// Alimenta el layer_tracker en la respuesta → UI PipelineLayerTracker lo consume
 
 async function resolveAppliedLayers(contentType: string): Promise<string[]> {
   const layers = await sbArray<{ layer_code: string; layer_order: number }>(
@@ -155,12 +175,6 @@ async function selectCreativeCombo(
 }
 
 // ── L1.5 VOICE GENOME INJECTION ───────────────────────────────────────────
-// Carga brand_voice_genome activo e inyecta el ADN ejecutable entre WRITE y H+AIFE
-// Reglas críticas del SKILL v2.6:
-//   - trademark_word MAX 1x por pieza
-//   - syntactic_signatures MAX 1x cada una
-//   - Voice modula TONO; vector (L14) define ÁNGULO
-//   - ES y EN desde origen — nunca traducir, reescribir con el mismo genoma
 
 async function buildVoiceGenomeLayer(brandId: string, idioma: string): Promise<{
   layer: string | null;
@@ -276,23 +290,19 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   const canal   = req.params.canal ?? 'instagram';
   const meta    = req.meta ?? {};
 
-  // Determinar content_type canónico para creative engine y layer resolver
-  const isEmailSeq = pack.startsWith('email_sequence');
-  const isProductB2C = pack === 'product_description_pack';
-  const sequenceSubType = meta.sequence_type ?? 'generic';
-  const position = meta.position ?? 1;
+  const isEmailSeq       = pack.startsWith('email_sequence');
+  const isProductB2C     = pack === 'product_description_pack';
+  const sequenceSubType  = meta.sequence_type ?? 'generic';
+  const position         = meta.position ?? 1;
 
   const creativeContentType = isEmailSeq
     ? `${sequenceSubType}_${position}`
-    : isProductB2C
-    ? 'product_description_b2c'
+    : isProductB2C ? 'product_description_b2c'
     : pack.replace('_pack', '');
 
-  // content_type para pipeline_skills lookup (usa los tipos canónicos del SKILL v2.6)
   const pipelineContentType = isEmailSeq
     ? 'email_sequence'
-    : isProductB2C
-    ? 'product_description_b2c'
+    : isProductB2C ? 'product_description_b2c'
     : pack.replace('_pack', '');
 
   const aggroByType: Record<string, number> = {
@@ -302,10 +312,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   };
   const aggroLevel = aggroByType[creativeContentType] ?? aggroByType[pipelineContentType] ?? 2;
 
-  // ── Brand context: cache dispatcher first, then direct Supabase ──
-  // Priority 1: cache dispatcher already injected brandContext in previousOutputs
-  // Priority 2: auto-fetch from brand-cache API (self-dispatch — avoids 24 Supabase queries)
-  // Priority 3: fallback to direct Supabase queries (24 parallel calls)
   let bc = (req.previousOutputs as any)?.brandContext;
 
   if (!bc) {
@@ -315,11 +321,10 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
       );
       if (cacheRes.ok) {
         bc = await cacheRes.json();
-        console.log(`[CopyLab v9.3] brand-cache hit for ${brandId} — skipping 24 queries`);
+        console.log(`[CopyLab v9.4] brand-cache hit for ${brandId} — skipping 24 queries`);
       }
     } catch {
-      // Silent fallback to direct Supabase queries below
-      console.log(`[CopyLab v9.3] brand-cache miss for ${brandId} — falling back to direct queries`);
+      console.log(`[CopyLab v9.4] brand-cache miss for ${brandId} — falling back to direct queries`);
     }
   }
 
@@ -358,14 +363,12 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   const market    = brand?.market ?? '';
   const brandName = brand?.display_name ?? brand?.name ?? brandId;
 
-  // ── Queries paralelas: Creative Engine + Voice Genome + Layer Resolver + Template ──
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
   const [creativeCombo, voiceGenomeResult, appliedLayers, outputTemplate] = await Promise.all([
     selectCreativeCombo(creativeContentType, aggroLevel, previousVectorId),
     buildVoiceGenomeLayer(brandId, idioma),
     resolveAppliedLayers(pipelineContentType),
-    // Fetch template_text si existe para este content_type
     sb<OutputTemplate>(
       `output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`
     ),
@@ -374,7 +377,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
 
-  // ── Construir layers del prompt ──
   const layers: string[] = [];
 
   layers.push(`MARCA: ${brandName} | MERCADO: ${market} | IDIOMA: ${idioma}`);
@@ -397,7 +399,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   layers.push(`IDIOMA OBLIGATORIO: ${idioma}. Genera desde el origen en este idioma. NUNCA traduzcas de otro idioma.`);
   layers.push(`CANAL: ${canal.toUpperCase()}. Adapta longitud, tono y formato al canal.`);
 
-  // L1 base (humanize + copy profile como base de escritura)
   if (hum) {
     layers.push(`VOZ DE MARCA — BASE (L1):\nTono: ${hum.tone ?? ''}\nPersonalidad: ${hum.personality ?? ''}\nReglas de autenticidad: ${hum.authenticity_rules ?? ''}\nAnti-patterns: ${Array.isArray(hum.anti_patterns) ? (hum.anti_patterns as string[]).join(', ') : hum.anti_patterns ?? ''}`);
   }
@@ -413,7 +414,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     if (parts.length) layers.push(`PERFIL DE COPY BP_COPY_1.0:\n${parts.join('\n')}`);
   }
 
-  // ── L1.5 VOICE GENOME (nuevo en v9.3/SKILL v2.6) ──
   if (voiceLayer) {
     layers.push(voiceLayer);
   }
@@ -427,7 +427,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
 
   if (comp?.rule_text) layers.push(`COMPLIANCE — REGLAS OBLIGATORIAS:\n${comp.rule_text}`);
 
-  // Template structure si existe en DB (content_type específico)
   if (outputTemplate?.template_text) {
     layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${outputTemplate.template_text}`);
   }
@@ -442,7 +441,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     layers.push(`OUTPUTS ANTERIORES:\n${prevEntries.map(([l, o]) => `[${l.toUpperCase()}]: ${String(o).slice(0, 300)}`).join('\n')}`);
   }
 
-  // ── Email sequence context ──
   if (isEmailSeq && seqContext) {
     const seqLayers: string[] = [];
     seqLayers.push(`SEQUENCE TYPE: ${sequenceSubType} | POSITION: ${position} | LANGUAGE: ${idioma}`);
@@ -457,14 +455,12 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     layers.push(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
   }
 
-  // ── Creative Engine L14/L15/L16 ──
   if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
   if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
-  const system = `Eres CopyLab v9.3, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
+  const system = `Eres CopyLab v9.4, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
 
-  // ── User instruction: por pack ──
   let userInstruction: string;
   if (isEmailSeq) {
     userInstruction = `Genera la pieza de email sequence:\n\nFORMATO OBLIGATORIO:\n---SUBJECT---\n[subject — máx 50 chars]\n\n---PREVIEW---\n[preview text — máx 90 chars]\n\n---BODY---\n[body completo. Variables Klaviyo: {{ person.first_name }}, {{ item.product_title }}, {{ item.image_url }}, {{ item.price }}. Sin markdown. Sin links directos.]\n\n---CTA---\n[texto del botón — máx 6 palabras — orientado al resultado]\n---END---\n\nGenera ahora. Sin preámbulos.`;
@@ -478,7 +474,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
       video_podcast_script: 'Intro hook (15s) + Bloques HOST/GUEST + Outro + CTA.',
       landing_page_pack: 'Hero headline + Subheadline + 3 beneficios + SP placeholder + CTA.',
       product_description_pack: (() => {
-        // Si el producto es un kit, inyectar contexto de composición y valor
         const isKit = (req.previousOutputs as any)?.product?.product_type === 'kit';
         const product = (req.previousOutputs as any)?.product ?? null;
         let kitBlock = '';
@@ -554,41 +549,59 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST')
     return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: CORS });
 
-  let body: ExecuteRequest;
+  let body: ExecuteRequest & { async?: boolean };
   try { body = await req.json(); }
   catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers: CORS }); }
 
   if (!body.brandId)
     return new Response(JSON.stringify({ error: 'brandId is required' }), { status: 400, headers: CORS });
 
+  // ── ASYNC MODE v9.4 ───────────────────────────────────────────────────
+  if (body.async === true) {
+    try {
+      const { async: _, ...cleanInput } = body;
+      const jobId = await createJob(cleanInput);
+      fireProcessor(jobId);
+      console.log(`[CopyLab v9.4] async job created: ${jobId}`);
+      return new Response(
+        JSON.stringify({ job_id: jobId, status: 'queued' }),
+        { status: 202, headers: CORS }
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[CopyLab v9.4] createJob error:', msg);
+      return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
+    }
+  }
+
+  // ── SYNC MODE (v9.3 intacto) ──────────────────────────────────────────
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
     const cache    = !!(body.previousOutputs as any)?.brandContext;
-    console.log(`[CopyLab v9.3] brand=${body.brandId} pack=${pack} pos=${position} cache=${cache}`);
+    console.log(`[CopyLab v9.4] sync brand=${body.brandId} pack=${pack} pos=${position} cache=${cache}`);
 
     const { system, user, temperature, layers_applied, voice_id, voice_version, creative_seed } =
       await buildPrompt(body);
 
     const output = await callClaude(system, user, temperature);
 
-    // Respuesta enriquecida con metadata para UI tracker y next-piece context
     return new Response(
       JSON.stringify({
         output,
         status: 'ok',
         meta: {
           pipeline_version: '2.6',
-          layers_applied,           // → PipelineLayerTracker UI: qué layers corrieron
+          layers_applied,
           voice_genome: voice_id ? { voice_id, version: voice_version } : null,
-          creative_seed,            // → frontend: guardar en previousOutputs.last_creative_vector
+          creative_seed,
         },
       }),
       { status: 200, headers: CORS }
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[CopyLab /api/execute v9.3]', msg);
+    console.error('[CopyLab /api/execute v9.4]', msg);
     return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
   }
 }
