@@ -175,6 +175,16 @@ export const CopyCustomizeModule = () => {
       .catch(() => setCatalogLoading(false))
   }, [])
 
+  // Brand-cache pre-warm — paso 1.5
+  // fetchBrandContext en background cuando cambia la marca.
+  // Cache frío → compila brand_context_cache (25 queries en background, invisible al usuario)
+  // Cache caliente → retorna en 3 queries
+  // Fire-and-forget — no bloquea la UI
+  React.useEffect(() => {
+    if (!activeBrandId) return
+    fetchBrandContext(activeBrandId).catch(() => {})
+  }, [activeBrandId])
+
   React.useEffect(() => {
     setActiveStep1('')
     setActiveSelectedSku('')
