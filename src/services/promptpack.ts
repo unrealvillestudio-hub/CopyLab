@@ -1,6 +1,11 @@
 /**
  * UNRLVL CopyLab — services/promptpack.ts
  * Orquestador de packs — conectado a Supabase + Claude.
+ * Updated: 2026-05-20
+ *   · FIX: prompt_Email_Sequence y prompt_Product_Description_B2C añadidos a PROMPT_TYPE_MAP
+ *     El fallback .replace(/^prompt_/, '') eliminaba el prefijo que forma parte del ID canónico
+ *     en Supabase para templates v2.5/v2.6. Todos los jobs de email_sequence fallaban con
+ *     "OutputTemplate 'Email_Sequence' no encontrado".
  * Updated: 2026-03-28d
  *   · FIX: language pasado a generateCopyFromInput → buildCopyPrompt
  *     → buildLanguageBlock inyecta instrucción de idioma en el prompt
@@ -13,23 +18,41 @@ import type { CopyOutput, CopyPackSpec, CopyTone, CopyLanguage, CopyOutputFormat
 import type { ProductBlueprint } from '../lib/db/types'
 import { formatProductForPrompt } from '../modules/customize/CopyCustomizeModule'
 
+// ─── Mapeo prompt_type → template ID en Supabase ─────────────────────────────
+//
+// REGLA: los templates "clásicos" (pre-v2.5) tienen IDs sin prefijo en DB.
+//   prompt_SMPC_full → 'SMPC_full'
+//
+// Los templates v2.5/v2.6 conservan el prefijo prompt_ en su ID de DB:
+//   prompt_Email_Sequence         → 'prompt_Email_Sequence'
+//   prompt_Product_Description_B2C → 'prompt_Product_Description_B2C'
+//
+// Si un prompt_type NO está en este mapa, el fallback es .replace(/^prompt_/, '').
+// Eso funciona para templates clásicos pero ROMPE los v2.5/v2.6.
+// Siempre añadir aquí cualquier template cuyo DB id tenga el prefijo prompt_.
+
 const PROMPT_TYPE_MAP: Record<string, string> = {
-  prompt_SMPC_full:           'SMPC_full',
-  prompt_Ads_FullPro:         'Ads_FullPro',
-  prompt_SEO_FullPro:         'SEO_FullPro',
-  prompt_SEO_Brand_FullPro:   'SEO_Brand_FullPro',
-  prompt_YouTube_Ideas:       'YouTube_Ideas',
-  prompt_YouTube_Titles:      'YouTube_Titles',
-  prompt_YouTube_ScriptShort: 'YouTube_ScriptShort',
-  prompt_YouTube_ScriptLong:  'YouTube_ScriptLong',
-  prompt_YouTube_Descriptions:'YouTube_Descriptions',
-  prompt_YouTube_Thumbnails:  'YouTube_Thumbnails',
-  prompt_Reels_Script:        'Reels_Script',
-  prompt_Stories_Pack:        'Stories_Pack',
-  prompt_Email_Campaign:      'Email_Campaign',
-  prompt_Landing_Page_Full:   'Landing_Page_Full',
-  prompt_Brand_Kit_Copy:      'Brand_Kit_Copy',
-  prompt_Product_Description: 'Product_Description',
+  // ── Clásicos (DB id sin prefijo) ──────────────────────────────────────────
+  prompt_SMPC_full:            'SMPC_full',
+  prompt_Ads_FullPro:          'Ads_FullPro',
+  prompt_SEO_FullPro:          'SEO_FullPro',
+  prompt_SEO_Brand_FullPro:    'SEO_Brand_FullPro',
+  prompt_YouTube_Ideas:        'YouTube_Ideas',
+  prompt_YouTube_Titles:       'YouTube_Titles',
+  prompt_YouTube_ScriptShort:  'YouTube_ScriptShort',
+  prompt_YouTube_ScriptLong:   'YouTube_ScriptLong',
+  prompt_YouTube_Descriptions: 'YouTube_Descriptions',
+  prompt_YouTube_Thumbnails:   'YouTube_Thumbnails',
+  prompt_Reels_Script:         'Reels_Script',
+  prompt_Stories_Pack:         'Stories_Pack',
+  prompt_Email_Campaign:       'Email_Campaign',
+  prompt_Landing_Page_Full:    'Landing_Page_Full',
+  prompt_Brand_Kit_Copy:       'Brand_Kit_Copy',
+  prompt_Product_Description:  'Product_Description',
+
+  // ── v2.5/v2.6 (DB id CON prefijo — no aplicar fallback) ──────────────────
+  prompt_Email_Sequence:           'prompt_Email_Sequence',          // FIX 2026-05-20
+  prompt_Product_Description_B2C:  'prompt_Product_Description_B2C', // preventivo
 }
 
 const CHANNEL_MAP: Record<string, string> = {
@@ -91,7 +114,7 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
           brandId:  brand.id,
           templateId,
           canalId,
-          language,                          // FIX: era undefined → buildLanguageBlock no aplicaba
+          language,
           servicio: productContext || 'General',
           objetivo: `Generar ${job.label} — ${job.outputs} variante${job.outputs > 1 ? 's' : ''}`,
           extraContext: [
