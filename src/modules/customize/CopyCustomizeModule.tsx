@@ -1,9 +1,8 @@
 /**
  * UNRLVL CopyLab — CopyCustomizeModule.tsx
+ * Updated: 2026-05-20 — Kits & Rituales: grupo dedicado en el selector de producto
  * Updated: 2026-03-28d
  *   · FIX: step1, selectedSku, customText movidos al sessionStore
- *     → ya no se pierden al navegar entre pestañas
- *     → solo se limpian en reset explícito o cambio de marca/idioma
  * Updated: 2026-03-28b — Rediseño selector producto
  *   · Paso 1: Colección (líneas del catálogo) ó Servicio ó Texto libre
  *   · Paso 2: Producto específico (filtrado por colección seleccionada)
@@ -61,15 +60,23 @@ function useBrandServices(brandId: string) {
 // ─── Helpers ───────────────────────────────────────────────────
 
 export function formatProductForPrompt(p: ProductBlueprint): string {
-  return [
+  const lines = [
     `PRODUCTO: ${p.name}`,
     p.sku ? `SKU: ${p.sku}` : '',
     p.linea ? `Colección: ${p.linea}` : '',
     p.size ? `Presentación: ${p.size}` : '',
     p.description_es ?? p.description_en ?? '',
-    p.benefit_claims?.length ? `Claims: ${p.benefit_claims.join(' · ')}` : '',
-    p.hair_type?.length ? `Tipo de cabello: ${p.hair_type.join(', ')}` : '',
-  ].filter(Boolean).join('\n')
+    Array.isArray(p.benefit_claims) && p.benefit_claims.length ? `Claims: ${p.benefit_claims.join(' · ')}` : '',
+    Array.isArray(p.hair_type) && p.hair_type.length ? `Tipo de cabello: ${p.hair_type.join(', ')}` : '',
+  ]
+  // Kit: añadir composición y valor
+  if ((p as any).product_type === 'kit' && Array.isArray((p as any).kit_components) && (p as any).kit_components.length) {
+    const comps = (p as any).kit_components.map((c: any) => `${c.name} ${c.size} ($${c.price_individual})`).join(' + ')
+    lines.push(`Composición del kit: ${comps}`)
+    lines.push(`Valor individual: $${(p as any).kit_value_individual} | Precio kit: $${(p as any).price} | Ahorro: $${(p as any).kit_savings_amount} (${(p as any).kit_savings_pct}% OFF)`)
+    if (p.tagline) lines.push(`Tagline: "${p.tagline}"`)
+  }
+  return lines.filter(Boolean).join('\n')
 }
 
 const LINE_LABELS: Record<string, string> = {
@@ -96,13 +103,12 @@ export const CopyCustomizeModule = () => {
     activeExtraContext, setActiveExtraContext,
     customizeOptions, setCustomizeOptions,
     clearSessionOutputs,
-    // FIX: selector de producto desde store (antes useState local → se perdía al navegar)
     activeStep1, setActiveStep1,
     activeSelectedSku, setActiveSelectedSku,
     activeCustomText, setActiveCustomText,
   } = useSessionStore()
 
-  // ─── Catálogo (no necesita persistir — se recarga al montar) ──
+  // ─── Catálogo ──────────────────────────────────────────────────
   const [catalog, setCatalog] = React.useState<ProductBlueprint[]>([])
   const [catalogLoading, setCatalogLoading] = React.useState(false)
 
@@ -110,9 +116,20 @@ export const CopyCustomizeModule = () => {
   const languages = useBrandLanguages(activeBrandId ?? '')
   const { services, loading: servicesLoading } = useBrandServices(activeBrandId ?? '')
 
-  // Líneas disponibles en este catálogo de marca
+  // Kits — grupo dedicado, separados de líneas de productos individuales
+  const kits = React.useMemo(
+    () => catalog.filter(p => (p as any).product_type === 'kit'),
+    [catalog]
+  )
+
+  // Líneas disponibles — SIN kits (los kits tienen su propio grupo)
   const lines = React.useMemo(
-    () => [...new Set(catalog.map(p => p.linea).filter(Boolean) as string[])].sort(),
+    () => [...new Set(
+      catalog
+        .filter(p => (p as any).product_type !== 'kit')
+        .map(p => p.linea)
+        .filter(Boolean) as string[]
+    )].sort(),
     [catalog]
   )
 
@@ -123,7 +140,7 @@ export const CopyCustomizeModule = () => {
 
   const productsInLine = React.useMemo(
     () => activeStep1.startsWith('line:')
-      ? catalog.filter(p => p.linea === activeStep1.replace('line:', ''))
+      ? catalog.filter(p => p.linea === activeStep1.replace('line:', '') && (p as any).product_type !== 'kit')
       : [],
     [activeStep1, catalog]
   )
@@ -138,7 +155,6 @@ export const CopyCustomizeModule = () => {
     if (!activePackId) setActivePackId(Object.keys(COPY_PACKS)[0])
   }, [])
 
-  // Cuando cambia la marca: resetear selector y recargar catálogo
   React.useEffect(() => {
     setActiveStep1('')
     setActiveSelectedSku('')
@@ -151,7 +167,6 @@ export const CopyCustomizeModule = () => {
       .catch(() => setCatalogLoading(false))
   }, [activeBrandId])
 
-  // Recargar catálogo al montar (el catálogo no persiste, solo el estado del selector)
   React.useEffect(() => {
     if (!activeBrandId) return
     setCatalogLoading(true)
@@ -160,7 +175,6 @@ export const CopyCustomizeModule = () => {
       .catch(() => setCatalogLoading(false))
   }, [])
 
-  // Cuando cambia idioma: resetear selector de producto/servicio
   React.useEffect(() => {
     setActiveStep1('')
     setActiveSelectedSku('')
@@ -170,6 +184,12 @@ export const CopyCustomizeModule = () => {
   React.useEffect(() => {
     if (activeStep1 === '__custom__') {
       setActiveServicio(activeCustomText)
+      return
+    }
+    // Kit seleccionado directamente
+    if (activeStep1.startsWith('kit:')) {
+      const kit = catalog.find(p => p.sku === activeStep1.replace('kit:', ''))
+      setActiveServicio(kit?.name ?? '')
       return
     }
     if (activeStep1.startsWith('svc:')) {
@@ -199,11 +219,21 @@ export const CopyCustomizeModule = () => {
     }
   }, [activeSelectedSku, catalog])
 
+  // Inyectar datos del kit en extraContext cuando se elige directamente
+  React.useEffect(() => {
+    if (!activeStep1.startsWith('kit:')) return
+    const kit = catalog.find(p => p.sku === activeStep1.replace('kit:', ''))
+    if (kit && !activeExtraContext) {
+      setActiveExtraContext(formatProductForPrompt(kit))
+    }
+  }, [activeStep1, catalog])
+
   // ─── Handlers ──────────────────────────────────────────────────
   const handleStep1Change = (value: string) => {
     setActiveStep1(value)
     setActiveSelectedSku('')
     if (value !== '__custom__') setActiveCustomText('')
+    setActiveExtraContext('')
   }
 
   const handleReset = () => {
@@ -212,11 +242,14 @@ export const CopyCustomizeModule = () => {
     setActiveStep1('')
     setActiveSelectedSku('')
     setActiveCustomText('')
-    setActiveExtraContext('')   // FIX: extraContext no se limpiaba en reset ni tras F5
+    setActiveExtraContext('')
   }
 
   const isReady = !!activeBrandId && !!activeServicio.trim()
   const selectedProduct = catalog.find(p => p.sku === activeSelectedSku) ?? null
+  const selectedKit = activeStep1.startsWith('kit:')
+    ? (kits.find(k => k.sku === activeStep1.replace('kit:', '')) ?? null)
+    : null
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -295,10 +328,10 @@ export const CopyCustomizeModule = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-          {/* PASO 1 — Colección o Servicio */}
+          {/* PASO 1 — Kit, Colección o Servicio */}
           <div className="space-y-2">
             <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider flex items-center gap-1">
-              <Layers className="w-3 h-3" /> Colección / Servicio
+              <Layers className="w-3 h-3" /> Kit / Colección / Servicio
             </label>
             {catalogLoading || servicesLoading ? (
               <div className="w-full bg-uv-card border border-uv-border rounded-lg px-3 py-2 text-sm flex items-center gap-2 text-uv-text-muted">
@@ -314,6 +347,16 @@ export const CopyCustomizeModule = () => {
                 )}
               >
                 <option value="">— Elige —</option>
+
+                {kits.length > 0 && (
+                  <optgroup label="🎁 Rituales & Kits">
+                    {kits.map(kit => (
+                      <option key={(kit as any).sku ?? kit.id} value={`kit:${(kit as any).sku}`}>
+                        {kit.name}{(kit as any).kit_savings_pct ? ` · ${(kit as any).kit_savings_pct}% OFF` : ''}{` · $${(kit as any).price}`}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
 
                 {lines.length > 0 && (
                   <optgroup label="📦 Colecciones">
@@ -342,7 +385,7 @@ export const CopyCustomizeModule = () => {
             )}
           </div>
 
-          {/* PASO 2 — Producto específico */}
+          {/* PASO 2 — Producto específico (solo para líneas, no kits ni servicios) */}
           <div className="space-y-2">
             <label className="text-xs font-mono text-uv-text-muted uppercase tracking-wider flex items-center gap-1">
               <Tag className="w-3 h-3" /> Producto
@@ -356,14 +399,14 @@ export const CopyCustomizeModule = () => {
               >
                 <option value="">— Copy general de colección —</option>
                 {productsInLine.map(p => (
-                  <option key={p.id} value={p.sku ?? p.id}>
-                    {p.name}{p.size ? ` · ${p.size}` : ''}{p.b2b_only ? ' · PRO' : ''}
+                  <option key={p.id} value={(p as any).sku ?? p.id}>
+                    {p.name}{(p as any).size ? ` · ${(p as any).size}` : ''}{(p as any).b2b_only ? ' · PRO' : ''}
                   </option>
                 ))}
               </select>
             ) : (
               <div className="w-full bg-uv-card/40 border border-uv-border/50 rounded-lg px-3 py-2 text-sm text-uv-text-muted italic">
-                {activeStep1 ? 'No aplica' : 'Elige una colección primero'}
+                {activeStep1.startsWith('kit:') ? '✓ Kit seleccionado' : activeStep1 ? 'No aplica' : 'Elige una colección primero'}
               </div>
             )}
           </div>
@@ -384,17 +427,54 @@ export const CopyCustomizeModule = () => {
           />
         )}
 
-        {/* Preview del producto seleccionado */}
+        {/* Preview del kit seleccionado */}
+        {selectedKit && (
+          <div className="bg-uv-card border border-accent/20 rounded-lg p-3 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-accent">{selectedKit.name}</span>
+              <span className="text-[10px] text-uv-text-muted font-mono">{(selectedKit as any).sku}</span>
+              {(selectedKit as any).kit_savings_pct && (
+                <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] font-bold rounded">
+                  {(selectedKit as any).kit_savings_pct}% OFF
+                </span>
+              )}
+            </div>
+            {selectedKit.description_es && (
+              <p className="text-xs text-uv-text-muted line-clamp-2">{selectedKit.description_es}</p>
+            )}
+            {Array.isArray((selectedKit as any).kit_components) && (selectedKit as any).kit_components.length > 0 && (
+              <div className="space-y-0.5">
+                {((selectedKit as any).kit_components as any[]).map((c, i) => (
+                  <div key={i} className="flex justify-between text-[10px] text-uv-text-muted font-mono">
+                    <span>{c.name} {c.size}</span>
+                    <span>${c.price_individual}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between text-[11px] font-bold border-t border-uv-border pt-1 mt-1">
+                  <span className="text-uv-text">Este ritual</span>
+                  <span className="text-accent">${(selectedKit as any).price}</span>
+                </div>
+                {(selectedKit as any).kit_savings_amount && (
+                  <p className="text-[10px] text-emerald-400 text-right">
+                    Ahorras ${(selectedKit as any).kit_savings_amount} vs compra individual
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Preview del producto individual seleccionado */}
         {selectedProduct && (
           <div className="bg-uv-card border border-accent/20 rounded-lg p-3 space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-accent">{selectedProduct.name}</span>
-              {selectedProduct.sku && <span className="text-[10px] text-uv-text-muted font-mono">{selectedProduct.sku}</span>}
+              {(selectedProduct as any).sku && <span className="text-[10px] text-uv-text-muted font-mono">{(selectedProduct as any).sku}</span>}
             </div>
             {selectedProduct.description_es && (
               <p className="text-xs text-uv-text-muted line-clamp-2">{selectedProduct.description_es}</p>
             )}
-            {selectedProduct.benefit_claims?.length ? (
+            {Array.isArray(selectedProduct.benefit_claims) && selectedProduct.benefit_claims.length ? (
               <p className="text-xs text-uv-text-muted">
                 {selectedProduct.benefit_claims.slice(0, 3).join(' · ')}
               </p>
