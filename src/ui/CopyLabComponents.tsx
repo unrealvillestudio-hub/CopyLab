@@ -15,7 +15,19 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '../lib/supabaseClient'
+
+const SB_URL = (import.meta as any).env.VITE_SUPABASE_URL as string
+const SB_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY as string
+
+async function sbGet<T>(path: string): Promise<T[]> {
+  try {
+    const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    })
+    if (!res.ok) return []
+    return res.json()
+  } catch { return [] }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TIPOS
@@ -66,13 +78,9 @@ export function DbStatusBadge() {
     setStatus('connecting')
     const t0 = performance.now()
     try {
-      const { error } = await supabase
-        .from('brands')
-        .select('id')
-        .limit(1)
-        .maybeSingle()
+      const data = await sbGet<any>('brands?select=id&limit=1')
       const ms = Math.round(performance.now() - t0)
-      if (error && error.code !== 'PGRST116') {
+      if (data === null) {
         setStatus('error')
         setLatencyMs(null)
       } else {
@@ -193,14 +201,11 @@ export function PipelineLayerTracker({
   useEffect(() => {
     async function fetchLayers() {
       setLoading(true)
-      const { data, error } = await supabase
-        .from('pipeline_skills')
-        .select('id, layer_order, layer_name, layer_code, applies_to, active, version')
-        .contains('applies_to', [contentType])
-        .eq('active', true)
-        .order('layer_order', { ascending: true })
-
-      if (!error && data) setLayers(data)
+      const enc = encodeURIComponent
+      const data = await sbGet<PipelineLayer>(
+        `pipeline_skills?applies_to=cs.${enc(JSON.stringify([contentType]))}&active=eq.true&select=id,layer_order,layer_name,layer_code,applies_to,active,version&order=layer_order.asc`
+      )
+      setLayers(data)
       setLoading(false)
     }
     if (contentType) fetchLayers()
@@ -471,14 +476,10 @@ export function BrandSelector({ value, onChange, disabled = false }: BrandSelect
 
   useEffect(() => {
     async function fetchBrands() {
-      const { data, error } = await supabase
-        .from('brands')
-        .select('id, display_name, status, type')
-        .eq('status', 'active')
-        .neq('type', 'system')
-        .order('display_name')
-
-      if (!error && data) setBrands(data)
+      const data = await sbGet<Brand>(
+        'brands?status=eq.active&type=neq.system&select=id,display_name,status,type&order=display_name.asc'
+      )
+      setBrands(data)
       setLoading(false)
     }
     fetchBrands()
@@ -521,18 +522,13 @@ export function TemplateSelector({
   useEffect(() => {
     async function fetchTemplates() {
       setLoading(true)
-      let query = supabase
-        .from('output_templates')
-        .select('id, name, category, applies_to, active, version')
-        .eq('active', true)
-        .order('name')
-
-      if (filterContentType) {
-        query = query.contains('applies_to', [filterContentType])
-      }
-
-      const { data, error } = await query
-      if (!error && data) setTemplates(data)
+      const enc = encodeURIComponent
+      const base = 'output_templates?active=eq.true&select=id,name,category,applies_to,active,version&order=name.asc'
+      const path = filterContentType
+        ? `${base}&applies_to=cs.${enc(JSON.stringify([filterContentType]))}`
+        : base
+      const data = await sbGet<OutputTemplate>(path)
+      setTemplates(data)
       setLoading(false)
     }
     fetchTemplates()
