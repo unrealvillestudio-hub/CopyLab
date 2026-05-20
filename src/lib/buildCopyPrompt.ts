@@ -31,6 +31,16 @@ const TEMPERATURE_BY_TEMPLATE: Record<string, number> = {
 };
 const DEFAULT_TEMPERATURE = 0.9;
 
+// ─── Defensive array helper ──────────────────────────────────────────────────
+// Supabase JSONB fields tipados como string[] pueden llegar como string literal.
+// Este helper normaliza: null→[], string→[string], array→array.
+function ensureArray(val: any): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') return [val];
+  return [];
+}
+
 // ─── Language labels ─────────────────────────────────────────────────────────
 const LANGUAGE_LABELS: Record<string, string> = {
   ES:       'Español (neutro)',
@@ -204,19 +214,19 @@ function buildCopyProfileLayer(profile: any): string {
   if (profile.style_emoji_usage)     lines.push(`USO DE EMOJIS: ${profile.style_emoji_usage}`);
   if (profile.style_cta_style)       lines.push(`ESTILO DE CTA: ${profile.style_cta_style}`);
 
-  const hooks: string[] = profile.style_hooks ?? [];
+  const hooks       = ensureArray(profile.style_hooks);
   if (hooks.length)                  lines.push(`HOOKS RECOMENDADOS: ${hooks.join(' | ')}`);
 
-  const signatures: string[] = profile.style_signature_phrases ?? [];
+  const signatures  = ensureArray(profile.style_signature_phrases);
   if (signatures.length)             lines.push(`FRASES FIRMA: "${signatures.join('" | "')}"`);
 
-  const avoid: string[] = profile.style_avoid_phrases ?? [];
+  const avoid       = ensureArray(profile.style_avoid_phrases);
   if (avoid.length)                  lines.push(`FRASES A EVITAR: ${avoid.join(', ')}`);
 
-  const prohibited: string[] = profile.compliance_prohibited_words ?? [];
+  const prohibited  = ensureArray(profile.compliance_prohibited_words);
   if (prohibited.length)             lines.push(`PALABRAS PROHIBIDAS: ${prohibited.join(', ')}`);
 
-  const disclaimers: string[] = profile.compliance_required_disclaimers ?? [];
+  const disclaimers = ensureArray(profile.compliance_required_disclaimers);
   if (disclaimers.length)            lines.push(`DISCLAIMERS REQUERIDOS: ${disclaimers.join(' | ')}`);
 
   if (profile.compliance_rules)      lines.push(`COMPLIANCE ADICIONAL: ${profile.compliance_rules}`);
@@ -241,7 +251,7 @@ function buildVoiceGenomeLayer(genome: any, idioma: string): string {
   if (genome.identity_anchors)
     lines.push(`IDENTITY ANCHORS (autoridad que puede invocar):\n${genome.identity_anchors}`);
 
-  if (sig.signature_words?.length) {
+  if (Array.isArray(sig.signature_words) && sig.signature_words.length) {
     lines.push(
       `LEXICÓN FIRMADO:\n` +
       `- Palabras firmadas (1-3 por pieza MAX, donde encajen): ${sig.signature_words.join(', ')}\n` +
@@ -250,13 +260,13 @@ function buildVoiceGenomeLayer(genome: any, idioma: string): string {
     );
   }
 
-  if (genome.lexicon_forbidden?.length)
+  if (Array.isArray(genome.lexicon_forbidden) && genome.lexicon_forbidden.length)
     lines.push(`LÉXICO PROHIBIDO: ${genome.lexicon_forbidden.join(', ')}`);
 
   if (syn.emphatic_triplication || syn.structures?.length || syn.rhythm) {
     const synParts: string[] = [];
     if (syn.emphatic_triplication) synParts.push(`Triplicación enfática — MAX 1x por pieza`);
-    if (syn.structures?.length)    synParts.push(`Estructuras firmadas (MAX 1x cada una): ${syn.structures.join(' | ')}`);
+    if (Array.isArray(syn.structures) && syn.structures.length)    synParts.push(`Estructuras firmadas (MAX 1x cada una): ${syn.structures.join(' | ')}`);
     if (syn.rhythm)                synParts.push(`Ritmo: ${syn.rhythm}`);
     lines.push(`FIRMAS SINTÁCTICAS:\n${synParts.join('\n')}`);
   }
@@ -274,7 +284,7 @@ function buildVoiceGenomeLayer(genome: any, idioma: string): string {
   if (genome.emotional_register)
     lines.push(`REGISTRO EMOCIONAL: ${genome.emotional_register}`);
 
-  if (genome.prohibited_registers?.length)
+  if (Array.isArray(genome.prohibited_registers) && genome.prohibited_registers.length)
     lines.push(`REGISTROS PROHIBIDOS: ${genome.prohibited_registers.join(', ')}`);
 
   lines.push(`REGLA CRÍTICA: recursos firmados son FIRMA, no FÓRMULA — úsalos solo donde encajan naturalmente. Voice modula el TONO; el vector creativo define el ÁNGULO.`);
