@@ -62,12 +62,131 @@ function mergeImagelabPresets(global: any[], brand: any[]) {
 
 // ─── fetchBrandContext ────────────────────────────────────────────────────────
 
+// ─── brand_context_cache — Cache-first fetchBrandContext ─────────────────────
+//
+// Flujo:
+//   1. Consultar brand_context_cache WHERE brand_id = X AND is_stale = false
+//   2a. Cache HIT  → retornar datos del cache + keywords/CTAs dinámicos (3 queries total)
+//   2b. Cache MISS → full fetch (25 queries) + write cache en background (no bloquea)
+//
+// Invalidación: triggers automáticos en Postgres marcan is_stale=true
+// cuando cualquier tabla fuente cambia. Sin TTL — los datos son válidos hasta
+// que algo los cambia.
+
+async function writeBrandCache(
+  brandId: string,
+  ctx: any,
+  compileMs: number,
+): Promise<void> {
+  const SUPABASE_URL      = (import.meta as any).env.VITE_SUPABASE_URL      as string;
+  const SUPABASE_ANON_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY as string;
+
+  const payload = {
+    p_brand_id:         brandId,
+    p_brand_data:       ctx.brand,
+    p_copy_profile:     ctx.copyProfile,
+    p_humanize:         ctx.humanize,
+    p_compliance:       ctx.compliance,
+    p_goals:            ctx.brandGoals,
+    p_personas:         ctx.brandPersonas,
+    p_geomix:           ctx.geomix,
+    p_voice_genome:     ctx.voiceGenome,
+    p_services:         ctx.brandServices,
+    p_languages:        ctx.brandLanguages,
+    p_output_templates: ctx.outputTemplates,
+    p_canal_blocks:     ctx.canalBlocks,
+    p_channel_rules:    ctx.channelPromptRules,
+    p_psycho_presets:   (ctx as any).psychoPresets ?? null,
+    p_compile_ms:       compileMs,
+  };
+
+  try {
+    // Usar RPC (SECURITY DEFINER) para escribir con privilegios elevados desde el browser
+    await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_brand_cache`, {
+      method: 'POST',
+      headers: {
+        apikey:         SUPABASE_ANON_KEY,
+        Authorization:  `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Silencioso — el cache es opcional, no crítico
+  }
+}
+
+async function buildContextFromCache(
+  cached: any,
+  keywords: any[],
+  ctas: any[],
+): Promise<any> {
+  return {
+    brand:              cached.brand_data,
+    humanize:           cached.humanize        ?? [],
+    outputTemplates:    cached.output_templates ?? [],
+    canalBlocks:        cached.canal_blocks     ?? [],
+    keywords,
+    ctas,
+    compliance:         cached.compliance       ?? [],
+    geomix:             cached.geomix           ?? [],
+    imagelabPresets:    [],   // no cacheado — pocas veces usado en copy
+    blueprintSchemas:   [],
+    personBlueprints:   [],
+    locationBlueprints: [],
+    brandPalette:       [],
+    brandTypography:    [],
+    voicelabParams:     [],
+    brandLanguages:     cached.languages        ?? [],
+    brandServices:      cached.services         ?? [],
+    channelPromptRules: cached.channel_rules    ?? [],
+    brandGoals:         cached.goals            ?? [],
+    brandPersonas:      cached.personas         ?? [],
+    copyProfile:        cached.copy_profile     ?? null,
+    voiceGenome:        cached.voice_genome     ?? null,
+    psychoPresets:      cached.psycho_presets   ?? [],
+    _source: 'cache',
+  };
+}
+
 export async function fetchBrandContext(
   brandId: string,
   language?: string,
   servicio?: string,
 ) {
   const enc = encodeURIComponent;
+
+  // ── Cache-first ───────────────────────────────────────────────────────────
+  // Intentar servir desde brand_context_cache si existe y no está stale
+  try {
+    const cacheRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/brand_context_cache?brand_id=eq.${enc(brandId)}&is_stale=eq.false&limit=1`,
+      {
+        headers: {
+          apikey:        SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+      }
+    );
+    if (cacheRes.ok) {
+      const cached = await cacheRes.json();
+      if (cached.length > 0) {
+        // Cache HIT — solo keywords y CTAs dinámicos
+        let kwPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
+        if (language) kwPath += `&language=eq.${enc(language)}`;
+        if (servicio) kwPath += `&servicio=eq.${enc(servicio)}`;
+        const [keywords, ctas] = await Promise.all([
+          sbFetch(kwPath),
+          sbFetch(`ctas?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
+        ]);
+        return buildContextFromCache(cached[0], keywords, ctas);
+      }
+    }
+  } catch {
+    // Cache no disponible — continúa con full fetch
+  }
+  // ── Cache MISS o stale → full fetch ───────────────────────────────────────
+  const _t0 = Date.now();
 
   let keywordsPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
   if (language) keywordsPath += `&language=eq.${enc(language)}`;
@@ -129,7 +248,7 @@ export async function fetchBrandContext(
     sbFetch(`brand_voice_genome?brand_id=eq.${enc(brandId)}&active=eq.true&order=version.desc&limit=1`),
   ]);
 
-  return {
+  const _ctx = {
     brand:              brandsResult[0] ?? null,
     humanize:           mergeHumanizeProfiles(humanizeDEFAULT, humanizeBrand),
     outputTemplates,
@@ -153,6 +272,12 @@ export async function fetchBrandContext(
     copyProfile:        copyProfileResult[0] ?? null,
     voiceGenome:        voiceGenomeResult[0] ?? null,  // ← L1.5: null si no existe para esta marca
   };
+
+  // Write cache en background (no bloquea la generación)
+  writeBrandCache(brandId, _ctx, Date.now() - _t0).catch(() => {});
+
+  return _ctx;
+
 }
 
 export type BrandContext = Awaited<ReturnType<typeof fetchBrandContext>>;
