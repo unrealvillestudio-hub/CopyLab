@@ -203,7 +203,7 @@ export function PipelineLayerTracker({
       setLoading(true)
       const enc = encodeURIComponent
       const data = await sbGet<PipelineLayer>(
-        `pipeline_skills?applies_to=cs.${enc(JSON.stringify([contentType]))}&active=eq.true&select=id,layer_order,layer_name,layer_code,applies_to,active,version&order=layer_order.asc`
+        `pipeline_skills?applies_to=cs.${enc('{' + contentType + '}')}&active=eq.true&select=id,layer_order,layer_name,layer_code,applies_to,active,version&order=layer_order.asc`
       )
       setLayers(data)
       setLoading(false)
@@ -525,7 +525,7 @@ export function TemplateSelector({
       const enc = encodeURIComponent
       const base = 'output_templates?active=eq.true&select=id,name,category,applies_to,active,version&order=name.asc'
       const path = filterContentType
-        ? `${base}&applies_to=cs.${enc(JSON.stringify([filterContentType]))}`
+        ? `${base}&applies_to=cs.${enc('{' + filterContentType + '}')}`
         : base
       const data = await sbGet<OutputTemplate>(path)
       setTemplates(data)
