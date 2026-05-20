@@ -164,9 +164,10 @@ export async function fetchProductCatalog(brandId: string): Promise<any[]> {
   const enc = encodeURIComponent;
   return sbFetch(
     `product_blueprints?brand_id=eq.${enc(brandId)}&is_variant=eq.false&active=eq.true` +
-    `&order=linea.asc,name.asc` +
+    `&order=product_type.asc,linea.asc,name.asc` +
     `&select=id,brand_id,sku,name,linea,line_family,subcategory,size,b2b_only,` +
     `shopify_visibility,image_filename,description_en,description_es,` +
-    `benefit_claims,hair_type,dominant_hex`,
+    `benefit_claims,hair_type,dominant_hex,tagline,` +
+    `product_type,kit_components,kit_value_individual,kit_savings_amount,kit_savings_pct`,
   );
 }

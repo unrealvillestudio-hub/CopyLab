@@ -477,7 +477,19 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
       seo_meta_pack: 'Title (máx 60) + Meta description (máx 155) + H1 + 3 títulos alternativos.',
       video_podcast_script: 'Intro hook (15s) + Bloques HOST/GUEST + Outro + CTA.',
       landing_page_pack: 'Hero headline + Subheadline + 3 beneficios + SP placeholder + CTA.',
-      product_description_pack: 'Título SEO del producto (máx 70 chars) + Descripción corta (2-3 líneas, beneficio principal) + Descripción larga (3-4 párrafos: pain point → mecanismo → beneficio sentido → social proof) + Bullet points de características (5-7 bullets, beneficio no feature) + Bloque HOW_TO_USE separado (orden + frecuencia + cantidad por paso + qué pasa si se salta) + CTA de ficha.',
+      product_description_pack: (() => {
+        // Si el producto es un kit, inyectar contexto de composición y valor
+        const isKit = (req.previousOutputs as any)?.product?.product_type === 'kit';
+        const product = (req.previousOutputs as any)?.product ?? null;
+        let kitBlock = '';
+        if (isKit && product) {
+          const components = (product.kit_components ?? [])
+            .map((c: any) => `  - ${c.name} ${c.size} ($${c.price_individual}) · rol: ${c.role}`)
+            .join('\n');
+          kitBlock = `\n\nKIT COMPOSITION:\nComponentes: \n${components}\nValor individual: $${product.kit_value_individual} | Precio kit: $${product.price} | Ahorro: $${product.kit_savings_amount} (${product.kit_savings_pct}% OFF)\nTagline: "${product.tagline}"`;
+        }
+        return `Título SEO del producto (máx 70 chars) + Descripción corta (2-3 líneas, beneficio principal del ${isKit ? 'ritual completo' : 'producto'}) + Descripción larga (3-4 párrafos: pain point → mecanismo → beneficio sentido → social proof placeholder) + Bullet points de características (5-7 bullets, beneficio no feature) + ${isKit ? 'Bloque KIT_VALUE: qué incluye + valor vs precio + % ahorro + "envío gratis incluido" +' : ''} Bloque HOW_TO_USE separado (orden + frecuencia + cantidad por paso) + CTA de ficha.${kitBlock}`;
+      })(),
     };
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;
   }
