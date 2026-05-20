@@ -117,7 +117,7 @@ export async function runCopyPack(params: RunCopyPackParams): Promise<CopyOutput
           language,
           servicio: productContext || 'General',
           objetivo: `Generar ${job.label} — ${job.outputs} variante${job.outputs > 1 ? 's' : ''}`,
-          extraContext: [
+          extraNotes: [
             keywords.length ? `Keywords adicionales: ${keywords.join(', ')}` : '',
             productBlock,
             extraNotes || '',
