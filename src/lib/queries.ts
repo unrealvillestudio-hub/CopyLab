@@ -157,40 +157,35 @@ export async function fetchBrandContext(
   const enc = encodeURIComponent;
 
   // ── Cache-first ───────────────────────────────────────────────────────────
-  // Intentar servir desde brand_context_cache si existe y no está stale
+  // Keyword servicio limpio: solo el nombre del producto/kit/servicio,
+  // sin el bloque de contexto adicional que lleva el productContext de CopyPackModule
+  const servicioClean = servicio ? servicio.split('\n\nContexto adicional')[0].trim() : undefined;
+
   try {
-    const cacheRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/brand_context_cache?brand_id=eq.${enc(brandId)}&is_stale=eq.false&limit=1`,
-      {
-        headers: {
-          apikey:        SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-      }
+    const cached = await sbFetch(
+      `brand_context_cache?brand_id=eq.${enc(brandId)}&is_stale=eq.false&limit=1`
     );
-    if (cacheRes.ok) {
-      const cached = await cacheRes.json();
-      if (cached.length > 0) {
-        // Cache HIT — solo keywords y CTAs dinámicos
-        let kwPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
-        if (language) kwPath += `&language=eq.${enc(language)}`;
-        if (servicio) kwPath += `&servicio=eq.${enc(servicio)}`;
-        const [keywords, ctas] = await Promise.all([
-          sbFetch(kwPath),
-          sbFetch(`ctas?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
-        ]);
-        return buildContextFromCache(cached[0], keywords, ctas);
-      }
+    if (cached.length > 0) {
+      // Cache HIT — solo keywords y CTAs dinámicos (3 queries total)
+      let kwPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
+      if (language)      kwPath += `&language=eq.${enc(language)}`;
+      if (servicioClean) kwPath += `&servicio=eq.${enc(servicioClean)}`;
+      const [keywords, ctas] = await Promise.all([
+        sbFetch(kwPath),
+        sbFetch(`ctas?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
+      ]);
+      return buildContextFromCache(cached[0], keywords, ctas);
     }
   } catch {
-    // Cache no disponible — continúa con full fetch
+    // Cache miss o error — continúa con full fetch
   }
   // ── Cache MISS o stale → full fetch ───────────────────────────────────────
   const _t0 = Date.now();
 
+  // servicioClean ya definido arriba — usa solo el nombre, no el bloque de contexto
   let keywordsPath = `keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=50`;
-  if (language) keywordsPath += `&language=eq.${enc(language)}`;
-  if (servicio) keywordsPath += `&servicio=eq.${enc(servicio)}`;
+  if (language)      keywordsPath += `&language=eq.${enc(language)}`;
+  if (servicioClean) keywordsPath += `&servicio=eq.${enc(servicioClean)}`;
 
   const [
     brandsResult,
