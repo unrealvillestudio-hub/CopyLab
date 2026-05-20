@@ -188,6 +188,7 @@ interface PipelineLayerTrackerProps {
   activeLayerCode?: string | null
   completedLayers?: string[]
   errorLayer?: string | null
+  allComplete?: boolean  // true = todos los layers aplicables marcados como done (post-generación)
 }
 
 export function PipelineLayerTracker({
@@ -195,6 +196,7 @@ export function PipelineLayerTracker({
   activeLayerCode = null,
   completedLayers = [],
   errorLayer = null,
+  allComplete = false,
 }: PipelineLayerTrackerProps) {
   const [layers, setLayers] = useState<PipelineLayer[]>([])
   const [loading, setLoading] = useState(true)
@@ -219,7 +221,8 @@ export function PipelineLayerTracker({
 
   // Determinar estado de cada layer
   const getLayerStatus = (layerCode: string): LayerRunStatus => {
-    if (errorLayer === layerCode) return 'running' // muestra error en running
+    if (allComplete) return 'done'
+    if (errorLayer === layerCode) return 'running'
     if (completedLayers.includes(layerCode)) return 'done'
     if (activeLayerCode === layerCode) return 'running'
     return 'pending'

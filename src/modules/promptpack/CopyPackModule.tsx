@@ -2,6 +2,8 @@
  * UNRLVL CopyLab — CopyPackModule.tsx
  * Generación de copy. Lee toda la config del sessionStore.
  * El usuario configura en Customize — aquí solo genera.
+ * 2026-05-20: PipelineLayerTracker añadido — muestra layers del content pipeline v2.6
+ *             que aplican al content_type del pack activo.
  */
 
 import React, { useState } from 'react';
@@ -10,9 +12,28 @@ import { useBrands } from '../../hooks/useBrands';
 import { COPY_PACKS } from '../../config/packs';
 import { Card, Button, cn } from '../../ui/components';
 import { RunControlButton } from '../../ui/RunControlButton';
+import { PipelineLayerTracker } from '../../ui/CopyLabComponents';
 import { runCopyPack } from '../../services/promptpack';
 import { useSessionStore, VARIANT_TEMPERATURE } from '../../state/sessionStore';
 import { Copy, CheckCircle2, AlertCircle, Download, Mic, Type, Settings2, ChevronRight } from 'lucide-react';
+
+// ─── Pack → content_type mapping ─────────────────────────────────────────────
+// Mapea el packId al content_type canónico de pipeline_skills
+function getContentTypeForPack(packId: string): string {
+  if (packId.startsWith('email_sequence_')) return 'email_sequence';
+  const map: Record<string, string> = {
+    social_post_pack:        'post',
+    ad_copy_pack:            'ad',
+    seo_meta_pack:           'product',
+    blog_pack:               'blog',
+    email_pack:              'email',
+    landing_page_pack:       'landing',
+    product_description_pack:'product_description_b2c',
+    video_podcast_script:    'script',
+    youtube_pack:            'script',
+  };
+  return map[packId] ?? 'post';
+}
 
 export const CopyPackModule = () => {
   const { toBrandProfile, brands } = useBrands();
@@ -22,24 +43,27 @@ export const CopyPackModule = () => {
     customizeOptions, addSessionOutputs,
   } = useSessionStore();
 
-  const [outputs, setOutputs] = useState<CopyOutput[]>([]);
+  const [outputs, setOutputs]           = useState<CopyOutput[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [completedLayers, setCompletedLayers] = useState<string[]>([]);
 
   // VideoPodcast state
-  const [personaA, setPersonaA] = useState({ name: '', expertise: '' });
-  const [personaB, setPersonaB] = useState({ name: '', expertise: '' });
+  const [personaA, setPersonaA]     = useState({ name: '', expertise: '' });
+  const [personaB, setPersonaB]     = useState({ name: '', expertise: '' });
   const [episodeTheme, setEpisodeTheme] = useState('');
-  const [keyPoints, setKeyPoints] = useState('');
+  const [keyPoints, setKeyPoints]   = useState('');
 
-  const packId = activePackId || Object.keys(COPY_PACKS)[0];
-  const pack = COPY_PACKS[packId];
+  const packId    = activePackId || Object.keys(COPY_PACKS)[0];
+  const pack      = COPY_PACKS[packId];
   const isPodcastPack = packId === 'video_podcast_script';
   const brandName = brands.find(b => b.id === activeBrandId)?.name || '';
-  const isReady = !!activeBrandId && !!activeServicio.trim();
+  const isReady   = !!activeBrandId && !!activeServicio.trim();
+  const contentType = getContentTypeForPack(packId);
 
   const handleRun = async () => {
     if (!isReady) return;
     setIsGenerating(true);
+    setCompletedLayers([]);
     try {
       const brand = toBrandProfile(activeBrandId) as BrandProfile;
       if (!brand) throw new Error(`Marca '${activeBrandId}' no encontrada`);
@@ -50,10 +74,8 @@ export const CopyPackModule = () => {
       }
       if (activeExtraContext) finalContext += `\n\nContexto adicional: ${activeExtraContext}`;
 
-      // Apply variant_style temperature
       const temperature = VARIANT_TEMPERATURE[customizeOptions.variant_style];
 
-      // Build extra instructions from customize options
       const extraNotes = [
         customizeOptions.include_hashtags ? 'Incluir hashtags relevantes.' : '',
         customizeOptions.include_emojis   ? 'Incluir emojis donde aporten valor.' : '',
@@ -84,6 +106,12 @@ export const CopyPackModule = () => {
 
       setOutputs(results);
       addSessionOutputs(results);
+
+      // Mark all applicable pipeline layers as completed
+      // buildCopyPrompt aplica todos los layers relevantes al content_type determinísticamente
+      // El tracker fetcha cuáles aplican desde pipeline_skills y los muestra como done
+      setCompletedLayers(['__all__']);
+
     } catch (error) {
       console.error('[CopyPackModule]', error);
     } finally {
@@ -175,22 +203,34 @@ export const CopyPackModule = () => {
             <h3 className="text-sm font-bold flex items-center gap-2 text-accent"><Type className="w-4 h-4" /> Episode Brief</h3>
             <div className="space-y-2">
               <textarea value={episodeTheme} onChange={(e) => setEpisodeTheme(e.target.value)} className="w-full h-16 bg-uv-bg border border-uv-border rounded p-2 text-xs outline-none focus:border-accent resize-none" placeholder="Tema central del episodio..." />
-              <textarea value={keyPoints} onChange={(e) => setKeyPoints(e.target.value)} className="w-full h-20 bg-uv-bg border border-uv-border rounded p-2 text-xs outline-none focus:border-accent resize-none" placeholder="Punto 1&#10;Punto 2..." />
+              <textarea value={keyPoints} onChange={(e) => setKeyPoints(e.target.value)} className="w-full h-20 bg-uv-bg border border-uv-border rounded p-2 text-xs outline-none focus:border-accent resize-none" placeholder={"Punto 1\nPunto 2..."} />
             </div>
           </Card>
         </div>
       )}
 
-      {/* GENERATE BUTTON */}
-      <div className="flex items-center gap-4">
-        <RunControlButton isLoading={isGenerating} onClick={handleRun} label="Generar Copy" />
-        {outputs.length > 0 && isPodcastPack && (
-          <Button variant="secondary" onClick={exportScriptJson} className="h-12 gap-2">
-            <Download className="w-4 h-4" /> Exportar JSON
-          </Button>
-        )}
-        {outputs.length > 0 && (
-          <span className="text-xs text-uv-text-muted font-mono">{outputs.length} outputs generados</span>
+      {/* GENERATE + PIPELINE TRACKER */}
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="flex items-center gap-4 flex-1">
+          <RunControlButton isLoading={isGenerating} onClick={handleRun} label="Generar Copy" />
+          {outputs.length > 0 && isPodcastPack && (
+            <Button variant="secondary" onClick={exportScriptJson} className="h-12 gap-2">
+              <Download className="w-4 h-4" /> Exportar JSON
+            </Button>
+          )}
+          {outputs.length > 0 && (
+            <span className="text-xs text-uv-text-muted font-mono">{outputs.length} outputs generados</span>
+          )}
+        </div>
+
+        {/* Pipeline Layer Tracker — visible cuando hay outputs o está generando */}
+        {(isGenerating || outputs.length > 0) && (
+          <PipelineLayerTracker
+            contentType={contentType}
+            activeLayerCode={isGenerating ? 'WRITE' : null}
+            completedLayers={completedLayers.includes('__all__') ? undefined : completedLayers}
+            allComplete={completedLayers.includes('__all__')}
+          />
         )}
       </div>
 
@@ -208,6 +248,9 @@ export const CopyPackModule = () => {
                   {output.metadata?.compliance_passed
                     ? <span className="flex items-center gap-1 text-[10px] text-emerald-500 font-mono"><CheckCircle2 className="w-3 h-3" /> OK</span>
                     : <span className="flex items-center gap-1 text-[10px] text-rose-500 font-mono"><AlertCircle className="w-3 h-3" /> ISSUE</span>}
+                  {output.metadata?.template_id && (
+                    <span className="text-[10px] text-uv-text-muted font-mono">{output.metadata.template_id}</span>
+                  )}
                 </div>
                 <Button variant="ghost" className="p-2" onClick={() => navigator.clipboard.writeText(output.content)}>
                   <Copy className="w-4 h-4" />

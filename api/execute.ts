@@ -302,8 +302,26 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   };
   const aggroLevel = aggroByType[creativeContentType] ?? aggroByType[pipelineContentType] ?? 2;
 
-  // ── Brand context: cache first, then Supabase ──
-  const bc = (req.previousOutputs as any)?.brandContext;
+  // ── Brand context: cache dispatcher first, then direct Supabase ──
+  // Priority 1: cache dispatcher already injected brandContext in previousOutputs
+  // Priority 2: auto-fetch from brand-cache API (self-dispatch — avoids 24 Supabase queries)
+  // Priority 3: fallback to direct Supabase queries (24 parallel calls)
+  let bc = (req.previousOutputs as any)?.brandContext;
+
+  if (!bc) {
+    try {
+      const cacheRes = await fetch(
+        `https://unrlvl-context.vercel.app/api/brand-cache?brand_id=${encodeURIComponent(brandId)}`
+      );
+      if (cacheRes.ok) {
+        bc = await cacheRes.json();
+        console.log(`[CopyLab v9.3] brand-cache hit for ${brandId} — skipping 24 queries`);
+      }
+    } catch {
+      // Silent fallback to direct Supabase queries below
+      console.log(`[CopyLab v9.3] brand-cache miss for ${brandId} — falling back to direct queries`);
+    }
+  }
 
   const [brandData, humanize, goals, personas, compliance, keywords, ctas, copyProfile, seqContext] =
     await Promise.all([

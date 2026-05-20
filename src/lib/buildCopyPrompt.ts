@@ -1,6 +1,9 @@
 // src/lib/buildCopyPrompt.ts
-// CopyLab v8.0 — SMPC 13 capas
-// Modificación 2026-04-04: Layer 13 BP_COPY_1.0 (brand_copy_profiles) añadido
+// CopyLab v8.1 — SMPC 13 capas + L1.5 Voice Genome Injection
+// 2026-05-20: L1.5 VOICE_GENOME_INJECTION añadido — inyecta ADN ejecutable de voz de marca
+//             entre BP_COPY_1.0 (capa 13) e INSTRUCCIÓN (capa final)
+//             Requiere ctx.voiceGenome desde queries.ts query #25
+// 2026-04-04: Layer 13 BP_COPY_1.0 (brand_copy_profiles) añadido
 
 import { fetchBrandContext, BrandContext } from './queries';
 
@@ -23,6 +26,8 @@ const TEMPERATURE_BY_TEMPLATE: Record<string, number> = {
   Storytelling:        1.0,
   SMPC_full:           1.0,
   Organic_FullPro:     1.0,
+  prompt_Email_Sequence:          0.75,
+  prompt_Product_Description_B2C: 0.70,
 };
 const DEFAULT_TEMPERATURE = 0.9;
 
@@ -186,8 +191,6 @@ function buildGeomixBlock(geo: any): string {
 }
 
 // ─── Layer 13: BP_COPY_1.0 ────────────────────────────────────────────────────
-// NUEVA FUNCIÓN — añadida 2026-04-04
-
 function buildCopyProfileLayer(profile: any): string {
   if (!profile) return '';
   const lines = ['## VOZ DE MARCA — BP_COPY_1.0'];
@@ -221,8 +224,65 @@ function buildCopyProfileLayer(profile: any): string {
   return lines.join('\n');
 }
 
-// ─── Template helpers ─────────────────────────────────────────────────────────
+// ─── Layer 1.5: VOICE_GENOME_INJECTION (content-pipeline v2.6) ───────────────
+// Se inyecta entre BP_COPY_1.0 (capa 13) e INSTRUCCIÓN (capa final).
+// Si no existe voice_genome activo para la marca, este bloque no se añade — backward compatible.
+function buildVoiceGenomeLayer(genome: any, idioma: string): string {
+  if (!genome) return '';
 
+  const sig   = genome.lexicon_signature     ?? {};
+  const syn   = genome.syntactic_signatures  ?? {};
+  const arch  = genome.argumentative_architecture ?? {};
+  const stance = genome.relational_stance    ?? {};
+
+  const lines = [`## L1.5 VOICE GENOME [${genome.voice_id} v${genome.version} · ${genome.maturity}]`];
+  lines.push(`IDIOMA: ${idioma}. Reescribir desde origen en ${idioma} con este genoma. NUNCA traducir.`);
+
+  if (genome.identity_anchors)
+    lines.push(`IDENTITY ANCHORS (autoridad que puede invocar):\n${genome.identity_anchors}`);
+
+  if (sig.signature_words?.length) {
+    lines.push(
+      `LEXICÓN FIRMADO:\n` +
+      `- Palabras firmadas (1-3 por pieza MAX, donde encajen): ${sig.signature_words.join(', ')}\n` +
+      `- Trademark word: "${sig.trademark_word ?? ''}" — MAX 1x por pieza\n` +
+      `- Signature phrases (MAX 1 por pieza): ${(sig.signature_phrases ?? []).join(' | ')}`
+    );
+  }
+
+  if (genome.lexicon_forbidden?.length)
+    lines.push(`LÉXICO PROHIBIDO: ${genome.lexicon_forbidden.join(', ')}`);
+
+  if (syn.emphatic_triplication || syn.structures?.length || syn.rhythm) {
+    const synParts: string[] = [];
+    if (syn.emphatic_triplication) synParts.push(`Triplicación enfática — MAX 1x por pieza`);
+    if (syn.structures?.length)    synParts.push(`Estructuras firmadas (MAX 1x cada una): ${syn.structures.join(' | ')}`);
+    if (syn.rhythm)                synParts.push(`Ritmo: ${syn.rhythm}`);
+    lines.push(`FIRMAS SINTÁCTICAS:\n${synParts.join('\n')}`);
+  }
+
+  if (arch.default_pattern)
+    lines.push(`ARQUITECTURA ARGUMENTATIVA: ${arch.default_pattern}`);
+
+  if (stance.person_reference || stance.opening_stance) {
+    const parts: string[] = [];
+    if (stance.person_reference) parts.push(`Referencia: "${stance.person_reference}"`);
+    if (stance.opening_stance)   parts.push(`Apertura: ${stance.opening_stance}`);
+    lines.push(`POSICIÓN RELACIONAL: ${parts.join(' · ')}`);
+  }
+
+  if (genome.emotional_register)
+    lines.push(`REGISTRO EMOCIONAL: ${genome.emotional_register}`);
+
+  if (genome.prohibited_registers?.length)
+    lines.push(`REGISTROS PROHIBIDOS: ${genome.prohibited_registers.join(', ')}`);
+
+  lines.push(`REGLA CRÍTICA: recursos firmados son FIRMA, no FÓRMULA — úsalos solo donde encajan naturalmente. Voice modula el TONO; el vector creativo define el ÁNGULO.`);
+
+  return lines.join('\n');
+}
+
+// ─── Template helpers ─────────────────────────────────────────────────────────
 function applyTemplateVars(template: string, vars: Record<string, string>): string {
   return template
     .replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] !== undefined ? vars[key] : `{{${key}}}`)
@@ -253,7 +313,6 @@ function buildTemplateVars(brand: any, cta: string, keywords: string[], grupo3: 
 }
 
 // ─── Main prompt assembler ───────────────────────────────────────────────────
-
 interface BuildPromptParams {
   ctx:            BrandContext;
   template:       string;
@@ -271,27 +330,25 @@ function buildPrompt(params: BuildPromptParams): string {
   const { ctx, template, canal, humanize, geomix, keywords, grupo3, cta, complianceRules, input } = params;
   const brand = ctx.brand;
   const sections: string[] = [];
+  const idioma = input.language ?? brand?.language_primary ?? 'ES';
 
   // Layer 1: Brand
   sections.push(buildBrandBlock(brand));
 
   // Layer 2: Goals
-  if (ctx.brandGoals && ctx.brandGoals.length > 0) {
+  if (ctx.brandGoals && ctx.brandGoals.length > 0)
     sections.push(buildGoalsBlock(ctx.brandGoals));
-  }
 
   // Layer 3: Personas (ICP)
-  if (ctx.brandPersonas && ctx.brandPersonas.length > 0) {
+  if (ctx.brandPersonas && ctx.brandPersonas.length > 0)
     sections.push(buildPersonasBlock(ctx.brandPersonas));
-  }
 
   // Layer 4: Idioma
   sections.push(buildIdiomaBlock(input.language, ctx));
 
   // Layer 5: Canal
-  if (canal?.block_text) {
+  if (canal?.block_text)
     sections.push(`## CANAL: ${canal.id}\n${canal.block_text}`);
-  }
 
   // Layer 6: Humanize F2.5
   if (humanize) sections.push(buildHumanizeBlock(humanize));
@@ -312,9 +369,15 @@ function buildPrompt(params: BuildPromptParams): string {
     sections.push(`## COMPLIANCE — REGLAS OBLIGATORIAS\n` + complianceRules.map((r, i) => `${i + 1}. ${r}`).join('\n'));
   }
 
-  // Layer 13: BP_COPY_1.0 — VOZ DE MARCA  ← NUEVO
+  // Layer 13: BP_COPY_1.0 — VOZ DE MARCA
   if (ctx.copyProfile) {
     sections.push(buildCopyProfileLayer(ctx.copyProfile));
+  }
+
+  // Layer 1.5: VOICE_GENOME_INJECTION (content-pipeline v2.6)
+  // Se añade DESPUÉS de BP_COPY_1.0 para override con ADN ejecutable cuando existe
+  if (ctx.voiceGenome) {
+    sections.push(buildVoiceGenomeLayer(ctx.voiceGenome, idioma));
   }
 
   // Layer 11: Extra context
@@ -331,7 +394,6 @@ function buildPrompt(params: BuildPromptParams): string {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
-
 export interface BuildCopyPromptInput {
   brandId:      string;
   templateId:   string;
@@ -377,15 +439,17 @@ export async function buildCopyPrompt(input: BuildCopyPromptInput) {
     canalName:    canal.name ?? canal.id,
     brandName:    ctx.brand.display_name,
     temperature,
+    voiceGenomeVersion: ctx.voiceGenome ? `${ctx.voiceGenome.voice_id} v${ctx.voiceGenome.version}` : null,
     metadata: {
-      keywordsInjected:      keywords.length,
-      ctasInjected:          cta ? 1 : 0,
+      keywordsInjected:        keywords.length,
+      ctasInjected:            cta ? 1 : 0,
       complianceRulesInjected: complianceRules.length,
-      humanizeApplied:       !!humanize,
-      geomixApplied:         !!geomix,
-      goalsInjected:         ctx.brandGoals?.length ?? 0,
-      personasInjected:      ctx.brandPersonas?.length ?? 0,
-      copyProfileInjected:   !!ctx.copyProfile,    // ← NUEVO
+      humanizeApplied:         !!humanize,
+      geomixApplied:           !!geomix,
+      goalsInjected:           ctx.brandGoals?.length ?? 0,
+      personasInjected:        ctx.brandPersonas?.length ?? 0,
+      copyProfileInjected:     !!ctx.copyProfile,
+      voiceGenomeInjected:     !!ctx.voiceGenome,
     },
   };
 }

@@ -1,5 +1,6 @@
 // src/lib/queries.ts
 // CopyLab v8.0 — 100% Supabase-driven
+// Modificación 2026-05-20: query #25 brand_voice_genome → L1.5 Voice Genome Injection (content-pipeline v2.6)
 // Modificación 2026-04-04: query #24 brand_copy_profiles → SMPC Layer 13
 // Fix v2: fetchProductCatalog reincorporado + sbFetch inline (no depende de supabaseClient.ts)
 
@@ -97,6 +98,8 @@ export async function fetchBrandContext(
     brandGoals,
     brandPersonas,
     copyProfileResult,
+    // ── Query #25 — L1.5 VOICE GENOME (content-pipeline v2.6) ──────────────
+    voiceGenomeResult,
   ] = await Promise.all([
     sbFetch(`brands?id=eq.${enc(brandId)}&select=${BRAND_SELECT_FIELDS.join(',')}&limit=1`),
     sbFetch('humanize_profiles?brand_id=eq.DEFAULT&select=*'),
@@ -122,6 +125,8 @@ export async function fetchBrandContext(
     sbFetch(`brand_goals?brand_id=eq.${enc(brandId)}&status=eq.active&order=priority.asc,horizon.asc&select=*`),
     sbFetch(`brand_personas?brand_id=eq.${enc(brandId)}&active=eq.true&order=priority.asc&select=*`),
     sbFetch(`brand_copy_profiles?brand_id=eq.${enc(brandId)}&active=eq.true&limit=1&select=id,brand_id,voice_tone_primary,voice_tone_secondary,voice_writing_style,voice_pov,style_sentence_length,style_emoji_usage,style_hashtag_style,style_cta_style,style_hooks,style_signature_phrases,style_avoid_phrases,compliance_rules,compliance_prohibited_words,compliance_required_disclaimers`),
+    // Query #25: voice genome activo para este brand (L1.5)
+    sbFetch(`brand_voice_genome?brand_id=eq.${enc(brandId)}&active=eq.true&order=version.desc&limit=1`),
   ]);
 
   return {
@@ -146,6 +151,7 @@ export async function fetchBrandContext(
     brandGoals,
     brandPersonas,
     copyProfile:        copyProfileResult[0] ?? null,
+    voiceGenome:        voiceGenomeResult[0] ?? null,  // ← L1.5: null si no existe para esta marca
   };
 }
 

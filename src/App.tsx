@@ -10,6 +10,7 @@ import { Logo } from './constants/logo';
 import { BUILD_TAG } from './config/buildTag';
 import { DebugOverlay } from './core/debug/DebugOverlay';
 import { cn } from './ui/components';
+import { DbStatusBadge } from './ui/CopyLabComponents';
 
 import { CopyCustomizeModule } from './modules/customize/CopyCustomizeModule';
 import { CopyPackModule }      from './modules/promptpack/CopyPackModule';
@@ -48,6 +49,8 @@ export default function App() {
             <input type="text" placeholder="Search assets..."
               className="bg-uv-card border border-uv-border rounded-full pl-10 pr-4 py-1.5 text-sm focus:outline-none focus:border-accent/50 w-64 transition-colors" />
           </div>
+          {/* DB connection status */}
+          <DbStatusBadge />
           <button className="p-2 hover:bg-uv-border rounded-full transition-colors relative">
             <Bell className="w-5 h-5" />
             <span className="absolute top-2 right-2 w-2 h-2 bg-accent rounded-full border-2 border-uv-bg" />
