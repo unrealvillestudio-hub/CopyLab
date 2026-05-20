@@ -2,8 +2,6 @@
  * UNRLVL CopyLab — CopyPackModule.tsx
  * Generación de copy. Lee toda la config del sessionStore.
  * El usuario configura en Customize — aquí solo genera.
- * 2026-05-20: PipelineLayerTracker añadido — muestra layers del content pipeline v2.6
- *             que aplican al content_type del pack activo.
  */
 
 import React, { useState } from 'react';
@@ -12,28 +10,9 @@ import { useBrands } from '../../hooks/useBrands';
 import { COPY_PACKS } from '../../config/packs';
 import { Card, Button, cn } from '../../ui/components';
 import { RunControlButton } from '../../ui/RunControlButton';
-import { PipelineLayerTracker } from '../../ui/CopyLabComponents';
 import { runCopyPack } from '../../services/promptpack';
 import { useSessionStore, VARIANT_TEMPERATURE } from '../../state/sessionStore';
 import { Copy, CheckCircle2, AlertCircle, Download, Mic, Type, Settings2, ChevronRight } from 'lucide-react';
-
-// ─── Pack → content_type mapping ─────────────────────────────────────────────
-// Mapea el packId al content_type canónico de pipeline_skills
-function getContentTypeForPack(packId: string): string {
-  if (packId.startsWith('email_sequence_')) return 'email_sequence';
-  const map: Record<string, string> = {
-    social_post_pack:        'post',
-    ad_copy_pack:            'ad',
-    seo_meta_pack:           'product',
-    blog_pack:               'blog',
-    email_pack:              'email',
-    landing_page_pack:       'landing',
-    product_description_pack:'product_description_b2c',
-    video_podcast_script:    'script',
-    youtube_pack:            'script',
-  };
-  return map[packId] ?? 'post';
-}
 
 export const CopyPackModule = () => {
   const { toBrandProfile, brands } = useBrands();
@@ -45,7 +24,6 @@ export const CopyPackModule = () => {
 
   const [outputs, setOutputs]           = useState<CopyOutput[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [completedLayers, setCompletedLayers] = useState<string[]>([]);
 
   // VideoPodcast state
   const [personaA, setPersonaA]     = useState({ name: '', expertise: '' });
@@ -58,12 +36,10 @@ export const CopyPackModule = () => {
   const isPodcastPack = packId === 'video_podcast_script';
   const brandName = brands.find(b => b.id === activeBrandId)?.name || '';
   const isReady   = !!activeBrandId && !!activeServicio.trim();
-  const contentType = getContentTypeForPack(packId);
 
   const handleRun = async () => {
     if (!isReady) return;
     setIsGenerating(true);
-    setCompletedLayers([]);
     try {
       const brand = toBrandProfile(activeBrandId) as BrandProfile;
       if (!brand) throw new Error(`Marca '${activeBrandId}' no encontrada`);
@@ -107,10 +83,6 @@ export const CopyPackModule = () => {
       setOutputs(results);
       addSessionOutputs(results);
 
-      // Mark all applicable pipeline layers as completed
-      // buildCopyPrompt aplica todos los layers relevantes al content_type determinísticamente
-      // El tracker fetcha cuáles aplican desde pipeline_skills y los muestra como done
-      setCompletedLayers(['__all__']);
 
     } catch (error) {
       console.error('[CopyPackModule]', error);
@@ -222,16 +194,6 @@ export const CopyPackModule = () => {
             <span className="text-xs text-uv-text-muted font-mono">{outputs.length} outputs generados</span>
           )}
         </div>
-
-        {/* Pipeline Layer Tracker — visible cuando hay outputs o está generando */}
-        {(isGenerating || outputs.length > 0) && (
-          <PipelineLayerTracker
-            contentType={contentType}
-            activeLayerCode={isGenerating ? 'WRITE' : null}
-            completedLayers={completedLayers.includes('__all__') ? undefined : completedLayers}
-            allComplete={completedLayers.includes('__all__')}
-          />
-        )}
       </div>
 
       {/* OUTPUTS */}
