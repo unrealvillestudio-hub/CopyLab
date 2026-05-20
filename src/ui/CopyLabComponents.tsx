@@ -12,19 +12,10 @@
  *                  SUPABASE_URL + SUPABASE_ANON_KEY (serverless /api/)
  * 
  * Instalar si no están: 
- *   npm install @supabase/supabase-js
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { createClient } from '@supabase/supabase-js'
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Supabase client (browser-side, usa VITE_ prefix)
-// ─────────────────────────────────────────────────────────────────────────────
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-)
+import { supabase } from '../lib/supabaseClient'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TIPOS
@@ -75,15 +66,13 @@ export function DbStatusBadge() {
     setStatus('connecting')
     const t0 = performance.now()
     try {
-      // Ping mínimo: SELECT 1 desde una tabla siempre activa
       const { error } = await supabase
         .from('brands')
         .select('id')
         .limit(1)
-        .single()
+        .maybeSingle()
       const ms = Math.round(performance.now() - t0)
       if (error && error.code !== 'PGRST116') {
-        // PGRST116 = no rows, pero la conexión funcionó
         setStatus('error')
         setLatencyMs(null)
       } else {
@@ -211,9 +200,7 @@ export function PipelineLayerTracker({
         .eq('active', true)
         .order('layer_order', { ascending: true })
 
-      if (!error && data) {
-        setLayers(data)
-      }
+      if (!error && data) setLayers(data)
       setLoading(false)
     }
     if (contentType) fetchLayers()
