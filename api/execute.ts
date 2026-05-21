@@ -573,7 +573,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
       tension_id: tension?.id ?? null,
       aggro_id: aggro?.id ?? null,
     },
-    cache_mode,
+    cache_mode: cacheMode,
   };
 }
 
