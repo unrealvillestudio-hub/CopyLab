@@ -2,7 +2,6 @@
   "fluid": false,
   "functions": {
     "api/execute.ts": { "maxDuration": 300 },
-    "api/claude.ts": { "maxDuration": 300 },
-    "api/process-job.ts": { "maxDuration": 300 }
+    "api/claude.ts": { "maxDuration": 300 }
   }
 }
