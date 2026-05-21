@@ -1,20 +1,19 @@
 export const maxDuration = 300;
 
 /**
- * CopyLab – POST /api/execute  v9.5
+ * CopyLab – POST /api/execute  v9.6
  *
- * v9.5 (2026-05-21) — Zero-query mode con brand_cache_snapshots v2.0:
- * - Detecta snapshot v2.0 (tiene creative_vectors en bc)
- * - Cuando v2.0: cero queries a Supabase — todo desde el snapshot
- * - Creative Engine, Voice Genome, Output Template, Pipeline Skills: datos del snapshot
- * - Keywords y CTAs incluidos desde snapshot (antes eran [] en v1.x)
- * - Snapshot fetch: Supabase directo (1 query) > HTTP brand-cache > 24 queries
+ * v9.6 (2026-05-21) — Node.js native handler (VercelRequest/VercelResponse)
+ * Fix: Web API format no respetaba maxDuration:300 en Node.js runtime → 504
  *
+ * v9.5 (2026-05-21) — Zero-query mode con brand_cache_snapshots v2.0
  * v9.4 (2026-05-20) — Dual mode async/sync
  * v9.3 (2026-05-20) — L1.5 VOICE_GENOME_INJECTION
  *
  * Env vars: ANTHROPIC_API_KEY · SUPABASE_URL · SUPABASE_ANON_KEY
  */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -114,28 +113,25 @@ async function sbArray<T>(path: string): Promise<T[]> {
 }
 
 // ── BRAND CACHE FETCH v9.5 ─────────────────────────────────────────────────
-// Priority: 1) Supabase snapshot (1 query, fast) 2) HTTP endpoint 3) null (fallback to 24 queries)
 
 async function fetchBrandCache(brandId: string): Promise<any | null> {
-  // 1. Try brand_cache_snapshots (v2.0 snapshot — fastest)
   try {
     const snap = await sb<{ cache_data: any }>(`brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}&select=cache_data&limit=1`);
     if (snap?.cache_data) {
-      console.log(`[CopyLab v9.5] snapshot v2.0 hit for ${brandId} — ZERO queries`);
+      console.log(`[CopyLab v9.6] snapshot v2.0 hit for ${brandId} — ZERO queries`);
       return snap.cache_data;
     }
   } catch { /* fall through */ }
 
-  // 2. Try HTTP brand-cache endpoint (v1.x)
   try {
     const res = await fetch(`https://unrlvl-context.vercel.app/api/brand-cache?brand_id=${encodeURIComponent(brandId)}`);
     if (res.ok) {
-      console.log(`[CopyLab v9.5] brand-cache v1.x hit for ${brandId}`);
+      console.log(`[CopyLab v9.6] brand-cache v1.x hit for ${brandId}`);
       return await res.json();
     }
   } catch { /* fall through */ }
 
-  console.log(`[CopyLab v9.5] cache miss for ${brandId} — falling back to direct queries`);
+  console.log(`[CopyLab v9.6] cache miss for ${brandId} — falling back to direct queries`);
   return null;
 }
 
@@ -148,7 +144,6 @@ async function resolveAppliedLayers(contentType: string): Promise<string[]> {
   return layers.map(l => l.layer_code);
 }
 
-// v2.0: resolve from snapshot data
 function resolveAppliedLayersFromData(contentType: string, skills: any[]): string[] {
   return skills
     .filter(s => Array.isArray(s.applies_to) && s.applies_to.includes(contentType))
@@ -176,7 +171,6 @@ async function selectCreativeCombo(
   return applyCreativeLogic(contentType, aggroLevel, previousVectorId, allVectors, allTensions, allAggros, rules);
 }
 
-// v2.0: creative engine from snapshot data (no Supabase queries)
 function selectCreativeComboFromData(
   contentType: string,
   aggroLevel: number,
@@ -365,10 +359,8 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     bc = await fetchBrandCache(brandId);
   }
 
-  // v2.0 snapshot detection: has creative_vectors in the snapshot
   const isV2 = bc && Array.isArray((bc as any).creative_vectors);
 
-  // ── Brand context queries (skipped if bc set) ─────────────────────────
   const [brandData, humanize, goals, personas, compliance, keywords, ctas, copyProfile, seqContext] =
     await Promise.all([
       bc ? Promise.resolve(null) : sb<any>(`brands?id=eq.${brandId}&select=id,display_name,market,language_primary`),
@@ -392,7 +384,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     comp         = bc.compliance_rules?.length
                      ? { rule_text: bc.compliance_rules.map((c: any) => c.rule_text).join('\n') }
                      : null;
-    // v2.0: include keywords and CTAs from snapshot
     kwList       = isV2 ? ((bc as any).keywords  ?? []) : [];
     ctaList      = isV2 ? ((bc as any).ctas       ?? []) : [];
     cp           = bc.brand_copy_profiles?.[0] ?? null;
@@ -407,14 +398,12 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
 
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
-  // ── Pipeline queries — v2.0 uses snapshot, v1.x/no-cache queries Supabase ──
   let creativeCombo: { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null };
   let voiceGenomeResult: { layer: string | null; voice_id: string | null; voice_version: string | null };
   let appliedLayers: string[];
   let outputTemplate: OutputTemplate | null;
 
   if (isV2) {
-    // Zero Supabase queries — everything from snapshot
     creativeCombo = selectCreativeComboFromData(
       creativeContentType, aggroLevel, previousVectorId,
       (bc as any).creative_vectors ?? [],
@@ -427,7 +416,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     appliedLayers     = resolveAppliedLayersFromData(pipelineContentType, (bc as any).pipeline_skills ?? []);
     outputTemplate    = ((bc as any).output_templates ?? []).find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null;
   } else {
-    // Standard Supabase queries
     [creativeCombo, voiceGenomeResult, appliedLayers, outputTemplate] = await Promise.all([
       selectCreativeCombo(creativeContentType, aggroLevel, previousVectorId),
       buildVoiceGenomeLayer(brandId, idioma),
@@ -441,7 +429,6 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
 
-  // ── Assemble system prompt layers ────────────────────────────────────────
   const layers: string[] = [];
 
   layers.push(`MARCA: ${brandName} | MERCADO: ${market} | IDIOMA: ${idioma}`);
@@ -523,7 +510,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
   const cacheMode = isV2 ? 'v2.0_zero_query' : bc ? 'v1.x_partial' : 'no_cache';
-  const system = `Eres CopyLab v9.5, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
+  const system = `Eres CopyLab v9.6, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
   if (isEmailSeq) {
@@ -600,74 +587,68 @@ async function callClaude(system: string, user: string, temperature: number): Pr
   return data.content?.[0]?.text ?? '';
 }
 
-// ── HANDLER ────────────────────────────────────────────────────────────────
+// ── CORS HEADERS ───────────────────────────────────────────────────────────
 
-const CORS = {
+const CORS: Record<string, string> = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, x-vercel-protection-bypass',
-  'Connection': 'close',
 };
 
-export default async function handler(req: Request): Promise<Response> {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+// ── HANDLER v9.6 — Node.js native (VercelRequest/VercelResponse) ───────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
+
+  if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST')
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: CORS });
+    return res.status(405).json({ error: 'Method not allowed' });
 
-  let body: ExecuteRequest & { async?: boolean };
-  try { body = await req.json(); }
-  catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers: CORS }); }
-
-  if (!body.brandId)
-    return new Response(JSON.stringify({ error: 'brandId is required' }), { status: 400, headers: CORS });
+  const body = req.body as ExecuteRequest & { async?: boolean };
+  if (!body?.brandId)
+    return res.status(400).json({ error: 'brandId is required' });
 
   // ── ASYNC MODE v9.4 ─────────────────────────────────────────────────
   if (body.async === true) {
     try {
       const { async: _, ...cleanInput } = body;
       const jobId = await createJob(cleanInput);
-      console.log(`[CopyLab v9.5] async job created: ${jobId}`);
-      return new Response(
-        JSON.stringify({ job_id: jobId, status: 'queued' }),
-        { status: 202, headers: CORS }
-      );
+      console.log(`[CopyLab v9.6] async job created: ${jobId}`);
+      return res.status(202).json({ job_id: jobId, status: 'queued' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
+      return res.status(500).json({ error: msg, status: 'error' });
     }
   }
 
-  // ── SYNC MODE v9.5 ────────────────────────────────────────────────────
+  // ── SYNC MODE v9.6 ────────────────────────────────────────────────────
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
-    console.log(`[CopyLab v9.5] sync brand=${body.brandId} pack=${pack} pos=${position}`);
+    console.log(`[CopyLab v9.6] sync brand=${body.brandId} pack=${pack} pos=${position}`);
 
     const { system, user, temperature, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
       await buildPrompt(body);
 
-    console.log(`[CopyLab v9.5] cache_mode=${cache_mode} — calling Claude`);
+    console.log(`[CopyLab v9.6] cache_mode=${cache_mode} — calling Claude`);
     const output = await callClaude(system, user, temperature);
 
-    return new Response(
-      JSON.stringify({
-        output,
-        status: 'ok',
-        meta: {
-          pipeline_version: '2.6',
-          copylab_version:  '9.5',
-          cache_mode,
-          layers_applied,
-          voice_genome: voice_id ? { voice_id, version: voice_version } : null,
-          creative_seed,
-        },
-      }),
-      { status: 200, headers: CORS }
-    );
+    return res.status(200).json({
+      output,
+      status: 'ok',
+      meta: {
+        pipeline_version: '2.6',
+        copylab_version:  '9.6',
+        cache_mode,
+        layers_applied,
+        voice_genome: voice_id ? { voice_id, version: voice_version } : null,
+        creative_seed,
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[CopyLab /api/execute v9.5]', msg);
-    return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
+    console.error('[CopyLab /api/execute v9.6]', msg);
+    return res.status(500).json({ error: msg, status: 'error' });
   }
 }
