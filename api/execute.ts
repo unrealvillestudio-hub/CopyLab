@@ -534,6 +534,7 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, x-vercel-protection-bypass',
+  'Connection': 'close',
 };
 
 export default async function handler(req: Request): Promise<Response> {
