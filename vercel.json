@@ -1,11 +1,7 @@
 {
   "fluid": true,
   "functions": {
-    "api/execute.ts": {
-      "maxDuration": 300
-    },
-    "api/claude.ts": {
-      "maxDuration": 300
-    }
+    "api/execute.ts": { "maxDuration": 300 },
+    "api/claude.ts": { "maxDuration": 300 }
   }
 }
