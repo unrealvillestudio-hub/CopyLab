@@ -1,4 +1,5 @@
 {
+  "fluid": false,
   "functions": {
     "api/execute.ts": {
       "maxDuration": 300
