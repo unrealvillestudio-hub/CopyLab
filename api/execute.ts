@@ -46,14 +46,6 @@ async function createJob(input: unknown): Promise<string> {
   return Array.isArray(data) ? data[0].id : data.id;
 }
 
-function fireProcessor(jobId: string): void {
-  // Job 2 — fire-and-forget. Sin await, sin timeout.
-  fetch('https://unrlvl-copy-lab.vercel.app/api/process-job', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ job_id: jobId }),
-  }).catch(() => {});
-}
 
 // ── INTERFACES ────────────────────────────────────────────────────────────
 
@@ -556,23 +548,22 @@ export default async function handler(req: Request): Promise<Response> {
   if (!body.brandId)
     return new Response(JSON.stringify({ error: 'brandId is required' }), { status: 400, headers: CORS });
 
-  // ── ASYNC MODE v9.4 ───────────────────────────────────────────────────
+  // ── ASYNC MODE v9.4.1 ─────────────────────────────────────────────────
   if (body.async === true) {
-    try {
-      const { async: _, ...cleanInput } = body;
-      const jobId = await createJob(cleanInput);
-      fireProcessor(jobId);
-      console.log(`[CopyLab v9.4] async job created: ${jobId}`);
-      return new Response(
-        JSON.stringify({ job_id: jobId, status: 'queued' }),
-        { status: 202, headers: CORS }
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[CopyLab v9.4] createJob error:', msg);
-      return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
-    }
+  try {
+    const { async: _, ...cleanInput } = body;
+    const jobId = await createJob(cleanInput);
+    console.log(`[CopyLab v9.4.1] async job created: ${jobId}`);
+    return new Response(
+      JSON.stringify({ job_id: jobId, status: 'queued' }),
+      { status: 202, headers: CORS }
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CopyLab v9.4.1] createJob error:', msg);
+    return new Response(JSON.stringify({ error: msg, status: 'error' }), { status: 500, headers: CORS });
   }
+}
 
   // ── SYNC MODE (v9.3 intacto) ──────────────────────────────────────────
   try {
