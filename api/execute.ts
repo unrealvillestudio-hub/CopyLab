@@ -1,11 +1,14 @@
 export const maxDuration = 300;
 
 /**
- * CopyLab – POST /api/execute  v9.6
+ * CopyLab – POST /api/execute  v9.7
+ *
+ * v9.7 (2026-05-28) — LITERAL mode for teasers/announcements:
+ *   When params.mode === 'literal', the prompt's literal_text is treated as
+ *   the immutable copy. CopyLab only generates caption + hashtags around it,
+ *   respecting language (EN | ES | EN+ES).
  *
  * v9.6 (2026-05-21) — Node.js native handler (VercelRequest/VercelResponse)
- * Fix: Web API format no respetaba maxDuration:300 en Node.js runtime → 504
- *
  * v9.5 (2026-05-21) — Zero-query mode con brand_cache_snapshots v2.0
  * v9.4 (2026-05-20) — Dual mode async/sync
  * v9.3 (2026-05-20) — L1.5 VOICE_GENOME_INJECTION
@@ -118,7 +121,7 @@ async function fetchBrandCache(brandId: string): Promise<any | null> {
   try {
     const snap = await sb<{ cache_data: any }>(`brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}&select=cache_data&limit=1`);
     if (snap?.cache_data) {
-      console.log(`[CopyLab v9.6] snapshot v2.0 hit for ${brandId} — ZERO queries`);
+      console.log(`[CopyLab v9.7] snapshot v2.0 hit for ${brandId} — ZERO queries`);
       return snap.cache_data;
     }
   } catch { /* fall through */ }
@@ -126,12 +129,12 @@ async function fetchBrandCache(brandId: string): Promise<any | null> {
   try {
     const res = await fetch(`https://unrlvl-context.vercel.app/api/brand-cache?brand_id=${encodeURIComponent(brandId)}`);
     if (res.ok) {
-      console.log(`[CopyLab v9.6] brand-cache v1.x hit for ${brandId}`);
+      console.log(`[CopyLab v9.7] brand-cache v1.x hit for ${brandId}`);
       return await res.json();
     }
   } catch { /* fall through */ }
 
-  console.log(`[CopyLab v9.6] cache miss for ${brandId} — falling back to direct queries`);
+  console.log(`[CopyLab v9.7] cache miss for ${brandId} — falling back to direct queries`);
   return null;
 }
 
@@ -510,7 +513,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
   const cacheMode = isV2 ? 'v2.0_zero_query' : bc ? 'v1.x_partial' : 'no_cache';
-  const system = `Eres CopyLab v9.6, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
+  const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
   if (isEmailSeq) {
@@ -564,6 +567,53 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   };
 }
 
+// ── LITERAL MODE v9.7 ──────────────────────────────────────────────────────
+// Used by Orchestrator job_type ∈ {teaser, announcement}. The literal_text is
+// treated as immutable copy; CopyLab only wraps it with hashtags + minimal framing.
+
+async function runLiteralCopy(literal: string, language: string, brandId: string): Promise<{ output: string; caption: string; hashtags: string[] }> {
+  const lang = (language || 'EN').toUpperCase();
+  const langInstruction =
+    lang === 'EN+ES' ? 'Output the caption with the English version first, then a blank line, then the Spanish version. The literal text MUST appear verbatim in BOTH languages — if the literal is in English, translate it precisely for the Spanish version (no creative reinterpretation, only direct translation). Hashtags can mix EN and ES.'
+    : lang === 'ES'  ? 'Output the caption in Spanish only. The literal text MUST appear verbatim — do not translate it (it is already in the intended language). Hashtags in Spanish.'
+    :                  'Output the caption in English only. The literal text MUST appear verbatim. Hashtags in English.';
+
+  const system = `You are CopyLab v9.7 in LITERAL MODE.
+
+Your job: format a literal text into a social-media-ready caption + hashtags.
+
+HARD RULES:
+- The literal text MUST appear VERBATIM inside the caption. Do NOT paraphrase, shorten, or rewrite it.
+- You may add at most 1–2 short tokens of framing (one emoji at most, an ellipsis at most) only if it visibly improves the caption — never long sentences.
+- Total caption length: ≤ 150 characters per language version.
+- Generate 4 to 8 relevant hashtags (no spaces inside hashtags, no duplicate "#").
+- Brand context: ${brandId}.
+- ${langInstruction}
+
+OUTPUT FORMAT (strict JSON, no markdown, no preamble, no explanations):
+{"caption": "...", "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"]}
+
+Generate now.`;
+
+  const user = `LITERAL TEXT (USE VERBATIM):\n${literal}`;
+
+  const raw = await callClaude(system, user, 0.4);
+  let parsed: { caption?: string; hashtags?: string[] } = {};
+  try {
+    const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // Fallback: if Claude returned non-JSON, treat the whole raw output as the caption.
+    parsed = { caption: raw.trim(), hashtags: [] };
+  }
+  const caption  = String(parsed.caption ?? literal).trim();
+  const hashtags = Array.isArray(parsed.hashtags)
+    ? parsed.hashtags.filter(h => typeof h === 'string' && h.length > 0)
+    : [];
+  const output = hashtags.length ? `${caption}\n\n${hashtags.join(' ')}` : caption;
+  return { output, caption, hashtags };
+}
+
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
 async function callClaude(system: string, user: string, temperature: number): Promise<string> {
@@ -614,10 +664,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const { async: _, ...cleanInput } = body;
       const jobId = await createJob(cleanInput);
-      console.log(`[CopyLab v9.6] async job created: ${jobId}`);
+      console.log(`[CopyLab v9.7] async job created: ${jobId}`);
       return res.status(202).json({ job_id: jobId, status: 'queued' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: msg, status: 'error' });
+    }
+  }
+
+  // ── LITERAL MODE v9.7 (teaser / announcement) ────────────────────────
+  const params = body.params as any;
+  if (params?.mode === 'literal') {
+    try {
+      const literal_text = String(params?.literal_text ?? '').trim();
+      if (!literal_text) {
+        return res.status(400).json({ error: 'literal_text required for mode=literal' });
+      }
+      const language = String(body.meta?.language ?? params?.language ?? 'EN');
+      console.log(`[CopyLab v9.7] literal brand=${body.brandId} lang=${language} len=${literal_text.length}`);
+      const { output, caption, hashtags } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown');
+      return res.status(200).json({
+        output,
+        status: 'ok',
+        meta: {
+          mode: 'literal',
+          language,
+          copylab_version: '9.7',
+          caption,
+          hashtags,
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[CopyLab literal v9.7]', msg);
       return res.status(500).json({ error: msg, status: 'error' });
     }
   }
@@ -626,12 +705,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
-    console.log(`[CopyLab v9.6] sync brand=${body.brandId} pack=${pack} pos=${position}`);
+    console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position}`);
 
     const { system, user, temperature, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
       await buildPrompt(body);
 
-    console.log(`[CopyLab v9.6] cache_mode=${cache_mode} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${cache_mode} — calling Claude`);
     const output = await callClaude(system, user, temperature);
 
     return res.status(200).json({
@@ -639,7 +718,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       status: 'ok',
       meta: {
         pipeline_version: '2.6',
-        copylab_version:  '9.6',
+        copylab_version:  '9.7',
         cache_mode,
         layers_applied,
         voice_genome: voice_id ? { voice_id, version: voice_version } : null,
