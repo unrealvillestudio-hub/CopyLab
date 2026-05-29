@@ -21,7 +21,25 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 declare const process: { env: Record<string, string | undefined> };
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const SB_URL  = () => process.env.SUPABASE_URL ?? '';
+
+// Normalize SUPABASE_URL — same defensive parse as ImageLab. Tolerates three
+// shapes commonly pasted into Vercel env panels:
+//   1) bare project ref     "amlvyycfepwhiindxgzw"
+//   2) bare hostname        "amlvyycfepwhiindxgzw.supabase.co"
+//   3) full url             "https://amlvyycfepwhiindxgzw.supabase.co"
+// All three end up as `https://{ref}.supabase.co`. Prevents silent "fetch
+// failed" / "Invalid URL" when the env was saved without a protocol.
+function normalizeSupabaseUrl(raw: string | undefined): string {
+  if (!raw) return '';
+  const s = raw.trim().replace(/\/+$/, '');
+  if (!s) return '';
+  if (s.startsWith('https://') || s.startsWith('http://')) return s;
+  if (s.includes('.supabase.co')) return `https://${s}`;
+  if (/^[a-z]{20}$/.test(s)) return `https://${s}.supabase.co`;
+  return s;
+}
+
+const SB_URL  = () => normalizeSupabaseUrl(process.env.SUPABASE_URL);
 const SB_KEY  = () => process.env.SUPABASE_ANON_KEY ?? '';
 const ANT_KEY = () => process.env.ANTHROPIC_API_KEY ?? '';
 
@@ -362,7 +380,14 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     bc = await fetchBrandCache(brandId);
   }
 
-  const isV2 = bc && Array.isArray((bc as any).creative_vectors);
+  // v9.7: tolerant v2 detection — recognize the cache as v2 if it carries
+  // ANY of the v2-only payloads (voice genome / copy profile / creative
+  // engine). Older brands may not have creative_vectors populated yet.
+  const isV2 = !!bc && (
+    Array.isArray((bc as any).creative_vectors)
+    || Array.isArray((bc as any).brand_voice_genome)
+    || Array.isArray((bc as any).brand_copy_profiles)
+  );
 
   const [brandData, humanize, goals, personas, compliance, keywords, ctas, copyProfile, seqContext] =
     await Promise.all([
@@ -571,23 +596,115 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
 // Used by Orchestrator job_type ∈ {teaser, announcement}. The literal_text is
 // treated as immutable copy; CopyLab only wraps it with hashtags + minimal framing.
 
-async function runLiteralCopy(literal: string, language: string, brandId: string): Promise<{ output: string; caption: string; hashtags: string[] }> {
+/**
+ * Assemble a compact brand-context block for LITERAL MODE from the brand cache.
+ * Pulls only what's strictly relevant to constraining caption tone and hashtags:
+ *   voice_genome → identity_anchors, lexicon_signature, lexicon_forbidden,
+ *                  emotional_register, prohibited_registers
+ *   copy_profile → voice_tone_primary, style_hashtag_style,
+ *                  style_signature_phrases, style_avoid_phrases,
+ *                  compliance_prohibited_words
+ * Returns empty string when no signals are available (caller falls back to a
+ * neutral system prompt).
+ */
+function buildLiteralBrandBlock(bc: any | null, brandId: string): { block: string; hashtagStyle: string; allowEmoji: boolean } {
+  if (!bc) return { block: '', hashtagStyle: '', allowEmoji: false };
+
+  const voice   = bc?.brand_voice_genome?.[0]  ?? null;
+  const profile = bc?.brand_copy_profiles?.[0] ?? null;
+
+  const parts: string[] = [];
+  parts.push(`BRAND: ${brandId}`);
+
+  // ── Voice genome ─────────────────────────────────────────────────────
+  if (voice) {
+    if (voice.identity_anchors) {
+      parts.push(`IDENTITY ANCHORS:\n${String(voice.identity_anchors).slice(0, 400)}`);
+    }
+    const sig = voice.lexicon_signature ?? {};
+    const sigBits: string[] = [];
+    if (Array.isArray(sig.signature_words)   && sig.signature_words.length)   sigBits.push(`signature words: ${sig.signature_words.join(', ')}`);
+    if (sig.trademark_word)                                                   sigBits.push(`trademark: "${sig.trademark_word}"`);
+    if (Array.isArray(sig.signature_phrases) && sig.signature_phrases.length) sigBits.push(`signature phrases: ${sig.signature_phrases.join(' | ')}`);
+    if (sigBits.length) parts.push(`LEXICON SIGNATURE:\n${sigBits.join('\n')}`);
+
+    if (Array.isArray(voice.lexicon_forbidden) && voice.lexicon_forbidden.length) {
+      parts.push(`FORBIDDEN LEXICON: ${voice.lexicon_forbidden.join(', ')}`);
+    }
+    if (voice.emotional_register) parts.push(`EMOTIONAL REGISTER: ${voice.emotional_register}`);
+    if (Array.isArray(voice.prohibited_registers) && voice.prohibited_registers.length) {
+      parts.push(`PROHIBITED REGISTERS: ${voice.prohibited_registers.join(', ')}`);
+    }
+  }
+
+  // ── Copy profile ─────────────────────────────────────────────────────
+  let hashtagStyle = '';
+  let allowEmoji = false;
+  if (profile) {
+    if (profile.voice_tone_primary)       parts.push(`PRIMARY TONE: ${profile.voice_tone_primary}`);
+
+    if (profile.style_hashtag_style) {
+      hashtagStyle = String(profile.style_hashtag_style);
+      parts.push(`HASHTAG STYLE: ${hashtagStyle}`);
+    }
+    const sigPhrases = Array.isArray(profile.style_signature_phrases) ? profile.style_signature_phrases : null;
+    if (sigPhrases?.length) parts.push(`COPY SIGNATURE PHRASES: ${sigPhrases.join(' | ')}`);
+
+    const avoidPhrases = Array.isArray(profile.style_avoid_phrases) ? profile.style_avoid_phrases : null;
+    if (avoidPhrases?.length) parts.push(`AVOID PHRASES: ${avoidPhrases.join(', ')}`);
+
+    const compliance = Array.isArray(profile.compliance_prohibited_words) ? profile.compliance_prohibited_words : null;
+    if (compliance?.length) parts.push(`COMPLIANCE PROHIBITED: ${compliance.join(', ')}`);
+
+    // Emoji authorization heuristic: explicit field, OR profile clearly
+    // describes an emoji policy via tone/style fields. Default to disallow.
+    if (profile.emoji_policy === 'allowed' || profile.allow_emoji === true) allowEmoji = true;
+    else if (typeof profile.style_emoji_policy === 'string' && /allow|yes/i.test(profile.style_emoji_policy)) allowEmoji = true;
+  }
+
+  return { block: parts.length > 1 ? parts.join('\n\n') : '', hashtagStyle, allowEmoji };
+}
+
+async function runLiteralCopy(literal: string, language: string, brandId: string): Promise<{ output: string; caption: string; hashtags: string[]; cache_mode: string }> {
   const lang = (language || 'EN').toUpperCase();
   const langInstruction =
     lang === 'EN+ES' ? 'Output the caption with the English version first, then a blank line, then the Spanish version. The literal text MUST appear verbatim in BOTH languages — if the literal is in English, translate it precisely for the Spanish version (no creative reinterpretation, only direct translation). Hashtags can mix EN and ES.'
     : lang === 'ES'  ? 'Output the caption in Spanish only. The literal text MUST appear verbatim — do not translate it (it is already in the intended language). Hashtags in Spanish.'
     :                  'Output the caption in English only. The literal text MUST appear verbatim. Hashtags in English.';
 
+  // v9.7: pull the brand cache so the literal mode reflects the brand
+  // identity (voice + hashtag style + compliance) instead of a generic
+  // "social media caption with emojis and generic hashtags" output.
+  const bc = await fetchBrandCache(brandId);
+  const { block: brandBlock, hashtagStyle, allowEmoji } = buildLiteralBrandBlock(bc, brandId);
+  const cache_mode = brandBlock ? 'v2.0_brand_context' : 'no_cache';
+
+  const emojiRule = allowEmoji
+    ? 'You MAY include at most one emoji ONLY if the brand voice or copy profile explicitly allows it; otherwise omit emojis entirely.'
+    : 'Do NOT include any emoji. The brand context does not authorize emoji usage — omit them.';
+
+  const hashtagRule = hashtagStyle
+    ? `Hashtags MUST follow the brand's HASHTAG STYLE above and derive primarily from the LEXICON SIGNATURE (signature words, trademark, signature phrases) — not from free-association with the literal text.`
+    : `Hashtags MUST derive from the brand voice and lexicon signature when provided — not from free-association with the literal text.`;
+
+  const brandSection = brandBlock
+    ? `BRAND CONTEXT (binds tone, lexicon, hashtags, compliance):\n\n${brandBlock}`
+    : `BRAND: ${brandId} (no brand cache available — keep tone neutral and minimal).`;
+
   const system = `You are CopyLab v9.7 in LITERAL MODE.
 
-Your job: format a literal text into a social-media-ready caption + hashtags.
+Your job: format a literal text into a social-media-ready caption + hashtags that honour the brand identity below.
+
+${brandSection}
 
 HARD RULES:
 - The literal text MUST appear VERBATIM inside the caption. Do NOT paraphrase, shorten, or rewrite it.
-- You may add at most 1–2 short tokens of framing (one emoji at most, an ellipsis at most) only if it visibly improves the caption — never long sentences.
+- ${emojiRule}
+- You MAY add at most an ellipsis or a single short framing word IF it visibly improves the caption — never long sentences, never invented hooks.
 - Total caption length: ≤ 150 characters per language version.
-- Generate 4 to 8 relevant hashtags (no spaces inside hashtags, no duplicate "#").
-- Brand context: ${brandId}.
+- Generate 4 to 8 relevant hashtags (no spaces inside hashtags, no duplicate "#", no leading/trailing punctuation).
+- ${hashtagRule}
+- Respect FORBIDDEN LEXICON / PROHIBITED REGISTERS / COMPLIANCE PROHIBITED / AVOID PHRASES if listed above. Treat them as hard exclusions.
 - ${langInstruction}
 
 OUTPUT FORMAT (strict JSON, no markdown, no preamble, no explanations):
@@ -611,7 +728,7 @@ Generate now.`;
     ? parsed.hashtags.filter(h => typeof h === 'string' && h.length > 0)
     : [];
   const output = hashtags.length ? `${caption}\n\n${hashtags.join(' ')}` : caption;
-  return { output, caption, hashtags };
+  return { output, caption, hashtags, cache_mode };
 }
 
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
@@ -682,12 +799,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const language = String(body.meta?.language ?? params?.language ?? 'EN');
       console.log(`[CopyLab v9.7] literal brand=${body.brandId} lang=${language} len=${literal_text.length}`);
-      const { output, caption, hashtags } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown');
+      const { output, caption, hashtags, cache_mode } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown');
       return res.status(200).json({
         output,
         status: 'ok',
         meta: {
           mode: 'literal',
+          cache_mode,
           language,
           copylab_version: '9.7',
           caption,
