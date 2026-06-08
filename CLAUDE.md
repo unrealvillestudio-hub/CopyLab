@@ -21,143 +21,98 @@ Ante cualquier duda → preguntar a Sam, no asumir.
 ---
 
 ## Qué es este repo
-CopyLab es el motor de generación de copy del ecosistema UNRLVL. Recibe requests del pipeline (vía `copylab-processor` EF o directamente del Orchestrator), llama a **Claude Sonnet** con capas de contexto de marca, y devuelve copy estructurado para publicación.
+CopyLab es el motor de generación de copy del ecosistema UNRLVL. Recibe requests (vía `copylab-processor` EF o directo del Orchestrator), arma un prompt por capas con contexto de marca + un motor creativo, llama a **Claude Sonnet**, y devuelve copy estructurado.
 
-**URL producción:** https://unrlvl-copy-lab.vercel.app  
-**Vercel project:** prj_5FebBMfTpo4aP5I7iJ98libUkTTe  
-**Framework:** Vite + React (UI) + Vercel Node.js Functions (API)  
-**Versión actual:** v9.7
+**URL producción:** https://unrlvl-copy-lab.vercel.app
+**Vercel project:** prj_5FebBMfTpo4aP5I7iJ98libUkTTe
+**Framework:** Vite + React (UI) + Vercel Function Node (`api/execute.ts`)
+**Versión actual:** v9.7 (verificado en código 2026-06-08)
 
 ---
 
-## Stack técnico
+## Stack técnico (verificado en `api/execute.ts`, 43KB)
 
 ### API principal
-- **`api/execute.ts`** — único endpoint real: `POST /api/execute`
-- `export const maxDuration = 300` (5 min — necesario para async mode)
-- Handler: `VercelRequest/VercelResponse` (Node.js nativo — NO Edge Function)
-- Modelo Claude: `claude-sonnet-4-20250514`
+- **`api/execute.ts`** — endpoint `POST /api/execute`. Handler Node (`VercelRequest/VercelResponse`, NO Edge). `export const maxDuration = 300` (5 min).
+- **`api/process-job.ts`** v1.1 — procesador async (Node). Lee `copylab_jobs` queued, marca processing (attempt_count++), llama `/api/execute` con `async:false`, guarda output+output_parsed, estados queued→processing→done/error. Idempotente.
+- Modelo Claude: `claude-sonnet-4-20250514` (constante `CLAUDE_MODEL`). `callClaude()` usa `max_tokens: 1200`, `anthropic-version: 2023-06-01`.
 
-### Variables de entorno (Vercel)
+### Variables de entorno (Vercel) — verificadas
 ```
-ANTHROPIC_API_KEY        ← API key Anthropic
-SUPABASE_URL             ← https://amlvyycfepwhiindxgzw.supabase.co
-SUPABASE_ANON_KEY        ← anon key (NO service_role — CopyLab usa anon)
-```
-> ⚠️ CopyLab usa `SUPABASE_ANON_KEY`, no `SUPABASE_SERVICE_ROLE_KEY`. Crítico — no confundir.
-
-### Supabase (proyecto amlvyycfepwhiindxgzw)
-Tablas que lee (en zero-query mode v2.0, todo llega via `brand_cache_snapshots`):
-- **`brand_cache_snapshots`** — snapshot completo de contexto de marca (zero-query mode)
-- **`copylab_jobs`** — queue de jobs async
-- `brands`, `humanize_profiles`, `brand_goals`, `brand_personas`, `compliance_rules`
-- `keywords`, `ctas`, `brand_copy_profiles`, `brand_voice_genome`
-- `creative_vectors`, `tension_architectures`, `aggro_presets`, `creative_compatibility_rules`
-- `pipeline_skills`, `output_templates`, `content_sequence_pieces`
-
----
-
-## Tres modos de operación
-
-### 1. Async mode (pipeline normal)
-```
-POST /api/execute { ...body, async: true }
-  → INSERT copylab_jobs (status: 'queued')
-  → Return { job_id, status: 'queued' }
-  → copylab-processor EF (pg_cron cada 1min) lo procesa
-```
-
-### 2. Literal mode (teasers/announcements — v9.7)
-```
-POST /api/execute { params: { mode: 'literal', literal_text: '...' }, meta: { language: 'EN' } }
-  → fetchBrandCache(brandId) → buildLiteralBrandBlock()
-  → Claude genera caption + hashtags respetando el texto VERBATIM
-  → Return { output, caption, hashtags[], cache_mode }
-```
-> Activado por Orchestrator cuando `job_type ∈ {teaser, announcement}`
-
-### 3. Sync mode (directo)
-```
-POST /api/execute { brandId, stage, params: { pack, canal }, previousOutputs }
-  → buildPrompt() → fetchBrandCache() → selectCreativeCombo() → assembleVoiceGenomeLayer()
-  → callClaude(system, user, temperature)
-  → Return { output, meta: { layers_applied, voice_genome, creative_seed, cache_mode } }
+ANTHROPIC_API_KEY    <- API key Anthropic
+SUPABASE_URL         <- normalizeSupabaseUrl() tolera 3 formatos (ref / hostname / url)
+SUPABASE_ANON_KEY    <- CopyLab usa ANON, NO service_role. Crítico — no confundir.
 ```
 
 ---
 
-## Packs disponibles
-| Pack | Temperatura | Descripción |
+## Tres modos de operación (verificados en el handler)
+
+### 1. Async — `POST /api/execute { ...body, async: true }`
+`createJob()` → INSERT `copylab_jobs` (status queued, Prefer return=representation) → retorna 202 `{ job_id, status:'queued' }`. Lo procesa `copylab-processor` EF (pg_cron #30 cada 1 min).
+
+### 2. Literal — `POST /api/execute { params:{ mode:'literal', literal_text }, meta:{ language } }`
+Para teasers/announcements del Orchestrator. `runLiteralCopy()`: el `literal_text` es **inmutable y aparece VERBATIM**; Claude solo arma caption + hashtags alrededor, a temperatura 0.4, respetando idioma (EN | ES | EN+ES). v9.7: `buildLiteralBrandBlock()` inyecta identidad de marca (voice genome + hashtag style + compliance + emoji policy) — ya no es genérico. Salida JSON estricta `{caption, hashtags[]}`.
+
+### 3. Sync — `POST /api/execute { brandId, stage, params:{pack,canal}, meta, previousOutputs }`
+`buildPrompt()` arma el sistema por capas → `callClaude()` → retorna output + meta (cache_mode, layers_applied, voice_genome, creative_seed).
+
+---
+
+## El motor de capas (corazón de CopyLab — de `buildPrompt`)
+El prompt del sync mode se ensambla con estas capas, en orden:
+- **L1 — Voz base:** `humanize_profiles` (tono, personalidad, authenticity_rules, anti_patterns).
+- **BP_COPY_1.0:** `brand_copy_profiles` (voice_tone_primary, writing_style, style_hooks, style_avoid_phrases).
+- **L1.5 — Voice Genome injection:** si la marca tiene `brand_voice_genome` activo, `assembleVoiceGenomeLayer()` inyecta identity_anchors, lexicon_signature (signature_words, trademark_word, signature_phrases), lexicon_forbidden, syntactic_signatures, argumentative_architecture, relational_stance, emotional_register, prohibited_registers. Regla embebida: la firma es FIRMA, no FÓRMULA (no repetir en cada pieza).
+- **L14 — Creative Vector / L15 — Tension Architecture / L16 — Aggro Dial:** el motor creativo (`selectCreativeCombo`) elige vector de apertura + curva de tensión + nivel de agresividad, filtrando por `creative_compatibility_rules` del content_type y un `aggroLevel` mapeado por tipo (ej. abandoned_cart_2=4, welcome=1). Regla de conflicto: el vector gana en arquitectura, el voice gana en superficie léxica.
+- Capas adicionales: objetivos (brand_goals), audiencia (brand_personas con pain_points/hooks), keywords, CTAs aprobados, compliance_rules (obligatorias), output_templates, contexto de secuencia de email.
+
+---
+
+## Packs y temperatura (de `temperatureMap` + `packInstructions`)
+| Pack | Temp | |
 |---|---|---|
-| `social_post_pack` | 0.9 | Hook + Cuerpo + CTA + hashtags |
-| `ad_copy_pack` | 0.7 | Headline + Descripción + CTA (versión A y B) |
-| `email_pack` | 0.6 | Asunto + Preview + Cuerpo + CTA |
-| `email_sequence_*` | 0.75 | Secuencias email (abandoned_cart, welcome, etc.) |
-| `product_description_pack` | 0.7 | Título SEO + desc corta + larga + bullets + HOW_TO_USE |
-| `blog_pack` | 0.7 | Título + Intro + 3 H2 + Conclusión + Meta |
+| social_post_pack | 0.9 | Hook + cuerpo + CTA + hashtags |
+| ad_copy_pack | 0.7 | Headline + desc + CTA (A y B) |
+| email_pack | 0.6 | Asunto + preview + cuerpo + CTA |
+| blog_pack | 0.7 | Título SEO + intro + 3 H2 + conclusión + meta |
+| seo_meta_pack | 0.5 | Title + meta desc + H1 + alts |
+| video_podcast_script | 0.8 | Intro + bloques HOST/GUEST + outro |
+| landing_page_pack | 0.7 | Hero + subhead + 3 beneficios + CTA |
+| product_description_pack | 0.7 | Título + desc corta/larga + bullets + HOW_TO_USE (+ bloque KIT si product_type=kit) |
+| email_sequence_* | 0.7-0.8 | Secuencias con contexto de pieza anterior |
 
 ---
 
-## Brand cache (zero-query mode v2.0)
-Cuando existe `brand_cache_snapshots` para el `brandId`:
-- **0 queries adicionales** a Supabase
-- El snapshot incluye: `brands`, `humanize_profiles`, `brand_goals`, `brand_personas`, `compliance_rules`, `keywords`, `ctas`, `brand_copy_profiles`, `brand_voice_genome`, `creative_vectors`, `tension_architectures`, `aggro_presets`, `creative_compatibility_rules`, `pipeline_skills`, `output_templates`
-- Detección v2: `isV2 = !!bc && (Array.isArray(bc.creative_vectors) || Array.isArray(bc.brand_voice_genome) || Array.isArray(bc.brand_copy_profiles))`
-- Fallback: `https://unrlvl-context.vercel.app/api/brand-cache?brand_id=...` (v1.x)
-- Fallback final: queries directas a Supabase (40+ queries/job — lento)
+## Brand cache (zero-query v9.5/v2.0)
+`fetchBrandCache()` resuelve en cadena: (1) `brand_cache_snapshots.cache_data` → **0 queries** ("snapshot v2.0 hit"); (2) fallback `https://unrlvl-context.vercel.app/api/brand-cache?brand_id=`; (3) fallback final queries directas (40+/job). `isV2` tolerante: detecta v2 si el cache trae `creative_vectors` O `brand_voice_genome` O `brand_copy_profiles` (marcas viejas pueden no tener vectors aún).
 
 ---
 
-## Voice Genome (L1.5)
-Cuando la marca tiene `brand_voice_genome` activo, se inyecta como capa L1.5:
-- `identity_anchors`, `lexicon_signature` (signature_words, trademark_word, signature_phrases)
-- `lexicon_forbidden` (nunca usar)
-- `syntactic_signatures`, `argumentative_architecture`, `relational_stance`
-- `emotional_register`, `prohibited_registers`
+## Conexiones (verificadas: código + ecosystem_graph + access_map)
+- **Recibe de:** `copylab-processor` EF (pg_cron) + Orchestrator directo.
+- **Lee de Supabase (anon):** brand_cache_snapshots, copylab_jobs, brands, humanize_profiles, brand_goals, brand_personas, compliance_rules, keywords, ctas, brand_copy_profiles, creative_vectors, tension_architectures, aggro_presets, creative_compatibility_rules, pipeline_skills, output_templates, brand_voice_genome, content_sequence_pieces.
+- **access_map:** `copylab_jobs` anon insert/select/update (policies USING(true) — intencional dual-mode, NO restringir); `upsert_brand_cache` RPC SECURITY DEFINER llamado con anon desde el browser (intencional — comentario en queries.ts).
+- **Escribe en:** copylab_jobs (async queue).
+- **Llama a:** Claude API (`claude-sonnet-4-20250514`).
+- **Fallback cache:** unrlvl-context `/api/brand-cache`.
 
 ---
 
-## Estructura del repo
-```
-api/
-  execute.ts          ← Handler principal (Node.js, maxDuration:300)
-  process-job.ts      ← Procesador de jobs async (usado por EF)
-  brand-cache.js      ← Cache builder fallback
-  claude.ts           ← Helper Claude directo
-src/
-  lib/
-    buildCopyPrompt.ts ← Constructor de prompts (lógica principal)
-    db/types.ts       ← Tipos de base de datos
-    queries.ts        ← Queries Supabase
-  modules/
-    customize/CopyCustomizeModule.tsx ← UI principal
-  config/
-    packs.ts          ← Definición de packs disponibles
-```
+## Reglas de trabajo (del código)
+1. **`SUPABASE_ANON_KEY`, no service_role** — confirmado. Las policies anon de copylab_jobs son intencionales (dual-mode); no restringir sin rediseñar.
+2. **`normalizeSupabaseUrl()`** siempre aplicado — no remover.
+3. Nuevo pack: agregarlo en `packInstructions`, `temperatureMap`, y `aggroByType`.
+4. **Literal mode** requiere `params.mode==='literal'` AND `params.literal_text` — el texto va verbatim, no parafrasear.
+5. La firma del voice genome es firma, no fórmula — no forzar trademark_word/triplicación en cada pieza.
+6. `isV2` es tolerante — si se cambia el schema del cache, verificar que sigue detectando v2.
+7. ANON key nunca en el repo — solo env var.
 
 ---
 
-## Conexiones con el ecosistema
-- **Recibe requests de:** `copylab-processor` EF (pg_cron) + Orchestrator directo
-- **Lee datos de:** `brand_cache_snapshots` (zero-query) o queries directas
-- **Escribe en:** `copylab_jobs` (async queue)
-- **Llama a:** Claude API (`claude-sonnet-4-20250514`)
-- **Fallback cache:** `https://unrlvl-context.vercel.app/api/brand-cache`
-
----
-
-## Reglas de trabajo
-1. **`SUPABASE_ANON_KEY`** — CopyLab usa anon, no service_role. No cambiar.
-2. **`normalizeSupabaseUrl()`** debe aplicarse siempre — ya está implementado, no remover
-3. Al agregar un nuevo pack: agregarlo en `packInstructions`, `temperatureMap`, y `aggroByType`
-4. **Literal mode** requiere `params.mode === 'literal'` AND `params.literal_text` — ambos obligatorios
-5. El `isV2` check es tolerante — verificar que sigue detectando v2 correctamente si se cambia el schema del cache
-
----
-
-## Estado actual (2026-05-29)
-- ✅ OPERACIONAL — pipeline end-to-end funcionando
-- ✅ Literal mode v9.7 activo para teasers/announcements
-- ✅ Voice genome injection operacional para UnrealvilleStudio
-- ✅ Zero-query mode v2.0 activo para UnrealvilleStudio y NeuroneSCF
-- ✅ `async mode` + `copylab-processor` cron operacional
+## Estado actual (verificado 2026-06-08)
+- OPERACIONAL — v9.7 en producción.
+- Literal mode v9.7 con brand context activo (teasers/announcements).
+- Voice genome injection L1.5 operacional.
+- Zero-query v2.0 para UnrealvilleStudio y NeuroneSCF.
+- async + copylab-processor (pg_cron #30) operacional.
