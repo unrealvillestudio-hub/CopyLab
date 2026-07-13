@@ -26,7 +26,7 @@ import {
   Loader2, Info, ChevronRight, Package, Tag, Layers
 } from 'lucide-react';
 import type { BrandLanguage, BrandService, ProductBlueprint } from '../../lib/db/types';
-import { fetchProductCatalog } from '../../lib/queries';
+import { fetchProductCatalog, fetchBrandContext } from '../../lib/queries';
 
 // ─── Inline hooks ──────────────────────────────────────────────
 const SB_URL = import.meta.env.VITE_SUPABASE_URL as string
