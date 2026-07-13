@@ -20,7 +20,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 declare const process: { env: Record<string, string | undefined> };
 
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+const CLAUDE_MODEL = 'claude-sonnet-5';
 
 // Normalize SUPABASE_URL — same defensive parse as ImageLab. Tolerates three
 // shapes commonly pasted into Vercel env panels:
@@ -340,7 +340,6 @@ async function buildSequenceContext(req: ExecuteRequest): Promise<{
 async function buildPrompt(req: ExecuteRequest): Promise<{
   system: string;
   user: string;
-  temperature: number;
   layers_applied: string[];
   voice_id: string | null;
   voice_version: string | null;
@@ -568,18 +567,9 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;
   }
 
-  const temperatureMap: Record<string, number> = {
-    social_post_pack: 0.9, ad_copy_pack: 0.7, email_pack: 0.6,
-    blog_pack: 0.7, seo_meta_pack: 0.5, video_podcast_script: 0.8, landing_page_pack: 0.7,
-    product_description_pack: 0.7,
-    email_sequence_abandoned_cart: 0.75, email_sequence_welcome: 0.8,
-    email_sequence_post_purchase: 0.7, email_sequence_review_request: 0.7,
-  };
-
   return {
     system,
     user: userInstruction,
-    temperature: temperatureMap[pack] ?? 0.7,
     layers_applied: appliedLayers,
     voice_id,
     voice_version,
@@ -714,7 +704,7 @@ Generate now.`;
 
   const user = `LITERAL TEXT (USE VERBATIM):\n${literal}`;
 
-  const raw = await callClaude(system, user, 0.4);
+  const raw = await callClaude(system, user);
   let parsed: { caption?: string; hashtags?: string[] } = {};
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
@@ -733,7 +723,7 @@ Generate now.`;
 
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
-async function callClaude(system: string, user: string, temperature: number): Promise<string> {
+async function callClaude(system: string, user: string): Promise<string> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -743,8 +733,12 @@ async function callClaude(system: string, user: string, temperature: number): Pr
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1200,
-      temperature,
+      // Sonnet 5 tokenizer runs ~30% heavier than sonnet-4; bumped from 1200.
+      max_tokens: 1600,
+      // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
+      // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
+      // any non-default sampling value with a 400.
+      thinking: { type: 'disabled' },
       system,
       messages: [{ role: 'user', content: user }],
     }),
@@ -825,11 +819,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const position = body.meta?.position ?? 1;
     console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position}`);
 
-    const { system, user, temperature, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
+    const { system, user, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
       await buildPrompt(body);
 
     console.log(`[CopyLab v9.7] cache_mode=${cache_mode} — calling Claude`);
-    const output = await callClaude(system, user, temperature);
+    const output = await callClaude(system, user);
 
     return res.status(200).json({
       output,

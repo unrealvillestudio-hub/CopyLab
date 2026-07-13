@@ -15,8 +15,10 @@ import type { CopyPromptInput } from '../lib/db/types'
 export type { CopyPromptInput }
 
 const CLAUDE_PROXY_URL = '/api/claude'
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
-const MAX_TOKENS = 2048
+const CLAUDE_MODEL = 'claude-sonnet-5'
+// Sonnet 5 tokenizer emits ~30% more tokens for the same text than sonnet-4;
+// bumped from 2048 so structured copy doesn't truncate.
+const MAX_TOKENS = 3072
 
 // ─── Retry — handles 429, 503, 529 (Anthropic overloaded) ───
 export async function withRetry<T>(
@@ -40,7 +42,6 @@ export { buildCopyPromptFromSupabase as buildCopyPrompt }
 
 export async function generateCopy(params: {
   prompt: string
-  temperature?: number
   systemPrompt?: string
   signal?: AbortSignal
 }): Promise<string> {
@@ -52,7 +53,10 @@ export async function generateCopy(params: {
       body: JSON.stringify({
         model: CLAUDE_MODEL,
         max_tokens: MAX_TOKENS,
-        temperature: params.temperature ?? 1.0,
+        // Sonnet 5: copy is deterministic → keep thinking off so it doesn't
+        // eat max_tokens. `temperature` is omitted intentionally — Sonnet 5
+        // rejects any non-default sampling value with a 400.
+        thinking: { type: 'disabled' },
         ...(params.systemPrompt ? { system: params.systemPrompt } : {}),
         messages: [{ role: 'user', content: params.prompt }],
       }),
@@ -90,7 +94,6 @@ export async function generateCopyFromInput(
 
   const text = await generateCopy({
     prompt: promptResult.prompt,
-    temperature: promptResult.temperature,
     systemPrompt,
     signal,
   })

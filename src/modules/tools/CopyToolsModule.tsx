@@ -82,7 +82,6 @@ const CopyAnalyzerTool = () => {
         prompt: `Analiza este copy y sugiere 3 mejoras concretas para mejor conversión y alineación de marca:\n\n${text}`,
         // FIX: idioma explícito en systemPrompt
         systemPrompt: `Eres experto en copywriting. ${langInstruction(activeLanguage)} Sé específico y accionable. Sin preámbulos.`,
-        temperature: 0.7,
       });
       setResult({ compliance, suggestions });
     } catch (e) {
@@ -166,7 +165,6 @@ const CtaGeneratorTool = () => {
         prompt: `Genera ${variants} CTAs de alta conversión${brandName ? ` para ${brandName}` : ''} con este objetivo: ${objective}.\n\nDevuelve SOLO una lista numerada, un CTA por línea. Sin explicaciones.`,
         // FIX: idioma explícito en systemPrompt
         systemPrompt: `Eres experto en copywriting de conversión. ${langInstruction(activeLanguage)} SOLO la lista numerada.`,
-        temperature: 0.9,
       });
       setResults(content.split('\n').filter(l => l.trim()));
     } catch (e) {
@@ -241,7 +239,6 @@ const ChannelAdapterTool = () => {
         // FIX: idioma inyectado explícitamente en el prompt
         prompt: `${langInstruction(activeLanguage)}\n\nAdapta el siguiente copy para el canal "${block.name}".\n\nInstrucciones del canal: ${block.block_text || ''}\n${charInfo}\n\nCopy original:\n${text}`,
         systemPrompt: `Eres experto en copywriting multicanal. ${langInstruction(activeLanguage)} Entrega SOLO el copy adaptado, sin explicaciones previas.`,
-        temperature: 0.8,
       });
       setResult(content);
     } catch (e) {
