@@ -1,1 +1,123 @@
-ZXhwb3J0IGNvbnN0IG1heER1cmF0aW9uID0gMzAwOwoKLyoqCiAqIENvcHlMYWIg4oCUIGFwaS9wcm9jZXNzLWpvYi50cyAgdjEuMQogKgogKiB2MS4xICgyMDI2LTA1LTIxKSDigJQgTm9kZS5qcyBuYXRpdmUgaGFuZGxlciAoVmVyY2VsUmVxdWVzdC9WZXJjZWxSZXNwb25zZSkKICogRml4OiBtaXNtbyBmaXggcXVlIGV4ZWN1dGUudHMgdjkuNiDigJQgV2ViIEFQSSBmb3JtYXQgbm8gcmVzcGV0YWJhIG1heER1cmF0aW9uCiAqCiAqIHYxLjAg4oCUIEpvYiAyIGRlbCBtb2RlbG8gYXN5bmMvc3luYyBkdWFsLW1vZGUuCiAqLwoKaW1wb3J0IHR5cGUgeyBWZXJjZWxSZXF1ZXN0LCBWZXJjZWxSZXNwb25zZSB9IGZyb20gJ0B2ZXJjZWwvbm9kZSc7CgpkZWNsYXJlIGNvbnN0IHByb2Nlc3M6IHsgZW52OiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmcgfCB1bmRlZmluZWQ+IH07Cgpjb25zdCBTQl9VUkwgPSAoKSA9PiBwcm9jZXNzLmVudi5TVVBBQkFTRV9VUkwgICAgICA/PyAnJzsKY29uc3QgU0JfS0VZID0gKCkgPT4gcHJvY2Vzcy5lbnYuU1VQQUJBU0VfQU5PTl9LRVkgPz8gJyc7Cgphc3luYyBmdW5jdGlvbiBzYlBhdGNoKGlkOiBzdHJpbmcsIGRhdGE6IFJlY29yZDxzdHJpbmcsIHVua25vd24+KSB7CiAgYXdhaXQgZmV0Y2goYCR7U0JfVVJMKCl9L3Jlc3QvdjEvY29weWxhYl9qb2JzP2lkPWVxLiR7aWR9YCwgewogICAgbWV0aG9kOiAgJ1BBVENIJywKICAgIGhlYWRlcnM6IHsKICAgICAgYXBpa2V5OiAgICAgICAgIFNCX0tFWSgpLAogICAgICBBdXRob3JpemF0aW9uOiAgYEJlYXJlciAke1NCX0tFWSgpfWAsCiAgICAgICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicsCiAgICAgIFByZWZlcjogICAgICAgICAncmV0dXJuPW1pbmltYWwnLAogICAgfSwKICAgIGJvZHk6IEpTT04uc3RyaW5naWZ5KGRhdGEpLAogIH0pOwp9Cgphc3luYyBmdW5jdGlvbiBzYkdldEpvYihpZDogc3RyaW5nKTogUHJvbWlzZTxSZWNvcmQ8c3RyaW5nLCB1bmtub3duPiB8IG51bGw+IHsKICBjb25zdCByZXMgPSBhd2FpdCBmZXRjaCgKICAgIGAke1NCX1VSTCgpfS9yZXN0L3YxL2NvcHlsYWJfam9icz9pZD1lcS4ke2lkfSZsaW1pdD0xYCwKICAgIHsgaGVhZGVyczogeyBhcGlrZXk6IFNCX0tFWSgpLCBBdXRob3JpemF0aW9uOiBgQmVhcmVyICR7U0JfS0VZKCl9YCB9IH0KICApOwogIGlmICghcmVzLm9rKSByZXR1cm4gbnVsbDsKICBjb25zdCBkYXRhID0gYXdhaXQgcmVzLmpzb24oKTsKICByZXR1cm4gQXJyYXkuaXNBcnJheShkYXRhKSA/IChkYXRhWzBdID8/IG51bGwpIDogbnVsbDsKfQoKY29uc3QgQ09SUzogUmVjb3JkPHN0cmluZywgc3RyaW5nPiA9IHsKICAnQ29udGVudC1UeXBlJzogICAgICAgICAgICAgICAgICdhcHBsaWNhdGlvbi9qc29uJywKICAnQWNjZXNzLUNvbnRyb2wtQWxsb3ctT3JpZ2luJzogICcqJywKICAnQWNjZXNzLUNvbnRyb2wtQWxsb3ctTWV0aG9kcyc6ICdQT1NULCBPUFRJT05TJywKICAnQWNjZXNzLUNvbnRyb2wtQWxsb3ctSGVhZGVycyc6ICdDb250ZW50LVR5cGUnLAp9OwoKZXhwb3J0IGRlZmF1bHQgYXN5bmMgZnVuY3Rpb24gaGFuZGxlcihyZXE6IFZlcmNlbFJlcXVlc3QsIHJlczogVmVyY2VsUmVzcG9uc2UpIHsKICBPYmplY3QuZW50cmllcyhDT1JTKS5mb3JFYWNoKChbaywgdl0pID0+IHJlcy5zZXRIZWFkZXIoaywgdikpOwoKICBpZiAocmVxLm1ldGhvZCA9PT0gJ09QVElPTlMnKSByZXR1cm4gcmVzLnN0YXR1cygyMDQpLmVuZCgpOwogIGlmIChyZXEubWV0aG9kICE9PSAnUE9TVCcpCiAgICByZXR1cm4gcmVzLnN0YXR1cyg0MDUpLmpzb24oeyBlcnJvcjogJ1BPU1Qgb25seScgfSk7CgogIGNvbnN0IGJvZHkgPSByZXEuYm9keSBhcyB7IGpvYl9pZD86IHN0cmluZyB9OwogIGNvbnN0IGpvYklkID0gYm9keT8uam9iX2lkOwogIGlmICgham9iSWQpCiAgICByZXR1cm4gcmVzLnN0YXR1cyg0MDApLmpzb24oeyBlcnJvcjogJ2pvYl9pZCByZXF1aXJlZCcgfSk7CgogIC8vIDEuIExlZXIgam9iCiAgY29uc3Qgam9iID0gYXdhaXQgc2JHZXRKb2Ioam9iSWQpOwogIGlmICgham9iKQogICAgcmV0dXJuIHJlcy5zdGF0dXMoNDA0KS5qc29uKHsgZXJyb3I6ICdKb2Igbm90IGZvdW5kJyB9KTsKCiAgLy8gSWRlbXBvdGVuY2lhCiAgaWYgKGpvYi5zdGF0dXMgIT09ICdxdWV1ZWQnKQogICAgcmV0dXJuIHJlcy5zdGF0dXMoMjAwKS5qc29uKHsgc3RhdHVzOiBqb2Iuc3RhdHVzLCBqb2JfaWQ6IGpvYklkIH0pOwoKICAvLyAyLiBNYXJjYXIgcHJvY2Vzc2luZwogIGF3YWl0IHNiUGF0Y2goam9iSWQsIHsKICAgIHN0YXR1czogICAgICAgICdwcm9jZXNzaW5nJywKICAgIHN0YXJ0ZWRfYXQ6ICAgIG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKSwKICAgIGF0dGVtcHRfY291bnQ6ICgoam9iLmF0dGVtcHRfY291bnQgYXMgbnVtYmVyKSA/PyAwKSArIDEsCiAgfSk7CgogIHRyeSB7CiAgICAvLyAzLiBMbGFtYXIgcGlwZWxpbmUgc3luYwogICAgY29uc3QgZXhlY3V0ZVJlcyA9IGF3YWl0IGZldGNoKAogICAgICAnaHR0cHM6Ly91bnJsdmwtY29weS1sYWIudmVyY2VsLmFwcC9hcGkvZXhlY3V0ZScsCiAgICAgIHsKICAgICAgICBtZXRob2Q6ICAnUE9TVCcsCiAgICAgICAgaGVhZGVyczogeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0sCiAgICAgICAgYm9keTogICAgSlNPTi5zdHJpbmdpZnkoeyAuLi4oam9iLmlucHV0IGFzIG9iamVjdCksIGFzeW5jOiBmYWxzZSB9KSwKICAgICAgfQogICAgKTsKCiAgICBpZiAoIWV4ZWN1dGVSZXMub2spIHsKICAgICAgY29uc3QgZXJyVGV4dCA9IGF3YWl0IGV4ZWN1dGVSZXMudGV4dCgpOwogICAgICBhd2FpdCBzYlBhdGNoKGpvYklkLCB7CiAgICAgICAgc3RhdHVzOiAgICAgICAnZXJyb3InLAogICAgICAgIGVycm9yOiAgICAgICAgYGV4ZWN1dGUgJHtleGVjdXRlUmVzLnN0YXR1c306ICR7ZXJyVGV4dC5zbGljZSgwLCA1MDApfWAsCiAgICAgICAgY29tcGxldGVkX2F0OiBuZXcgRGF0ZSgpLnRvSVNPU3RyaW5nKCksCiAgICAgIH0pOwogICAgICByZXR1cm4gcmVzLnN0YXR1cygyMDApLmpzb24oeyBzdGF0dXM6ICdlcnJvcicsIGpvYl9pZDogam9iSWQgfSk7CiAgICB9CgogICAgY29uc3QgcmVzdWx0ICAgID0gYXdhaXQgZXhlY3V0ZVJlcy5qc29uKCk7CiAgICBjb25zdCBvdXRwdXQgICAgPSAocmVzdWx0Lm91dHB1dCBhcyBzdHJpbmcpID8/ICcnOwogICAgY29uc3QgbWV0YSAgICAgID0gcmVzdWx0Lm1ldGEgPz8gbnVsbDsKCiAgICAvLyA0LiBHdWFyZGFyIHJlc3VsdGFkbwogICAgYXdhaXQgc2JQYXRjaChqb2JJZCwgewogICAgICBzdGF0dXM6ICAgICAgICAnZG9uZScsCiAgICAgIG91dHB1dCwKICAgICAgb3V0cHV0X3BhcnNlZDogbWV0YSwKICAgICAgY29tcGxldGVkX2F0OiAgbmV3IERhdGUoKS50b0lTT1N0cmluZygpLAogICAgfSk7CgogICAgY29uc29sZS5sb2coYFtwcm9jZXNzLWpvYiB2MS4xXSBkb25lOiAke2pvYklkfWApOwogICAgcmV0dXJuIHJlcy5zdGF0dXMoMjAwKS5qc29uKHsgc3RhdHVzOiAnZG9uZScsIGpvYl9pZDogam9iSWQgfSk7CgogIH0gY2F0Y2ggKGVycikgewogICAgY29uc3QgbXNnID0gZXJyIGluc3RhbmNlb2YgRXJyb3IgPyBlcnIubWVzc2FnZSA6IFN0cmluZyhlcnIpOwogICAgYXdhaXQgc2JQYXRjaChqb2JJZCwgewogICAgICBzdGF0dXM6ICAgICAgICAnZXJyb3InLAogICAgICBlcnJvcjogICAgICAgICBtc2cuc2xpY2UoMCwgMTAwMCksCiAgICAgIGNvbXBsZXRlZF9hdDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpLAogICAgfSk7CiAgICBjb25zb2xlLmVycm9yKGBbcHJvY2Vzcy1qb2IgdjEuMV0gZXJyb3IgJHtqb2JJZH06YCwgbXNnKTsKICAgIHJldHVybiByZXMuc3RhdHVzKDUwMCkuanNvbih7IHN0YXR1czogJ2Vycm9yJywgZXJyb3I6IG1zZyB9KTsKICB9Cn0K
+export const maxDuration = 300;
+
+/**
+ * CopyLab — api/process-job.ts  v1.1
+ *
+ * v1.1 (2026-05-21) — Node.js native handler (VercelRequest/VercelResponse)
+ * Fix: mismo fix que execute.ts v9.6 — Web API format no respetaba maxDuration
+ *
+ * v1.0 — Job 2 del modelo async/sync dual-mode.
+ */
+
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+declare const process: { env: Record<string, string | undefined> };
+
+const SB_URL = () => process.env.SUPABASE_URL      ?? '';
+const SB_KEY = () => process.env.SUPABASE_ANON_KEY ?? '';
+
+async function sbPatch(id: string, data: Record<string, unknown>) {
+  await fetch(`${SB_URL()}/rest/v1/copylab_jobs?id=eq.${id}`, {
+    method:  'PATCH',
+    headers: {
+      apikey:         SB_KEY(),
+      Authorization:  `Bearer ${SB_KEY()}`,
+      'Content-Type': 'application/json',
+      Prefer:         'return=minimal',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+async function sbGetJob(id: string): Promise<Record<string, unknown> | null> {
+  const res = await fetch(
+    `${SB_URL()}/rest/v1/copylab_jobs?id=eq.${id}&limit=1`,
+    { headers: { apikey: SB_KEY(), Authorization: `Bearer ${SB_KEY()}` } }
+  );
+  if (!res.ok) return null;
+  const data = await res.json();
+  return Array.isArray(data) ? (data[0] ?? null) : null;
+}
+
+const CORS: Record<string, string> = {
+  'Content-Type':                 'application/json',
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
+
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'POST')
+    return res.status(405).json({ error: 'POST only' });
+
+  const body = req.body as { job_id?: string };
+  const jobId = body?.job_id;
+  if (!jobId)
+    return res.status(400).json({ error: 'job_id required' });
+
+  // 1. Leer job
+  const job = await sbGetJob(jobId);
+  if (!job)
+    return res.status(404).json({ error: 'Job not found' });
+
+  // Idempotencia
+  if (job.status !== 'queued')
+    return res.status(200).json({ status: job.status, job_id: jobId });
+
+  // 2. Marcar processing
+  await sbPatch(jobId, {
+    status:        'processing',
+    started_at:    new Date().toISOString(),
+    attempt_count: ((job.attempt_count as number) ?? 0) + 1,
+  });
+
+  try {
+    // 3. Llamar pipeline sync
+    const executeRes = await fetch(
+      'https://unrlvl-copy-lab.vercel.app/api/execute',
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ...(job.input as object), async: false }),
+      }
+    );
+
+    if (!executeRes.ok) {
+      const errText = await executeRes.text();
+      await sbPatch(jobId, {
+        status:       'error',
+        error:        `execute ${executeRes.status}: ${errText.slice(0, 500)}`,
+        completed_at: new Date().toISOString(),
+      });
+      return res.status(200).json({ status: 'error', job_id: jobId });
+    }
+
+    const result    = await executeRes.json();
+    const output    = (result.output as string) ?? '';
+    const meta      = result.meta ?? null;
+
+    // 4. Guardar resultado
+    await sbPatch(jobId, {
+      status:        'done',
+      output,
+      output_parsed: meta,
+      completed_at:  new Date().toISOString(),
+    });
+
+    console.log(`[process-job v1.1] done: ${jobId}`);
+    return res.status(200).json({ status: 'done', job_id: jobId });
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await sbPatch(jobId, {
+      status:        'error',
+      error:         msg.slice(0, 1000),
+      completed_at: new Date().toISOString(),
+    });
+    console.error(`[process-job v1.1] error ${jobId}:`, msg);
+    return res.status(500).json({ status: 'error', error: msg });
+  }
+}
