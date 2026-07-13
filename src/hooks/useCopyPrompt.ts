@@ -30,8 +30,9 @@ export interface UseCopyPromptReturn {
   buildPromptOnly: (input: CopyPromptInput) => Promise<CopyPromptResult | null>
 }
 
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
-const MAX_TOKENS = 2048
+const CLAUDE_MODEL = 'claude-sonnet-5'
+// Sonnet 5 tokenizer emits ~30% more tokens for the same text; bumped from 2048.
+const MAX_TOKENS = 3072
 const CLAUDE_PROXY_URL = '/api/claude'
 
 export function useCopyPrompt(): UseCopyPromptReturn {
@@ -118,7 +119,10 @@ async function callClaudeProxy(promptResult: CopyPromptResult): Promise<string> 
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: MAX_TOKENS,
-      temperature: promptResult.temperature,
+      // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
+      // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
+      // any non-default sampling value with a 400.
+      thinking: { type: 'disabled' },
       system: buildSystemPrompt(promptResult),
       messages: [{ role: 'user', content: promptResult.prompt }],
     }),
