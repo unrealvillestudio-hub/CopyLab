@@ -1,0 +1,2 @@
+# Artefacto incremental de `tsc -b` (gate de typecheck en el script build)
+tsconfig.tsbuildinfo
