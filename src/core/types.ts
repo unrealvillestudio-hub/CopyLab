@@ -68,7 +68,9 @@ export type CopyPackType =
   | "script_brief" 
   | "seo_meta" 
   | "cta_variants"
-  | "video_podcast";
+  | "video_podcast"
+  | "email_sequence"
+  | "product_description";
 
 export type CopyOutputFormat = "markdown" | "plain" | "json" | "html";
 
@@ -82,12 +84,27 @@ export type CopyTone =
 
 export type CopyLanguage = "ES" | "es-FL" | "SPANG" | "EN";
 
+// Declarative per-job metadata. Only the email_sequence and product_description
+// packs declare it; the classic packs omit it entirely. `language` and `motor`
+// are the only fields every existing meta sets — the rest are sequence-specific.
+export interface CopyJobMeta {
+  language: CopyLanguage;
+  motor: string;                    // generation engine, e.g. "claude"
+  sequence_type?: string;           // e.g. "abandoned_cart", "welcome"
+  position?: number;                // 1-based position within the sequence
+  psycho_presets?: string[];
+  mechanism_primary?: string;
+  depends_on?: string[];            // ids of earlier jobs in the same sequence
+  klaviyo_template_slot?: string;
+}
+
 export interface CopyJob {
   id: string;
   label: string;
   prompt_type: string;       // e.g. "prompt_Ads_FullPro"
   channel: CopyChannel;
   outputs: number;           // number of variants to generate
+  meta?: CopyJobMeta;
 }
 
 export interface CopyPackSpec {
