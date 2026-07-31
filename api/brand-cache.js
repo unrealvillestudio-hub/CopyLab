@@ -5,11 +5,18 @@
  * GET /api/brand-cache?action=build_all&secret=XXX         → reconstruye todas las marcas activas
  * GET /api/brand-cache?brand_id=X&action=invalidate&secret=XXX → marca como stale
  *
+ * v2.1 — 2026-07-31:
+ *   FIX motor creativo. El snapshot traía la clave creative_vectors PRESENTE pero VACÍA:
+ *   TABLES_INCLUDED no listaba las cuatro tablas creativas y buildSnapshot no las buscaba,
+ *   así que selectCreativeComboFromData (api/execute.ts:436) recibía [] y el bloque L14 nunca
+ *   se inyectaba — el diferenciador de CopyLab estaba muerto en la ruta cacheada. Se añaden
+ *   creative_vectors, tension_architectures, aggro_presets y creative_compatibility_rules.
+ *
  * v2.0 — 2026-05-20:
  *   Modelo proactivo. El cache vive en brand_cache_snapshots (Supabase).
  *   Lectura: SELECT → si existe y fresco, retorna directamente (0 queries al resto de Supabase).
  *   Escritura: construye desde las tablas fuente, hace UPSERT en brand_cache_snapshots.
- *   Cobertura ampliada: 22 tablas (antes 8) — todo excepto keywords y ctas
+ *   Cobertura: 26 tablas (v2.1: +4 creativas; v2.0: 22; antes 8) — todo excepto keywords y ctas
  *   que se filtran por language/service en tiempo de ejecución.
  *
  *   Para múltiples jobs del mismo brand en el mismo período:
@@ -54,6 +61,14 @@ const TABLES_INCLUDED = [
   'canal_blocks',          // bloques de canal activos
   'imagelab_presets',      // presets imagelab (global + brand)
   'blueprint_schemas',     // schemas de blueprints
+  // ── Motor creativo (globales) — el diferenciador de CopyLab (L14/L15/L16) ──
+  // Faltaban: el snapshot traía la clave creative_vectors VACÍA (las tablas fuente
+  // sí están pobladas: 44 vectores / 10 tensiones / 5 aggros). Sin ellas,
+  // selectCreativeComboFromData (api/execute.ts:436) recibe [] y el vector sale null.
+  'creative_vectors',            // 44 ángulos de apertura (L14)
+  'tension_architectures',       // 10 curvas de tensión (L15)
+  'aggro_presets',               // 5 dials de agresividad + anti_hedging (L16)
+  'creative_compatibility_rules',// reglas por content_type (filtradas en JS por execute.ts)
   // ── Operacionales (con brand_id, sin filtro lang/service) ─────
   'keywords',              // TODOS los keywords — filtrado lang/service en consumo
   'ctas',                  // TODOS los CTAs — filtrado service en consumo
@@ -124,6 +139,10 @@ async function buildSnapshot(brandId) {
     blueprintSchemas,
     keywords,
     ctas,
+    creativeVectors,
+    tensionArchitectures,
+    aggroPresets,
+    creativeCompatibilityRules,
   ] = await Promise.all([
     sbFetch(`brands?id=eq.${enc(brandId)}&select=*&limit=1`),
     sbFetch(`brand_personas?brand_id=eq.${enc(brandId)}&active=is.true&order=priority.asc&select=*`),
@@ -151,6 +170,14 @@ async function buildSnapshot(brandId) {
     sbFetch('blueprint_schemas?active=eq.true&select=id,version,type,description,labs_using'),
     sbFetch(`keywords?brand_id=eq.${enc(brandId)}&active=eq.true&order=prioridad.asc&limit=200`),
     sbFetch(`ctas?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
+    // Motor creativo — misma forma que el resto (select=*). Filtro active=eq.true igual que el
+    // camino en vivo del consumidor (api/execute.ts:187-190): así la ruta cacheada y la no-cacheada
+    // eligen sobre el MISMO conjunto. selectCreativeComboFromData filtra content_type en JS
+    // (execute.ts:204), por eso el snapshot lleva TODAS las reglas activas, no una por content_type.
+    sbFetch('creative_vectors?active=eq.true&select=*'),
+    sbFetch('tension_architectures?active=eq.true&select=*'),
+    sbFetch('aggro_presets?active=eq.true&select=*&order=level.asc'),
+    sbFetch('creative_compatibility_rules?active=eq.true&select=*'),
   ]);
 
   // Merge imagelab presets (global + brand, brand overrides global)
@@ -189,6 +216,13 @@ async function buildSnapshot(brandId) {
     canal_blocks:       canalBlocks,
     imagelab_presets:   Array.from(imagelabMap.values()),
     blueprint_schemas:  blueprintSchemas,
+    // Motor creativo (L14/L15/L16). Claves EXACTAS que consume api/execute.ts:436-439
+    // (bc.creative_vectors / bc.tension_architectures / bc.aggro_presets /
+    //  bc.creative_compatibility_rules) → selectCreativeComboFromData.
+    creative_vectors:             creativeVectors,
+    tension_architectures:        tensionArchitectures,
+    aggro_presets:                aggroPresets,
+    creative_compatibility_rules: creativeCompatibilityRules,
     // Operacionales — filtrar en consumo por language/service
     keywords,
     ctas,
