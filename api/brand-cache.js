@@ -11,6 +11,10 @@
  *   así que selectCreativeComboFromData (api/execute.ts:436) recibía [] y el bloque L14 nunca
  *   se inyectaba — el diferenciador de CopyLab estaba muerto en la ruta cacheada. Se añaden
  *   creative_vectors, tension_architectures, aggro_presets y creative_compatibility_rules.
+ *   FIX persistencia. upsertSnapshot se llamaba SIN await: en Edge la promesa pendiente muere al
+ *   retornar → el snapshot devolvía 200 correcto pero NUNCA persistía (seguían siendo de mayo).
+ *   Ahora va con await. FIX build_all: el filtro `neq.type=eq.system` era sintaxis PostgREST
+ *   inválida (400 → [] silencioso) → corregido a `type=neq.system`. version bumpeada 2.0→2.1.
  *
  * v2.0 — 2026-05-20:
  *   Modelo proactivo. El cache vive en brand_cache_snapshots (Supabase).
@@ -191,7 +195,7 @@ async function buildSnapshot(brandId) {
       generated_at:   new Date().toISOString(),
       ttl_hours:      CACHE_TTL_HOURS,
       tables_included: TABLES_INCLUDED,
-      version:        '2.0',
+      version:        '2.1',
     },
     // Marca
     brand:              brandRecord[0] ?? null,
@@ -245,7 +249,7 @@ async function upsertSnapshot(brandId, cacheData, builtBy = 'on_demand') {
         built_at:        new Date().toISOString(),
         stale_after:     staleAfter,
         built_by:        builtBy,
-        version:         '2.0',
+        version:         '2.1',
         tables_included: TABLES_INCLUDED,
       }),
     });
@@ -278,7 +282,10 @@ export default async function handler(req) {
   // ── action=build_all: reconstruye cache de todas las marcas activas ──
   if (action === 'build_all') {
     if (CACHE_SECRET() && secret !== CACHE_SECRET()) return json({ error: 'Unauthorized' }, 401);
-    const brands = await sbFetch('brands?status=eq.active&select=id&neq.type=eq.system');
+    // PostgREST válido: `type=neq.system` (columna=operador.valor). El anterior
+    // `neq.type=eq.system` interpretaba `neq.type` como columna inexistente → 400 → sbFetch []
+    // → build_all no reconstruía NADA en silencio. Excluye la marca system DEFAULT.
+    const brands = await sbFetch('brands?status=eq.active&type=neq.system&select=id');
     const results = [];
     for (const b of brands) {
       try {
@@ -322,8 +329,12 @@ export default async function handler(req) {
   // 2. Construir (snapshot inexistente, stale, o refresh forzado)
   const cacheData = await buildSnapshot(brandId);
 
-  // 3. Guardar de forma asíncrona (no bloquea la respuesta)
-  upsertSnapshot(brandId, cacheData, refresh ? 'manual_refresh' : 'on_demand');
+  // 3. Guardar el snapshot. DEBE ir con await: en Edge runtime la promesa pendiente muere al
+  //    retornar, así que sin await el upsert NUNCA persistía (los snapshots seguían siendo de mayo
+  //    pese a devolver 200 correcto). El await añade latencia — es el precio de que el caché exista;
+  //    esto corre offline por cron, no en el camino caliente del usuario. (Alternativa Edge no
+  //    bloqueante: ctx.waitUntil; se prefiere await por simplicidad.)
+  await upsertSnapshot(brandId, cacheData, refresh ? 'manual_refresh' : 'on_demand');
 
   return json(cacheData, 200, {
     'X-Cache': 'MISS',
