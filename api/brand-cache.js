@@ -151,7 +151,7 @@ async function buildSnapshot(brandId) {
     sbFetch(`brands?id=eq.${enc(brandId)}&select=*&limit=1`),
     sbFetch(`brand_personas?brand_id=eq.${enc(brandId)}&active=is.true&order=priority.asc&select=*`),
     sbFetch(`brand_copy_profiles?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
-    sbFetch('humanize_profiles?brand_id=eq.DEFAULT&select=*'),
+    sbFetch('humanize_profiles?brand_id=eq.DEFAULT&select=*&order=medium'),
     sbFetch(`humanize_profiles?brand_id=eq.${enc(brandId)}&select=*`),
     sbFetch('compliance_rules?brand_id=eq.DEFAULT&active=eq.true&select=*'),
     sbFetch(`compliance_rules?brand_id=eq.${enc(brandId)}&active=eq.true&select=*`),
