@@ -283,6 +283,26 @@ async function run() {
     } finally { fx.restore(); }
   });
 
+  // Case 2c — precedencia de humanize: la fila de la marca gana al DEFAULT, sea
+  // cual sea el orden del array (buildSnapshot mergea DEFAULT primero, línea 204
+  // — orden adverso por construcción). Es el tercer delta de §3.6.
+  await xfail('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente',
+    'DEFECTO main: la resolución de humanize toma `[0]` del array; brand-cache.js mergea [DEFAULT, brand] (línea 204, DEFAULT primero) ⇒ en la ruta de cache gana DEFAULT, nunca la marca. El DELTA_HUMANIZE declarado no está implementado. Fuera de alcance (§7).',
+    async () => {
+    const DEF   = { brand_id: 'DEFAULT', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
+    const BRAND = { brand_id: 'B',       tone: 'seco',   personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
+    const base  = { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] };
+    const fx = installFetch({});
+    try {
+      const adverso = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF, BRAND] } }));
+      const favor   = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [BRAND, DEF] } }));
+      assert(adverso.system.includes('seco') && !adverso.system.includes('neutro'), 'orden adverso: gana la marca');
+      eq(adverso.system, favor.system, 'orden-independiente');
+      const solo = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF] } }));
+      assert(solo.system.includes('neutro'), 'sin fila de marca, DEFAULT es lo correcto');
+    } finally { fx.restore(); }
+  });
+
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo
   await test('5·cache vacío: creative_vectors [] ⇒ query directa, vector_id NO es null', async () => {
     const fx = installFetch({
