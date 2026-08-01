@@ -246,6 +246,33 @@ function resolveLanguage(
   return null;
 }
 
+// Voice genome selection (§5.4). Carril mode (voiceId given) MUST match by
+// voice_id or throw COPYLAB_VOICE_NOT_FOUND naming the available voices — never
+// [0], because the array order decides the voice otherwise. UI mode (no voiceId)
+// keeps first-active but warns nominally when more than one genome is active and
+// nobody declared a voice, instead of today's silence.
+function selectGenome(genomes: any[], voiceId: string | null | undefined, brandId: string): any | null {
+  if (!genomes || !genomes.length) return null;
+  const available = genomes.map(g => g?.voice_id).filter(Boolean).sort();
+  if (voiceId) {
+    const match = genomes.find(g => g?.voice_id === voiceId);
+    if (!match) {
+      throw new Error(
+        `COPYLAB_VOICE_NOT_FOUND: voice_id '${voiceId}' no está en los genomas activos de ` +
+        `${brandId} (disponibles: ${available.join(', ') || '∅'})`,
+      );
+    }
+    return match;
+  }
+  if (genomes.length > 1) {
+    console.warn(
+      `[CopyLab] ${brandId} tiene ${genomes.length} genomas activos y ninguna voz declarada ` +
+      `(${available.join(', ')}) — usando el primero; declarar builder_input.voice_id para fijar la voz`,
+    );
+  }
+  return genomes[0];
+}
+
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
 
 async function sb<T>(path: string): Promise<T | null> {
@@ -547,7 +574,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
     : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
 
-  const genome = (genomes as any[])[0] ?? null;
+  const genome = selectGenome(genomes as any[], req.builder_input?.voice_id, brandId);
   const voiceGenomeResult = genome
     ? assembleVoiceGenomeLayer(genome, idioma)
     : { layer: null, voice_id: null, voice_version: null };
