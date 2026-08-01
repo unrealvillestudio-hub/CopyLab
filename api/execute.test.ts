@@ -123,7 +123,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, maxTokensFor, parsePiece, deriveSignature };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature };`,
   );
   return factory();
 }
@@ -348,12 +348,11 @@ async function run() {
 
   // Case 2c — precedencia de humanize: la fila de la marca gana al DEFAULT, sea
   // cual sea el orden del array (buildSnapshot mergea DEFAULT primero, línea 204
-  // — orden adverso por construcción). Es el tercer delta de §3.6.
-  await xfail('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente',
-    'DEFECTO main: la resolución de humanize toma `[0]` del array; brand-cache.js mergea [DEFAULT, brand] (línea 204, DEFAULT primero) ⇒ en la ruta de cache gana DEFAULT, nunca la marca. El DELTA_HUMANIZE declarado no está implementado. Fuera de alcance (§7).',
-    async () => {
-    const DEF   = { brand_id: 'DEFAULT', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
-    const BRAND = { brand_id: 'B',       tone: 'seco',   personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
+  // — orden adverso por construcción). Es el tercer delta de §3.6, ya resuelto
+  // por selectHumanize (A2).
+  await test('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente', async () => {
+    const DEF   = { id: 'd', brand_id: 'DEFAULT', medium: 'copy', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
+    const BRAND = { id: 'b', brand_id: 'B', medium: 'copy', tone: 'seco', personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
     const base  = { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] };
     const fx = installFetch({});
     try {
@@ -364,6 +363,42 @@ async function run() {
       const solo = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF] } }));
       assert(solo.system.includes('neutro'), 'sin fila de marca, DEFAULT es lo correcto');
     } finally { fx.restore(); }
+  });
+
+  // A2-a..d — selectHumanize (bloque puro): los dos ejes (marca>DEFAULT,
+  // medium copy>text) + fallback a DEFAULT + determinismo.
+  await test('A2-a·humanize: [DEFAULT×5 desordenado, marca(copy)] → gana la marca', () => {
+    const rows = [
+      { id: '1', brand_id: 'DEFAULT', medium: 'image' }, { id: '2', brand_id: 'DEFAULT', medium: 'voice' },
+      { id: '3', brand_id: 'DEFAULT', medium: 'copy' },  { id: '4', brand_id: 'DEFAULT', medium: 'video' },
+      { id: '5', brand_id: 'DEFAULT', medium: 'web' },   { id: '6', brand_id: 'LucienSael', medium: 'copy' },
+    ];
+    eq(PURE.selectHumanize(rows, 'LucienSael').id, '6', 'gana la fila de la marca aunque venga última');
+  });
+  await test('A2-b·humanize: marca con único perfil medium=text (LucienSael) → ese', () => {
+    const rows = [
+      { id: 'd-copy', brand_id: 'DEFAULT', medium: 'copy' },
+      { id: 'lucien', brand_id: 'LucienSael', medium: 'text' },
+    ];
+    eq(PURE.selectHumanize(rows, 'LucienSael').id, 'lucien', 'medium=text de la marca gana al copy de DEFAULT');
+  });
+  await test('A2-c·humanize: marca sin fila → DEFAULT de medium=copy, nunca null ni video', () => {
+    const rows = [
+      { id: 'v', brand_id: 'DEFAULT', medium: 'video' }, { id: 'c', brand_id: 'DEFAULT', medium: 'copy' },
+      { id: 'i', brand_id: 'DEFAULT', medium: 'image' },
+    ];
+    const got = PURE.selectHumanize(rows, 'MarcaSinFila');
+    assert(got !== null, 'nunca null cuando hay DEFAULT');
+    eq(got.id, 'c', 'cae al DEFAULT de copy, no a video');
+  });
+  await test('A2-d·humanize: determinista ante el mismo conjunto desordenado', () => {
+    const a = [
+      { id: '3', brand_id: 'DEFAULT', medium: 'copy' }, { id: '1', brand_id: 'DEFAULT', medium: 'web' },
+      { id: '2', brand_id: 'B', medium: 'text' },       { id: '4', brand_id: 'B', medium: 'copy' },
+    ];
+    const b = [...a].reverse();
+    eq(PURE.selectHumanize(a, 'B').id, PURE.selectHumanize(b, 'B').id, 'mismo id sin importar el orden');
+    eq(PURE.selectHumanize(a, 'B').id, '4', 'marca + copy gana');
   });
 
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo

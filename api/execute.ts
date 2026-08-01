@@ -287,6 +287,28 @@ function selectGenome(genomes: any[], voiceId: string | null | undefined, brandI
   return genomes[0];
 }
 
+// Precedencia de humanize (§5.3.6). Dos ejes, en este orden:
+//   1) marca > DEFAULT   — el cache mergea [DEFAULT, marca], así que [0] es
+//                          adverso por construcción.
+//   2) medium: copy > text > cualquier otro — LucienSael declara su único
+//      perfil como 'text', y DEFAULT trae cinco medios (copy/image/video/
+//      voice/web) sin orden garantizado: sin este eje se puede aplicar el
+//      perfil de imagen o de voz a un job de copy.
+// Desempate final por `id` para que el resultado sea determinista.
+const HUMANIZE_MEDIUM_RANK: Record<string, number> = { copy: 0, text: 1 };
+function selectHumanize(rows: any[] | null | undefined, brandId: string): any | null {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const score = (r: any): [number, number, string] => [
+    r?.brand_id === brandId ? 0 : (r?.brand_id === 'DEFAULT' ? 1 : 2),
+    HUMANIZE_MEDIUM_RANK[String(r?.medium ?? '')] ?? 2,
+    String(r?.id ?? ''),
+  ];
+  return [...rows].sort((a, b) => {
+    const [a0, a1, a2] = score(a), [b0, b1, b2] = score(b);
+    return a0 - b0 || a1 - b1 || a2.localeCompare(b2);
+  })[0] ?? null;
+}
+
 // Token ceiling by destination (§3.5). The flat 1600 served neither destino:
 // editorial 4000 · social 640 en modo carril; el modo UI mantiene 1600.
 function maxTokensFor(builderInput: { destination?: string } | null | undefined): number {
@@ -617,12 +639,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
   const [
-    brand, hum, goalsList, personasList, complianceRows, kwList, ctaList, cp,
+    brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, seqContext,
   ] = await Promise.all([
     (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
-    (sliceOf(bc, 'humanize_profiles')?.[0]) ?? sb<any>(`humanize_profiles?brand_id=eq.${eBrand}&select=*`),
+    // humanize: marca Y DEFAULT juntas; la precedencia la resuelve selectHumanize,
+    // no `[0]` (que sería el DEFAULT, mergeado primero — §5.3.6 / A2).
+    sliceOf(bc, 'humanize_profiles') ?? sbArray<any>(`humanize_profiles?brand_id=in.(${eBrand},DEFAULT)&select=*`),
     sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=goal_text,priority&order=priority`),
     sliceOf(bc, 'brand_personas') ?? sbArray<any>(`brand_personas?brand_id=eq.${eBrand}&active=eq.true&select=*&order=priority`),
     sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text`),
@@ -638,6 +662,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'output_templates'),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
+
+  const hum = selectHumanize(humRows as any[], brandId);
 
   const comp = (complianceRows as any[]).length
     ? { rule_text: (complianceRows as any[]).map((c: any) => c.rule_text).filter(Boolean).join('\n') }
