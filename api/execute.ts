@@ -309,37 +309,63 @@ function deriveSignature(
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
 
+// sb/sbArray distinguish ABSENCE from FAILURE (§6). Heredar gobierno a un motor
+// fail-silent es perder la garantía: un 4xx era indistinguible de un [] vacío y
+// un fallo de red se tragaba en null. Ahora:
+//   • 200 + fila/[]  → dato o ausencia legítima (null / []).
+//   • 4xx / 5xx      → throw con el CUERPO de la respuesta (PostgREST nombra ahí
+//                      la columna ofensora).
+//   • red / abort    → throw etiquetado.
+// El carril etiqueta y persiste estos errores en orchestrator_jobs.error_log.
 async function sb<T>(path: string): Promise<T | null> {
+  let res: Response;
   try {
-    const res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
+    res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
       headers: { apikey: SB_KEY(), Authorization: `Bearer ${SB_KEY()}` },
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return Array.isArray(data) ? (data[0] ?? null) : data;
-  } catch { return null; }
+  } catch (e) {
+    throw new Error(`COPYLAB_SB_FETCH_FAILED ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`COPYLAB_SB_${res.status} ${path}: ${bodyText}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? (data[0] ?? null) : data;
 }
 
 async function sbArray<T>(path: string): Promise<T[]> {
+  let res: Response;
   try {
-    const res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
+    res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
       headers: { apikey: SB_KEY(), Authorization: `Bearer ${SB_KEY()}` },
     });
-    if (!res.ok) return [];
-    return await res.json();
-  } catch { return []; }
+  } catch (e) {
+    throw new Error(`COPYLAB_SB_FETCH_FAILED ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`COPYLAB_SB_${res.status} ${path}: ${bodyText}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
 }
 
 // ── BRAND CACHE FETCH v9.5 ─────────────────────────────────────────────────
 
 async function fetchBrandCache(brandId: string): Promise<any | null> {
+  // El fallo del snapshot NO puede caer en silencio a la ruta v1.x y de ahí a
+  // null (§6.4): se avisa en cada salto. Un miss legítimo (200 + []) sí cae al
+  // fallback sin ruido; un fallo duro (4xx/5xx/red) avisa nominalmente.
   try {
     const snap = await sb<{ cache_data: any }>(`brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}&select=cache_data&limit=1`);
     if (snap?.cache_data) {
-      console.log(`[CopyLab v9.7] snapshot v2.0 hit for ${brandId} — ZERO queries`);
+      console.log(`[CopyLab v9.7] snapshot hit for ${brandId}`);
       return snap.cache_data;
     }
-  } catch { /* fall through */ }
+  } catch (e) {
+    console.warn(`[CopyLab] snapshot de ${brandId} falló (${e instanceof Error ? e.message : String(e)}) — probando fallback v1.x, luego fuentes directas`);
+  }
 
   try {
     const res = await fetch(`https://unrlvl-context.vercel.app/api/brand-cache?brand_id=${encodeURIComponent(brandId)}`);
@@ -347,7 +373,10 @@ async function fetchBrandCache(brandId: string): Promise<any | null> {
       console.log(`[CopyLab v9.7] brand-cache v1.x hit for ${brandId}`);
       return await res.json();
     }
-  } catch { /* fall through */ }
+    console.warn(`[CopyLab] fallback v1.x devolvió ${res.status} para ${brandId} — se consultarán las fuentes directas`);
+  } catch (e) {
+    console.warn(`[CopyLab] fallback v1.x de ${brandId} falló (${e instanceof Error ? e.message : String(e)}) — se consultarán las fuentes directas`);
+  }
 
   console.log(`[CopyLab v9.7] cache miss for ${brandId} — falling back to direct queries`);
   return null;
