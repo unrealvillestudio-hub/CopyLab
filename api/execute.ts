@@ -98,6 +98,7 @@ interface ExecuteRequest {
     sequence_type?: string;
     position?: number;
     language?: string;
+    voice_id?: string;
     persona_key?: string;
     psycho_presets?: string[];
     mechanism_primary?: string;
@@ -190,11 +191,19 @@ function normalizeCache(raw: any | null): { cache: NormalizedCache | null; shape
     Array.isArray(raw.brands) || Array.isArray(raw.brand_voice_genome) ||
     Array.isArray(raw.brand_copy_profiles) || Array.isArray(raw.creative_vectors) ||
     Array.isArray(raw.brand_goals) || Array.isArray(raw.brand_personas) ||
-    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles);
+    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles) ||
+    (raw.brand && typeof raw.brand === 'object');
 
   if (looksSnapshot) {
     const nc = emptyNormalizedCache('snapshot');
     for (const k of CACHE_SLICES) if (Array.isArray(raw[k])) (nc as any)[k] = raw[k];
+    // brand-cache.js v2.1 emite el registro como `brand` (singular, objeto);
+    // v2.0 y anteriores lo emiten como `brands` (array). El lector acepta las
+    // dos porque hay snapshots vivos de ambas versiones en la tabla y reescribir
+    // el escritor no arregla los que ya están escritos.
+    if (!nc.brands.length && raw.brand && typeof raw.brand === 'object') {
+      nc.brands = [raw.brand];
+    }
     return { cache: nc, shape: 'snapshot', keys };
   }
 
@@ -277,6 +286,28 @@ function selectGenome(genomes: any[], voiceId: string | null | undefined, brandI
     );
   }
   return genomes[0];
+}
+
+// Precedencia de humanize (§5.3.6). Dos ejes, en este orden:
+//   1) marca > DEFAULT   — el cache mergea [DEFAULT, marca], así que [0] es
+//                          adverso por construcción.
+//   2) medium: copy > text > cualquier otro — LucienSael declara su único
+//      perfil como 'text', y DEFAULT trae cinco medios (copy/image/video/
+//      voice/web) sin orden garantizado: sin este eje se puede aplicar el
+//      perfil de imagen o de voz a un job de copy.
+// Desempate final por `id` para que el resultado sea determinista.
+const HUMANIZE_MEDIUM_RANK: Record<string, number> = { copy: 0, text: 1 };
+function selectHumanize(rows: any[] | null | undefined, brandId: string): any | null {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const score = (r: any): [number, number, string] => [
+    r?.brand_id === brandId ? 0 : (r?.brand_id === 'DEFAULT' ? 1 : 2),
+    HUMANIZE_MEDIUM_RANK[String(r?.medium ?? '')] ?? 2,
+    String(r?.id ?? ''),
+  ];
+  return [...rows].sort((a, b) => {
+    const [a0, a1, a2] = score(a), [b0, b1, b2] = score(b);
+    return a0 - b0 || a1 - b1 || a2.localeCompare(b2);
+  })[0] ?? null;
 }
 
 // Token ceiling by destination (§3.5). The flat 1600 served neither destino:
@@ -609,12 +640,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
   const [
-    brand, hum, goalsList, personasList, complianceRows, kwList, ctaList, cp,
+    brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, seqContext,
   ] = await Promise.all([
     (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
-    (sliceOf(bc, 'humanize_profiles')?.[0]) ?? sb<any>(`humanize_profiles?brand_id=eq.${eBrand}&select=*`),
+    // humanize: marca Y DEFAULT juntas; la precedencia la resuelve selectHumanize,
+    // no `[0]` (que sería el DEFAULT, mergeado primero — §5.3.6 / A2).
+    sliceOf(bc, 'humanize_profiles') ?? sbArray<any>(`humanize_profiles?brand_id=in.(${eBrand},DEFAULT)&select=*`),
     sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=goal_text,priority&order=priority`),
     sliceOf(bc, 'brand_personas') ?? sbArray<any>(`brand_personas?brand_id=eq.${eBrand}&active=eq.true&select=*&order=priority`),
     sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text`),
@@ -630,6 +663,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'output_templates'),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
+
+  const hum = selectHumanize(humRows as any[], brandId);
 
   const comp = (complianceRows as any[]).length
     ? { rule_text: (complianceRows as any[]).map((c: any) => c.rule_text).filter(Boolean).join('\n') }
@@ -900,12 +935,15 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
  *                  compliance_prohibited_words
  * Returns empty string when no signals are available (caller falls back to a
  * neutral system prompt).
+ *
+ * A3: recibe el genoma y el perfil YA RESUELTOS por el caller (normalizeCache +
+ * selectGenome), no el cache crudo. Antes leía `bc.brand_voice_genome[0]` — el
+ * mismo bug del `[0]` que §5.4 corrigió en buildPrompt, intacto en este camino:
+ * LucienSael tiene dos genomas activos y el modo literal (teasers/announcements
+ * del Orchestrator, camino de producción) tomaba el que el array trajera primero.
  */
-function buildLiteralBrandBlock(bc: any | null, brandId: string): { block: string; hashtagStyle: string; allowEmoji: boolean } {
-  if (!bc) return { block: '', hashtagStyle: '', allowEmoji: false };
-
-  const voice   = bc?.brand_voice_genome?.[0]  ?? null;
-  const profile = bc?.brand_copy_profiles?.[0] ?? null;
+function buildLiteralBrandBlock(voice: any | null, profile: any | null, brandId: string): { block: string; hashtagStyle: string; allowEmoji: boolean } {
+  if (!voice && !profile) return { block: '', hashtagStyle: '', allowEmoji: false };
 
   const parts: string[] = [];
   parts.push(`BRAND: ${brandId}`);
@@ -959,7 +997,7 @@ function buildLiteralBrandBlock(bc: any | null, brandId: string): { block: strin
   return { block: parts.length > 1 ? parts.join('\n\n') : '', hashtagStyle, allowEmoji };
 }
 
-async function runLiteralCopy(literal: string, language: string, brandId: string): Promise<{ output: string; caption: string; hashtags: string[]; cache_mode: string }> {
+export async function runLiteralCopy(literal: string, language: string, brandId: string, voiceId: string | null = null): Promise<{ output: string; caption: string; hashtags: string[]; cache_mode: string }> {
   const lang = (language || 'EN').toUpperCase();
   const langInstruction =
     lang === 'EN+ES' ? 'Output the caption with the English version first, then a blank line, then the Spanish version. The literal text MUST appear verbatim in BOTH languages — if the literal is in English, translate it precisely for the Spanish version (no creative reinterpretation, only direct translation). Hashtags can mix EN and ES.'
@@ -969,8 +1007,13 @@ async function runLiteralCopy(literal: string, language: string, brandId: string
   // v9.7: pull the brand cache so the literal mode reflects the brand
   // identity (voice + hashtag style + compliance) instead of a generic
   // "social media caption with emojis and generic hashtags" output.
-  const bc = await fetchBrandCache(brandId);
-  const { block: brandBlock, hashtagStyle, allowEmoji } = buildLiteralBrandBlock(bc, brandId);
+  // A3: normalizar el cache y elegir la voz por voice_id (o warn nominal si hay
+  // más de un genoma y nadie declaró voz) — nunca `[0]` mudo.
+  const { cache: nc } = normalizeCache(await fetchBrandCache(brandId));
+  const genomes = sliceOf(nc, 'brand_voice_genome') ?? [];
+  const voice = genomes.length ? selectGenome(genomes, voiceId, brandId) : null;
+  const profile = (sliceOf(nc, 'brand_copy_profiles') ?? [])[0] ?? null;
+  const { block: brandBlock, hashtagStyle, allowEmoji } = buildLiteralBrandBlock(voice, profile, brandId);
   const cache_mode = brandBlock ? 'v2.0_brand_context' : 'no_cache';
 
   const emojiRule = allowEmoji
@@ -1110,7 +1153,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const language = String(body.meta?.language ?? params?.language ?? 'EN');
       console.log(`[CopyLab v9.7] literal brand=${body.brandId} lang=${language} len=${literal_text.length}`);
-      const { output, caption, hashtags, cache_mode } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown');
+      const literalVoiceId = body.builder_input?.voice_id ?? body.meta?.voice_id ?? null;
+      const { output, caption, hashtags, cache_mode } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown', literalVoiceId);
       return res.status(200).json({
         output,
         status: 'ok',

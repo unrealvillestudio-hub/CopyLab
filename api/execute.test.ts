@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -123,7 +123,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, maxTokensFor, parsePiece, deriveSignature };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature };`,
   );
   return factory();
 }
@@ -137,10 +137,14 @@ function res(data: any, status = 200) {
 type TableReply = any[] | ((url: string) => any);
 function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; snapshot?: any[] }) {
   const calls: string[] = [];
-  globalThis.fetch = (async (url: any) => {
+  const claudeBodies: any[] = [];
+  globalThis.fetch = (async (url: any, init?: any) => {
     const u = String(url);
     calls.push(u);
-    if (u.includes('api.anthropic.com')) return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } });
+    if (u.includes('api.anthropic.com')) {
+      try { claudeBodies.push(JSON.parse(init?.body ?? '{}')); } catch { /* ignore */ }
+      return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } });
+    }
     if (u.includes('unrlvl-context.vercel.app')) return res('', 404);
     if (u.includes('/rest/v1/')) {
       const table = u.split('/rest/v1/')[1].split('?')[0];
@@ -151,7 +155,7 @@ function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any;
     }
     return res([]);
   }) as any;
-  return { calls, restore: () => { globalThis.fetch = REAL_FETCH; } };
+  return { calls, claudeBodies, restore: () => { globalThis.fetch = REAL_FETCH; } };
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -321,19 +325,20 @@ async function run() {
 
   // Case 2b — la forma REAL de producción: bc.brand (singular, objeto) que
   // escribe brand-cache.js v2.1 (línea 201), no solo bc.brands[] (plural).
-  await xfail('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)',
-    'DEFECTO main: normalizeCache (execute.ts) mapea `brands`[]/`identity` pero NO `brand` (singular), que es lo que brand-cache.js v2.1 escribe (línea 201). El brand del cache se ignora ⇒ siempre cae a query directa; sin fila viva → COPYLAB_LANGUAGE_UNRESOLVED. Fuera de alcance (§7).',
-    async () => {
-    const rec = { id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+  // Cache completo en ambas formas ⇒ el registro se resuelve del cache y NO se
+  // consulta nada (fx.calls === 0): la forma singular alcanza el modo cero-query.
+  await test('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)', async () => {
+    const rec = { id: 'B', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+    const { brands: _b, ...rest } = FULL_SNAPSHOT;
     const fx = installFetch({});
     try {
-      const singular = await buildPrompt(reqWith({ brandContext: { brand: rec, brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
-      const plural = await buildPrompt(reqWith({ brandContext: { brands: [rec], brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      const singular = await buildPrompt(reqWith({ brandContext: { ...rest, brand: rec } }, { brandId: 'B' }));
+      const plural   = await buildPrompt(reqWith({ brandContext: { ...rest, brands: [rec] } }, { brandId: 'B' }));
       eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
       assert(singular.system.includes('MARCA: UNRLVL | MERCADO: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
-      eq(fx.calls.length, 0, 'con el registro resuelto no se consulta brands');
+      eq(fx.calls.length, 0, 'con el registro resuelto y el cache completo: CERO queries');
     } finally { fx.restore(); }
   });
 
@@ -347,12 +352,11 @@ async function run() {
 
   // Case 2c — precedencia de humanize: la fila de la marca gana al DEFAULT, sea
   // cual sea el orden del array (buildSnapshot mergea DEFAULT primero, línea 204
-  // — orden adverso por construcción). Es el tercer delta de §3.6.
-  await xfail('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente',
-    'DEFECTO main: la resolución de humanize toma `[0]` del array; brand-cache.js mergea [DEFAULT, brand] (línea 204, DEFAULT primero) ⇒ en la ruta de cache gana DEFAULT, nunca la marca. El DELTA_HUMANIZE declarado no está implementado. Fuera de alcance (§7).',
-    async () => {
-    const DEF   = { brand_id: 'DEFAULT', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
-    const BRAND = { brand_id: 'B',       tone: 'seco',   personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
+  // — orden adverso por construcción). Es el tercer delta de §3.6, ya resuelto
+  // por selectHumanize (A2).
+  await test('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente', async () => {
+    const DEF   = { id: 'd', brand_id: 'DEFAULT', medium: 'copy', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
+    const BRAND = { id: 'b', brand_id: 'B', medium: 'copy', tone: 'seco', personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
     const base  = { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] };
     const fx = installFetch({});
     try {
@@ -363,6 +367,68 @@ async function run() {
       const solo = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF] } }));
       assert(solo.system.includes('neutro'), 'sin fila de marca, DEFAULT es lo correcto');
     } finally { fx.restore(); }
+  });
+
+  // A2-a..d — selectHumanize (bloque puro): los dos ejes (marca>DEFAULT,
+  // medium copy>text) + fallback a DEFAULT + determinismo.
+  await test('A2-a·humanize: [DEFAULT×5 desordenado, marca(copy)] → gana la marca', () => {
+    const rows = [
+      { id: '1', brand_id: 'DEFAULT', medium: 'image' }, { id: '2', brand_id: 'DEFAULT', medium: 'voice' },
+      { id: '3', brand_id: 'DEFAULT', medium: 'copy' },  { id: '4', brand_id: 'DEFAULT', medium: 'video' },
+      { id: '5', brand_id: 'DEFAULT', medium: 'web' },   { id: '6', brand_id: 'LucienSael', medium: 'copy' },
+    ];
+    eq(PURE.selectHumanize(rows, 'LucienSael').id, '6', 'gana la fila de la marca aunque venga última');
+  });
+  await test('A2-b·humanize: marca con único perfil medium=text (LucienSael) → ese', () => {
+    const rows = [
+      { id: 'd-copy', brand_id: 'DEFAULT', medium: 'copy' },
+      { id: 'lucien', brand_id: 'LucienSael', medium: 'text' },
+    ];
+    eq(PURE.selectHumanize(rows, 'LucienSael').id, 'lucien', 'medium=text de la marca gana al copy de DEFAULT');
+  });
+  await test('A2-c·humanize: marca sin fila → DEFAULT de medium=copy, nunca null ni video', () => {
+    const rows = [
+      { id: 'v', brand_id: 'DEFAULT', medium: 'video' }, { id: 'c', brand_id: 'DEFAULT', medium: 'copy' },
+      { id: 'i', brand_id: 'DEFAULT', medium: 'image' },
+    ];
+    const got = PURE.selectHumanize(rows, 'MarcaSinFila');
+    assert(got !== null, 'nunca null cuando hay DEFAULT');
+    eq(got.id, 'c', 'cae al DEFAULT de copy, no a video');
+  });
+  await test('A2-d·humanize: determinista ante el mismo conjunto desordenado', () => {
+    const a = [
+      { id: '3', brand_id: 'DEFAULT', medium: 'copy' }, { id: '1', brand_id: 'DEFAULT', medium: 'web' },
+      { id: '2', brand_id: 'B', medium: 'text' },       { id: '4', brand_id: 'B', medium: 'copy' },
+    ];
+    const b = [...a].reverse();
+    eq(PURE.selectHumanize(a, 'B').id, PURE.selectHumanize(b, 'B').id, 'mismo id sin importar el orden');
+    eq(PURE.selectHumanize(a, 'B').id, '4', 'marca + copy gana');
+  });
+
+  // A3 — el modo literal (teasers/announcements del Orchestrator) elegía el
+  // genoma por `[0]`: el mismo bug que §5.4 corrigió en buildPrompt, intacto en
+  // el otro camino. LucienSael tiene dos genomas activos.
+  await test('A3-a·literal: selecciona el genoma por voice_id (no [0])', async () => {
+    const cache = { brand_voice_genome: [
+      { voice_id: 'lucien_editorial', identity_anchors: 'ANCHOR_EDITORIAL' },
+      { voice_id: 'lucien_social', identity_anchors: 'ANCHOR_SOCIAL' },
+    ] };
+    const fx = installFetch({ snapshot: [{ cache_data: cache }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'LucienSael', 'lucien_social');
+      const sys = String(fx.claudeBodies[0]?.system ?? '');
+      assert(sys.includes('ANCHOR_SOCIAL') && !sys.includes('ANCHOR_EDITORIAL'), 'usa el genoma social, no el [0] del array');
+    } finally { fx.restore(); }
+  });
+  await test('A3-a-warn·literal: sin voice_id y >1 genoma → warn nominal, no silencio', async () => {
+    const warns: string[] = [];
+    const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
+    const cache = { brand_voice_genome: [{ voice_id: 'lucien_editorial' }, { voice_id: 'lucien_social' }] };
+    const fx = installFetch({ snapshot: [{ cache_data: cache }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'LucienSael', null);
+      assert(warns.some(w => w.includes('LucienSael') && w.includes('lucien_editorial') && w.includes('lucien_social')), 'warn nominal listando las voces');
+    } finally { fx.restore(); console.warn = realWarn; }
   });
 
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo
