@@ -72,6 +72,43 @@ async function assertThrows(fn: () => any, includes: string): Promise<void> {
   throw new Error(`se esperaba throw con "${includes}", no lanzó`);
 }
 
+// ── diff línea a línea para el golden (LCS) ─────────────────────────────────
+type DiffLine = { tag: '-' | '+'; line: string };
+function diffLines(a: string, b: string): DiffLine[] {
+  const A = a.split('\n'), B = b.split('\n');
+  const n = A.length, m = B.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { out.push({ tag: '-', line: A[i++] }); }
+    else { out.push({ tag: '+', line: B[j++] }); }
+  }
+  while (i < n) out.push({ tag: '-', line: A[i++] });
+  while (j < m) out.push({ tag: '+', line: B[j++] });
+  return out;
+}
+// Clasifica un renglón de diff por CONTENIDO (no por número de línea — un cambio
+// de longitud desplazaría todo el resto). La lista es CERRADA: lo que no encaje
+// en los tres deltas declarados hace fallar el test con el diff impreso.
+function clasificar(d: DiffLine): string | null {
+  const l = d.line;
+  if (/\bIDIOMA\b|IDIOMA DE GENERACIÓN/.test(l)) return 'DELTA_IDIOMA';
+  if (/VOICE GENOME INJECTION|^VOICE ID:|\bvoice_id\b/.test(l)) return 'DELTA_GENOMA';
+  if (/VOZ DE MARCA — BASE|^Personalidad:|^Reglas de autenticidad:|^Anti-patterns:/.test(l)) return 'DELTA_HUMANIZE';
+  return null;
+}
+function fmtDiff(d: DiffLine): string { return `${d.tag} ${d.line}`; }
+function stripGoldenHeader(raw: string): string {
+  const lines = raw.split('\n');
+  let k = 0; while (k < lines.length && lines[k].startsWith('# ')) k++;
+  return lines.slice(k).join('\n');
+}
+
 // ── extracción del bloque puro desde la fuente desplegada ───────────────────
 function extractPure(): any {
   const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
@@ -219,8 +256,33 @@ async function run() {
 
   console.log('\n[integración · buildPrompt / handler con fetch mockeado]');
 
-  // Case 1 — retrocompat: sin builder_input, ensamblado UI estable y sin fugas
-  await test('1·retrocompat: UI sin builder_input — orden de capas estable, sin fugas de carril', async () => {
+  // Case 1 — golden: la UI solo puede diferir del código PRE-contratos en los
+  // tres deltas declarados (§3.6). El golden se generó desde api/execute.ts
+  // @ da182aa (43056 b), no desde main — comparar main contra sí mismo sería el
+  // defecto que este caso repara. Lista blanca CERRADA: cualquier otra
+  // diferencia falla con el diff impreso.
+  await test('1·golden: la UI solo difiere del pre-contratos en los 3 deltas declarados', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const actual = (await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }))).system;
+      const golden = stripGoldenHeader(readFileSync(new URL('./__fixtures__/golden_ui_main.txt', import.meta.url), 'utf8'));
+      const diffs = diffLines(golden, actual);
+      const sinClasificar = diffs.filter(d => !clasificar(d));
+      assert(
+        sinClasificar.length === 0,
+        `delta NO declarado (${sinClasificar.length} de ${diffs.length} renglones de diff):\n${sinClasificar.map(fmtDiff).join('\n')}`,
+      );
+      // los renglones que sí cambiaron deben pertenecer a la lista blanca
+      for (const d of diffs) {
+        const k = clasificar(d);
+        assert(k === 'DELTA_IDIOMA' || k === 'DELTA_GENOMA' || k === 'DELTA_HUMANIZE', `delta fuera de lista: ${fmtDiff(d)}`);
+      }
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // Case 1b — determinismo + ausencia de fugas de carril en modo UI
+  await test('1b·determinismo + sin fugas de carril (UI sin builder_input)', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({});
     try {
