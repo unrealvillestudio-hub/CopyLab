@@ -94,12 +94,14 @@ function diffLines(a: string, b: string): DiffLine[] {
 }
 // Clasifica un renglón de diff por CONTENIDO (no por número de línea — un cambio
 // de longitud desplazaría todo el resto). La lista es CERRADA: lo que no encaje
-// en los tres deltas declarados hace fallar el test con el diff impreso.
+// en los tres deltas declarados hace fallar el test con el diff impreso. Anclado
+// a inicios de línea exactos (§C.4) — regex anchas dejarían pasar drift real
+// clasificándolo como delta declarado.
 function clasificar(d: DiffLine): string | null {
   const l = d.line;
-  if (/\bIDIOMA\b|IDIOMA DE GENERACIÓN/.test(l)) return 'DELTA_IDIOMA';
-  if (/VOICE GENOME INJECTION|^VOICE ID:|\bvoice_id\b/.test(l)) return 'DELTA_GENOMA';
-  if (/VOZ DE MARCA — BASE|^Personalidad:|^Reglas de autenticidad:|^Anti-patterns:/.test(l)) return 'DELTA_HUMANIZE';
+  if (/^MARCA: |^IDIOMA OBLIGATORIO: |^IDIOMA DE GENERACIÓN: /.test(l)) return 'DELTA_IDIOMA';
+  if (/^VOICE ID: /.test(l)) return 'DELTA_GENOMA';
+  if (/^Tono: |^Personalidad: |^Reglas de autenticidad: |^Anti-patterns: /.test(l)) return 'DELTA_HUMANIZE';
   return null;
 }
 function fmtDiff(d: DiffLine): string { return `${d.tag} ${d.line}`; }
@@ -175,6 +177,37 @@ const FULL_SNAPSHOT = {
   ctas: [{ cta_smpc: 'Buy now' }],
   brand_copy_profiles: [{ id: 'cp1', voice_tone_primary: 'vtp', voice_writing_style: 'vws', style_hooks: ['sh'], style_avoid_phrases: ['sap'] }],
   brand_voice_genome: [GENOME_V1],
+  creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'inst', aggro_min: 1, aggro_max: 5 }],
+  tension_architectures: [{ id: 'TEN1', label: 'TL', instruction: 'ti', curve: 'cu' }],
+  aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'AL', instruction: 'ai', anti_hedging: 'ah' }],
+  creative_compatibility_rules: [{ content_type: 'social_post', allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+  pipeline_skills: [{ layer_code: 'LX', layer_order: 1, applies_to: ['social_post'] }],
+  output_templates: [{ id: 't1', name: 'TPL', category: 'social_post', template_text: 'tmpl', active: true }],
+};
+// Forma de producción real (PR C): registro como `brand` singular (v2.1) · dos
+// genomas hermanos · humanize [DEFAULT×5 (copy/image/video/voice/web), marca(text)].
+// Debe coincidir byte a byte con scratchpad/prod_snapshot.json usado para generar
+// api/__fixtures__/golden_ui_prod.txt.
+const PROD_SNAPSHOT = {
+  brand: { id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en/FL' },
+  humanize_profiles: [
+    { id: 'd-copy',  brand_id: 'DEFAULT',    medium: 'copy',  tone: 'default-copy-tone', personality: 'def-persona', authenticity_rules: 'def-auth', anti_patterns: ['def-anti'] },
+    { id: 'd-image', brand_id: 'DEFAULT',    medium: 'image', tone: 'img', personality: 'i', authenticity_rules: 'i', anti_patterns: ['i'] },
+    { id: 'd-video', brand_id: 'DEFAULT',    medium: 'video', tone: 'vid', personality: 'v', authenticity_rules: 'v', anti_patterns: ['v'] },
+    { id: 'd-voice', brand_id: 'DEFAULT',    medium: 'voice', tone: 'voi', personality: 'vo', authenticity_rules: 'vo', anti_patterns: ['vo'] },
+    { id: 'd-web',   brand_id: 'DEFAULT',    medium: 'web',   tone: 'web', personality: 'w', authenticity_rules: 'w', anti_patterns: ['w'] },
+    { id: 'lucien',  brand_id: 'LucienSael', medium: 'text',  tone: 'marca-text-tone', personality: 'marca-persona', authenticity_rules: 'marca-auth', anti_patterns: ['marca-anti'] },
+  ],
+  brand_voice_genome: [
+    { voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ANCHOR_ED', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
+    { voice_id: 'lucien_social', version: '1', maturity: 'stable', identity_anchors: 'ANCHOR_SO', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
+  ],
+  brand_goals: [{ goal_text: 'g1', priority: 1 }],
+  brand_personas: [{ label: 'P', pain_points: ['pp'], copy_hooks: ['ch'], tone_for_segment: 'ts', avoid: ['av'] }],
+  compliance_rules: [{ rule_text: 'must comply' }],
+  keywords: [{ keyword: 'k1' }],
+  ctas: [{ cta_smpc: 'Buy now' }],
+  brand_copy_profiles: [{ id: 'cp1', voice_tone_primary: 'vtp', voice_writing_style: 'vws', style_hooks: ['sh'], style_avoid_phrases: ['sap'] }],
   creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'inst', aggro_min: 1, aggro_max: 5 }],
   tension_architectures: [{ id: 'TEN1', label: 'TL', instruction: 'ti', curve: 'cu' }],
   aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'AL', instruction: 'ai', anti_hedging: 'ah' }],
@@ -282,6 +315,32 @@ async function run() {
         const k = clasificar(d);
         assert(k === 'DELTA_IDIOMA' || k === 'DELTA_GENOMA' || k === 'DELTA_HUMANIZE', `delta fuera de lista: ${fmtDiff(d)}`);
       }
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // Case 1-prod — golden sobre la forma de PRODUCCIÓN. A diferencia de
+  // FULL_SNAPSHOT (diff vacío), PROD_SNAPSHOT SÍ dispara los deltas, así que la
+  // lista blanca se estrena: se EXIGE que DELTA_IDIOMA y DELTA_HUMANIZE
+  // aparezcan — un delta declarado que no se manifiesta es un delta que no se
+  // implementó (§C.3). DELTA_GENOMA NO se exige: es carril-only — en modo UI el
+  // código pre y post seleccionan genomes[0] (mismo genoma), así que no puede
+  // manifestarse en un golden de UI; su corrección la cubren los casos 3/4/A3-a.
+  await test('1-prod·golden PROD: DELTA_IDIOMA y DELTA_HUMANIZE se manifiestan; nada fuera de la lista', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const actual = (await buildPrompt(reqWith({ brandContext: PROD_SNAPSHOT }, { brandId: 'LucienSael' }))).system;
+      const golden = stripGoldenHeader(readFileSync(new URL('./__fixtures__/golden_ui_prod.txt', import.meta.url), 'utf8'));
+      const diffs = diffLines(golden, actual);
+      assert(diffs.length > 0, 'PROD_SNAPSHOT debe producir diferencias (los deltas)');
+      const sinClasificar = diffs.filter(d => !clasificar(d));
+      assert(
+        sinClasificar.length === 0,
+        `delta NO declarado (${sinClasificar.length} de ${diffs.length}):\n${sinClasificar.map(fmtDiff).join('\n')}`,
+      );
+      const kinds = new Set(diffs.map(clasificar));
+      assert(kinds.has('DELTA_IDIOMA'), 'DELTA_IDIOMA debe manifestarse (idioma real reemplaza el literal ES)');
+      assert(kinds.has('DELTA_HUMANIZE'), 'DELTA_HUMANIZE debe manifestarse (perfil de la marca reemplaza al DEFAULT)');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
