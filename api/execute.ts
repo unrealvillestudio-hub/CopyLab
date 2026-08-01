@@ -69,11 +69,30 @@ async function createJob(input: unknown): Promise<string> {
 
 // ── INTERFACES ────────────────────────────────────────────────────────────
 
+// ── BUILDER_INPUT — el transporte del modo carril (Contrato 1, §3.2) ───────
+// Top-level, hermana de brandId/stage/params/previousOutputs. Su PRESENCIA
+// activa el modo carril; su AUSENCIA deja intacto el modo UI (§3.3). Todos los
+// campos llegan YA RESUELTOS por el carril (voz, destino, reglas) — CopyLab no
+// vuelve a resolver ninguno (§2). Consumo obligatorio en §3.4.
+interface BuilderInput {
+  domain: string;                                   // requerido
+  voice_id: string;                                 // YA RESUELTO por el carril
+  destination: 'editorial' | 'social';              // YA RESUELTO
+  platform: string;                                 // x | meta_fb | meta_ig | linkedin | blog | tiktok | email_propietarios
+  language: string | null;                          // eje M-12·B
+  psycho_preset: string | null;
+  rules: Array<{ code: string; kind: string; statement: string }>;
+  iid_brief: string;
+  angle: string | null;
+  audience_frame: 'jd' | 'doliente' | 'general' | null;
+}
+
 interface ExecuteRequest {
   brandId: string | null;
   stage: { labId: string; label: string; description: string; order: number };
   params: { pack?: string; canal?: string; idioma?: string; extra_instructions?: string; };
   previousOutputs: Record<string, string>;
+  builder_input?: BuilderInput;
   meta?: {
     motor?: 'claude' | 'gemini';
     sequence_type?: string;
@@ -108,6 +127,123 @@ interface VoiceGenome {
 }
 interface OutputTemplate {
   id: string; name: string; category: string; template_text: string | null;
+}
+
+// ── PURE HELPERS (harness-tested — api/execute.test.ts) ────────────────────
+// Everything in this region is side-effect free: no network, no env reads, no
+// Date.now / Math.random. The QA harness extracts this exact block from the
+// deployed source and exercises it in isolation, so it must stay self-contained
+// and pure. Keep new pure logic here.
+
+// Canonical internal cache shape. Every slice is an array. A missing OR empty
+// slice is ABSENCE (see sliceOf) — it can never cancel the query that would
+// fill it (§5.3.1 / §5.3.4).
+interface NormalizedCache {
+  brands: any[];
+  humanize_profiles: any[];
+  brand_goals: any[];
+  brand_personas: any[];
+  compliance_rules: any[];
+  keywords: any[];
+  ctas: any[];
+  brand_copy_profiles: any[];
+  brand_voice_genome: any[];
+  creative_vectors: any[];
+  tension_architectures: any[];
+  aggro_presets: any[];
+  creative_compatibility_rules: any[];
+  pipeline_skills: any[];
+  output_templates: any[];
+  _shape: 'snapshot' | 'context_json';
+}
+
+const CACHE_SLICES: Array<keyof NormalizedCache> = [
+  'brands', 'humanize_profiles', 'brand_goals', 'brand_personas', 'compliance_rules',
+  'keywords', 'ctas', 'brand_copy_profiles', 'brand_voice_genome', 'creative_vectors',
+  'tension_architectures', 'aggro_presets', 'creative_compatibility_rules',
+  'pipeline_skills', 'output_templates',
+];
+
+function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
+  const nc: any = { _shape: shape };
+  for (const k of CACHE_SLICES) nc[k] = [];
+  return nc as NormalizedCache;
+}
+
+// Map either supported cache envelope to the single internal shape (§5.3.2):
+//   • brand_cache_snapshots.cache_data → native array slices.
+//   • context-cache EF context_json    → { identity, goals, personas, compliance }.
+// An unrecognized envelope returns { cache: null } so the caller warns nominally
+// and falls through to direct queries — a shape we don't understand must never
+// cancel a query.
+function normalizeCache(raw: any | null): { cache: NormalizedCache | null; shape: string; keys: string[] } {
+  if (!raw || typeof raw !== 'object') return { cache: null, shape: 'none', keys: [] };
+  const keys = Object.keys(raw);
+
+  const looksSnapshot =
+    Array.isArray(raw.brands) || Array.isArray(raw.brand_voice_genome) ||
+    Array.isArray(raw.brand_copy_profiles) || Array.isArray(raw.creative_vectors) ||
+    Array.isArray(raw.brand_goals) || Array.isArray(raw.brand_personas) ||
+    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles);
+
+  if (looksSnapshot) {
+    const nc = emptyNormalizedCache('snapshot');
+    for (const k of CACHE_SLICES) if (Array.isArray(raw[k])) (nc as any)[k] = raw[k];
+    return { cache: nc, shape: 'snapshot', keys };
+  }
+
+  const looksContextJson =
+    (raw.identity && typeof raw.identity === 'object') ||
+    Array.isArray(raw.goals) || Array.isArray(raw.personas) || 'compliance' in raw;
+
+  if (looksContextJson) {
+    const nc = emptyNormalizedCache('context_json');
+    const id = raw.identity ?? {};
+    if (id.display_name || id.name || id.language_primary || id.language || id.market) {
+      nc.brands = [{
+        id: id.id ?? id.brand_id ?? null,
+        display_name: id.display_name ?? id.name ?? null,
+        market: id.market ?? '',
+        language_primary: id.language_primary ?? id.language ?? null,
+      }];
+    }
+    if (id.copy_profile) nc.brand_copy_profiles = [id.copy_profile];
+    if (id.humanize)     nc.humanize_profiles   = [id.humanize];
+    if (id.voice_genome) nc.brand_voice_genome  = Array.isArray(id.voice_genome) ? id.voice_genome : [id.voice_genome];
+    if (Array.isArray(raw.goals))    nc.brand_goals    = raw.goals;
+    if (Array.isArray(raw.personas)) nc.brand_personas = raw.personas;
+    if (raw.compliance) {
+      nc.compliance_rules = Array.isArray(raw.compliance)
+        ? raw.compliance
+        : [{ rule_text: typeof raw.compliance === 'string' ? raw.compliance : (raw.compliance.rule_text ?? '') }];
+    }
+    return { cache: nc, shape: 'context_json', keys };
+  }
+
+  return { cache: null, shape: 'unknown', keys };
+}
+
+// A slice counts as PRESENT only when it is a non-empty array. A present-but-
+// empty array is absence — the caller must consult the source, never skip it.
+function sliceOf(cache: NormalizedCache | null, key: keyof NormalizedCache): any[] | null {
+  if (!cache) return null;
+  const v = (cache as any)[key];
+  return Array.isArray(v) && v.length ? (v as any[]) : null;
+}
+
+// Single language precedence — no 'ES' literal, no default (§5.3.3):
+//   builder_input.language → meta.language → params.idioma → brands.language_primary
+// Returns null when nothing resolves; the caller throws COPYLAB_LANGUAGE_UNRESOLVED.
+function resolveLanguage(
+  builderLanguage: string | null | undefined,
+  metaLanguage: string | undefined,
+  paramsIdioma: string | undefined,
+  brandLanguagePrimary: string | null | undefined,
+): string | null {
+  for (const c of [builderLanguage, metaLanguage, paramsIdioma, brandLanguagePrimary]) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return null;
 }
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -176,33 +312,6 @@ function resolveAppliedLayersFromData(contentType: string, skills: any[]): strin
 
 function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
-}
-
-async function selectCreativeCombo(
-  contentType: string,
-  aggroLevel: number,
-  previousVectorId?: string,
-): Promise<{ vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null; }> {
-  const [allVectors, allTensions, allAggros, rules] = await Promise.all([
-    sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
-    sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
-    sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
-    sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(contentType)}&active=eq.true&select=*`),
-  ]);
-  return applyCreativeLogic(contentType, aggroLevel, previousVectorId, allVectors, allTensions, allAggros, rules);
-}
-
-function selectCreativeComboFromData(
-  contentType: string,
-  aggroLevel: number,
-  previousVectorId: string | undefined,
-  allVectors: CreativeVector[],
-  allTensions: TensionArchitecture[],
-  allAggros: AggroPreset[],
-  allRules: CompatibilityRule[],
-): { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null } {
-  const rules = allRules.filter((r: any) => r.content_type === contentType);
-  return applyCreativeLogic(contentType, aggroLevel, previousVectorId, allVectors, allTensions, allAggros, rules);
 }
 
 function applyCreativeLogic(
@@ -296,16 +405,6 @@ function assembleVoiceGenomeLayer(genome: VoiceGenome, idioma: string): { layer:
   };
 }
 
-async function buildVoiceGenomeLayer(brandId: string, idioma: string): Promise<{
-  layer: string | null; voice_id: string | null; voice_version: string | null;
-}> {
-  const genome = await sb<VoiceGenome>(
-    `brand_voice_genome?brand_id=eq.${encodeURIComponent(brandId)}&active=eq.true&order=version.desc&limit=1`
-  );
-  if (!genome) return { layer: null, voice_id: null, voice_version: null };
-  return assembleVoiceGenomeLayer(genome, idioma);
-}
-
 // ── EMAIL SEQUENCE CONTEXT ─────────────────────────────────────────────────
 
 async function buildSequenceContext(req: ExecuteRequest): Promise<{
@@ -373,85 +472,87 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   };
   const aggroLevel = aggroByType[creativeContentType] ?? aggroByType[pipelineContentType] ?? 2;
 
-  // ── Cache resolution v9.5 ──────────────────────────────────────────────
-  let bc = (req.previousOutputs as any)?.brandContext ?? null;
-  if (!bc) {
-    bc = await fetchBrandCache(brandId);
+  // ── Cache resolution — per-slice suppression (§5.3) ────────────────────
+  // The old design cancelled all 8 queries whenever `bc` was truthy, so a
+  // present-but-hollow cache silently produced a piece with no L0. Now every
+  // source decides ALONE: a slice that is absent OR empty falls through to its
+  // own direct query. `isV2` as a global flag is gone (§5.3.4).
+  const rawCache = (req.previousOutputs as any)?.brandContext ?? await fetchBrandCache(brandId);
+  const { cache: bc, keys: cacheKeys } = normalizeCache(rawCache);
+  if (rawCache && !bc) {
+    console.warn(`[CopyLab] cache de marca con forma desconocida para ${brandId} — keys=[${cacheKeys.join(', ')}]; se ignora el cache y se consultan las fuentes directas`);
   }
 
-  // v9.7: tolerant v2 detection — recognize the cache as v2 if it carries
-  // ANY of the v2-only payloads (voice genome / copy profile / creative
-  // engine). Older brands may not have creative_vectors populated yet.
-  const isV2 = !!bc && (
-    Array.isArray((bc as any).creative_vectors)
-    || Array.isArray((bc as any).brand_voice_genome)
-    || Array.isArray((bc as any).brand_copy_profiles)
-  );
+  const eBrand = encodeURIComponent(brandId);
+  const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
-  const [brandData, humanize, goals, personas, compliance, keywords, ctas, copyProfile, seqContext] =
-    await Promise.all([
-      bc ? Promise.resolve(null) : sb<any>(`brands?id=eq.${brandId}&select=id,display_name,market,language_primary`),
-      bc ? Promise.resolve(null) : sb<any>(`humanize_profiles?brand_id=eq.${brandId}&select=*`),
-      bc ? Promise.resolve([])   : sbArray<any>(`brand_goals?brand_id=eq.${brandId}&select=goal_text,priority&order=priority`),
-      bc ? Promise.resolve([])   : sbArray<any>(`brand_personas?brand_id=eq.${brandId}&active=eq.true&select=*&order=priority`),
-      bc ? Promise.resolve(null) : sb<any>(`compliance_rules?brand_id=eq.${brandId}&active=eq.true&select=rule_text`),
-      bc ? Promise.resolve([])   : sbArray<any>(`keywords?brand_id=eq.${brandId}&select=keyword,type&limit=20`),
-      bc ? Promise.resolve([])   : sbArray<any>(`ctas?brand_id=eq.${brandId}&select=*&active=eq.true&limit=5`),
-      bc ? Promise.resolve(null) : sb<any>(`brand_copy_profiles?brand_id=eq.${brandId}&active=eq.true&select=*`),
-      isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
-    ]);
+  const [
+    brand, hum, goalsList, personasList, complianceRows, kwList, ctaList, cp,
+    genomes, allVectors, allTensions, allAggros, compatSliceRaw,
+    pipelineSkillsSlice, outputTemplatesSlice, seqContext,
+  ] = await Promise.all([
+    (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
+    (sliceOf(bc, 'humanize_profiles')?.[0]) ?? sb<any>(`humanize_profiles?brand_id=eq.${eBrand}&select=*`),
+    sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=goal_text,priority&order=priority`),
+    sliceOf(bc, 'brand_personas') ?? sbArray<any>(`brand_personas?brand_id=eq.${eBrand}&active=eq.true&select=*&order=priority`),
+    sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text`),
+    sliceOf(bc, 'keywords') ?? sbArray<any>(`keywords?brand_id=eq.${eBrand}&select=keyword,type&limit=20`),
+    sliceOf(bc, 'ctas') ?? sbArray<any>(`ctas?brand_id=eq.${eBrand}&select=*&active=eq.true&limit=5`),
+    (sliceOf(bc, 'brand_copy_profiles')?.[0]) ?? sb<any>(`brand_copy_profiles?brand_id=eq.${eBrand}&active=eq.true&select=*`),
+    sliceOf(bc, 'brand_voice_genome') ?? sbArray<any>(`brand_voice_genome?brand_id=eq.${eBrand}&active=eq.true&order=version.desc`),
+    sliceOf(bc, 'creative_vectors') ?? sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
+    sliceOf(bc, 'tension_architectures') ?? sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
+    sliceOf(bc, 'aggro_presets') ?? sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
+    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&active=eq.true&select=*`),
+    sliceOf(bc, 'pipeline_skills'),
+    sliceOf(bc, 'output_templates'),
+    isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
+  ]);
 
-  let brand: any, hum: any, goalsList: any[], personasList: any[], comp: any, kwList: any[], ctaList: any[], cp: any;
+  const comp = (complianceRows as any[]).length
+    ? { rule_text: (complianceRows as any[]).map((c: any) => c.rule_text).filter(Boolean).join('\n') }
+    : null;
 
-  if (bc) {
-    brand        = (bc as any).brands?.[0] ?? { id: brandId, display_name: brandId, market: '', language_primary: 'ES' };
-    hum          = bc.humanize_profiles?.[0]   ?? null;
-    goalsList    = bc.brand_goals              ?? [];
-    personasList = bc.brand_personas           ?? [];
-    comp         = bc.compliance_rules?.length
-                     ? { rule_text: bc.compliance_rules.map((c: any) => c.rule_text).join('\n') }
-                     : null;
-    kwList       = isV2 ? ((bc as any).keywords  ?? []) : [];
-    ctaList      = isV2 ? ((bc as any).ctas       ?? []) : [];
-    cp           = bc.brand_copy_profiles?.[0] ?? null;
-  } else {
-    brand = brandData; hum = humanize; goalsList = goals; personasList = personas;
-    comp = compliance; kwList = keywords; ctaList = ctas; cp = copyProfile;
+  // Language precedence — no 'ES' literal, no default (§5.3.3). brand may come
+  // from cache slice or from the direct query above; either way its real
+  // language_primary is honoured before anything falls to an error.
+  const idioma = resolveLanguage(req.builder_input?.language, meta.language, req.params.idioma, brand?.language_primary);
+  if (!idioma) {
+    throw new Error(`COPYLAB_LANGUAGE_UNRESOLVED: sin idioma para ${brandId} — declarar builder_input.language, meta.language, params.idioma o brands.language_primary`);
   }
-
-  const idioma    = meta.language ?? req.params.idioma ?? brand?.language_primary ?? 'ES';
   const market    = brand?.market ?? '';
   const brandName = brand?.display_name ?? brand?.name ?? brandId;
 
-  const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
-
-  let creativeCombo: { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null };
-  let voiceGenomeResult: { layer: string | null; voice_id: string | null; voice_version: string | null };
-  let appliedLayers: string[];
-  let outputTemplate: OutputTemplate | null;
-
-  if (isV2) {
-    creativeCombo = selectCreativeComboFromData(
-      creativeContentType, aggroLevel, previousVectorId,
-      (bc as any).creative_vectors ?? [],
-      (bc as any).tension_architectures ?? [],
-      (bc as any).aggro_presets ?? [],
-      (bc as any).creative_compatibility_rules ?? [],
-    );
-    const genome = (bc as any).brand_voice_genome?.[0] ?? null;
-    voiceGenomeResult = genome ? assembleVoiceGenomeLayer(genome, idioma) : { layer: null, voice_id: null, voice_version: null };
-    appliedLayers     = resolveAppliedLayersFromData(pipelineContentType, (bc as any).pipeline_skills ?? []);
-    outputTemplate    = ((bc as any).output_templates ?? []).find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null;
-  } else {
-    [creativeCombo, voiceGenomeResult, appliedLayers, outputTemplate] = await Promise.all([
-      selectCreativeCombo(creativeContentType, aggroLevel, previousVectorId),
-      buildVoiceGenomeLayer(brandId, idioma),
-      resolveAppliedLayers(pipelineContentType),
-      sb<OutputTemplate>(
-        `output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`
-      ),
-    ]);
+  // Creative engine — resolved per-slice; a genuinely empty catalogue or a
+  // missing compatibility rule degrades, but NEVER in silence (§5.3.4 / §7).
+  const compatForType = (compatSliceRaw as CompatibilityRule[]).filter(
+    (r: any) => r.content_type === creativeContentType,
+  );
+  if (!(allVectors as CreativeVector[]).length) {
+    console.warn(`[CopyLab] sin creative_vectors para ${brandId} (content_type=${creativeContentType}) — motor creativo degradado`);
+  } else if (!compatForType.length) {
+    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} — selección degradada a filtro por aggro`);
   }
+  const creativeCombo = applyCreativeLogic(
+    creativeContentType, aggroLevel, previousVectorId,
+    allVectors as CreativeVector[], allTensions as TensionArchitecture[],
+    allAggros as AggroPreset[], compatForType,
+  );
+
+  const appliedLayers = pipelineSkillsSlice
+    ? resolveAppliedLayersFromData(pipelineContentType, pipelineSkillsSlice)
+    : await resolveAppliedLayers(pipelineContentType);
+
+  const outputTemplate: OutputTemplate | null = outputTemplatesSlice
+    ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
+    : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
+
+  const genome = (genomes as any[])[0] ?? null;
+  const voiceGenomeResult = genome
+    ? assembleVoiceGenomeLayer(genome, idioma)
+    : { layer: null, voice_id: null, voice_version: null };
+
+  const bcShape = bc?._shape ?? null;
 
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
@@ -536,7 +637,9 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
-  const cacheMode = isV2 ? 'v2.0_zero_query' : bc ? 'v1.x_partial' : 'no_cache';
+  const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
+    : bcShape === 'context_json' ? 'context_json_per_slice'
+    : 'no_cache';
   const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
