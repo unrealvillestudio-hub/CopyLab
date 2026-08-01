@@ -69,11 +69,30 @@ async function createJob(input: unknown): Promise<string> {
 
 // ── INTERFACES ────────────────────────────────────────────────────────────
 
+// ── BUILDER_INPUT — el transporte del modo carril (Contrato 1, §3.2) ───────
+// Top-level, hermana de brandId/stage/params/previousOutputs. Su PRESENCIA
+// activa el modo carril; su AUSENCIA deja intacto el modo UI (§3.3). Todos los
+// campos llegan YA RESUELTOS por el carril (voz, destino, reglas) — CopyLab no
+// vuelve a resolver ninguno (§2). Consumo obligatorio en §3.4.
+interface BuilderInput {
+  domain: string;                                   // requerido
+  voice_id: string;                                 // YA RESUELTO por el carril
+  destination: 'editorial' | 'social';              // YA RESUELTO
+  platform: string;                                 // x | meta_fb | meta_ig | linkedin | blog | tiktok | email_propietarios
+  language: string | null;                          // eje M-12·B
+  psycho_preset: string | null;
+  rules: Array<{ code: string; kind: string; statement: string }>;
+  iid_brief: string;
+  angle: string | null;
+  audience_frame: 'jd' | 'doliente' | 'general' | null;
+}
+
 interface ExecuteRequest {
   brandId: string | null;
   stage: { labId: string; label: string; description: string; order: number };
   params: { pack?: string; canal?: string; idioma?: string; extra_instructions?: string; };
   previousOutputs: Record<string, string>;
+  builder_input?: BuilderInput;
   meta?: {
     motor?: 'claude' | 'gemini';
     sequence_type?: string;
@@ -110,39 +129,251 @@ interface OutputTemplate {
   id: string; name: string; category: string; template_text: string | null;
 }
 
+// ── PURE HELPERS (harness-tested — api/execute.test.ts) ────────────────────
+// Everything in this region is side-effect free: no network, no env reads, no
+// Date.now / Math.random. The QA harness extracts this exact block from the
+// deployed source and exercises it in isolation, so it must stay self-contained
+// and pure. Keep new pure logic here.
+
+// ── COPYLAB_PURE:BEGIN ──────────────────────────────────────────────────────
+// The QA harness (api/execute.test.ts) extracts EXACTLY this block from the
+// deployed source, transpiles it, and exercises it in isolation. Nothing here
+// may reference module-level values (env getters, fetch, sb, Math.random,
+// Date) — only JS built-ins, `console`, and each other. Keep it self-contained.
+
+// Canonical internal cache shape. Every slice is an array. A missing OR empty
+// slice is ABSENCE (see sliceOf) — it can never cancel the query that would
+// fill it (§5.3.1 / §5.3.4).
+interface NormalizedCache {
+  brands: any[];
+  humanize_profiles: any[];
+  brand_goals: any[];
+  brand_personas: any[];
+  compliance_rules: any[];
+  keywords: any[];
+  ctas: any[];
+  brand_copy_profiles: any[];
+  brand_voice_genome: any[];
+  creative_vectors: any[];
+  tension_architectures: any[];
+  aggro_presets: any[];
+  creative_compatibility_rules: any[];
+  pipeline_skills: any[];
+  output_templates: any[];
+  _shape: 'snapshot' | 'context_json';
+}
+
+const CACHE_SLICES: Array<keyof NormalizedCache> = [
+  'brands', 'humanize_profiles', 'brand_goals', 'brand_personas', 'compliance_rules',
+  'keywords', 'ctas', 'brand_copy_profiles', 'brand_voice_genome', 'creative_vectors',
+  'tension_architectures', 'aggro_presets', 'creative_compatibility_rules',
+  'pipeline_skills', 'output_templates',
+];
+
+function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
+  const nc: any = { _shape: shape };
+  for (const k of CACHE_SLICES) nc[k] = [];
+  return nc as NormalizedCache;
+}
+
+// Map either supported cache envelope to the single internal shape (§5.3.2):
+//   • brand_cache_snapshots.cache_data → native array slices.
+//   • context-cache EF context_json    → { identity, goals, personas, compliance }.
+// An unrecognized envelope returns { cache: null } so the caller warns nominally
+// and falls through to direct queries — a shape we don't understand must never
+// cancel a query.
+function normalizeCache(raw: any | null): { cache: NormalizedCache | null; shape: string; keys: string[] } {
+  if (!raw || typeof raw !== 'object') return { cache: null, shape: 'none', keys: [] };
+  const keys = Object.keys(raw);
+
+  const looksSnapshot =
+    Array.isArray(raw.brands) || Array.isArray(raw.brand_voice_genome) ||
+    Array.isArray(raw.brand_copy_profiles) || Array.isArray(raw.creative_vectors) ||
+    Array.isArray(raw.brand_goals) || Array.isArray(raw.brand_personas) ||
+    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles);
+
+  if (looksSnapshot) {
+    const nc = emptyNormalizedCache('snapshot');
+    for (const k of CACHE_SLICES) if (Array.isArray(raw[k])) (nc as any)[k] = raw[k];
+    return { cache: nc, shape: 'snapshot', keys };
+  }
+
+  const looksContextJson =
+    (raw.identity && typeof raw.identity === 'object') ||
+    Array.isArray(raw.goals) || Array.isArray(raw.personas) || 'compliance' in raw;
+
+  if (looksContextJson) {
+    const nc = emptyNormalizedCache('context_json');
+    const id = raw.identity ?? {};
+    if (id.display_name || id.name || id.language_primary || id.language || id.market) {
+      nc.brands = [{
+        id: id.id ?? id.brand_id ?? null,
+        display_name: id.display_name ?? id.name ?? null,
+        market: id.market ?? '',
+        language_primary: id.language_primary ?? id.language ?? null,
+      }];
+    }
+    if (id.copy_profile) nc.brand_copy_profiles = [id.copy_profile];
+    if (id.humanize)     nc.humanize_profiles   = [id.humanize];
+    if (id.voice_genome) nc.brand_voice_genome  = Array.isArray(id.voice_genome) ? id.voice_genome : [id.voice_genome];
+    if (Array.isArray(raw.goals))    nc.brand_goals    = raw.goals;
+    if (Array.isArray(raw.personas)) nc.brand_personas = raw.personas;
+    if (raw.compliance) {
+      nc.compliance_rules = Array.isArray(raw.compliance)
+        ? raw.compliance
+        : [{ rule_text: typeof raw.compliance === 'string' ? raw.compliance : (raw.compliance.rule_text ?? '') }];
+    }
+    return { cache: nc, shape: 'context_json', keys };
+  }
+
+  return { cache: null, shape: 'unknown', keys };
+}
+
+// A slice counts as PRESENT only when it is a non-empty array. A present-but-
+// empty array is absence — the caller must consult the source, never skip it.
+function sliceOf(cache: NormalizedCache | null, key: keyof NormalizedCache): any[] | null {
+  if (!cache) return null;
+  const v = (cache as any)[key];
+  return Array.isArray(v) && v.length ? (v as any[]) : null;
+}
+
+// Single language precedence — no 'ES' literal, no default (§5.3.3):
+//   builder_input.language → meta.language → params.idioma → brands.language_primary
+// Returns null when nothing resolves; the caller throws COPYLAB_LANGUAGE_UNRESOLVED.
+function resolveLanguage(
+  builderLanguage: string | null | undefined,
+  metaLanguage: string | undefined,
+  paramsIdioma: string | undefined,
+  brandLanguagePrimary: string | null | undefined,
+): string | null {
+  for (const c of [builderLanguage, metaLanguage, paramsIdioma, brandLanguagePrimary]) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return null;
+}
+
+// Voice genome selection (§5.4). Carril mode (voiceId given) MUST match by
+// voice_id or throw COPYLAB_VOICE_NOT_FOUND naming the available voices — never
+// [0], because the array order decides the voice otherwise. UI mode (no voiceId)
+// keeps first-active but warns nominally when more than one genome is active and
+// nobody declared a voice, instead of today's silence.
+function selectGenome(genomes: any[], voiceId: string | null | undefined, brandId: string): any | null {
+  if (!genomes || !genomes.length) return null;
+  const available = genomes.map(g => g?.voice_id).filter(Boolean).sort();
+  if (voiceId) {
+    const match = genomes.find(g => g?.voice_id === voiceId);
+    if (!match) {
+      throw new Error(
+        `COPYLAB_VOICE_NOT_FOUND: voice_id '${voiceId}' no está en los genomas activos de ` +
+        `${brandId} (disponibles: ${available.join(', ') || '∅'})`,
+      );
+    }
+    return match;
+  }
+  if (genomes.length > 1) {
+    console.warn(
+      `[CopyLab] ${brandId} tiene ${genomes.length} genomas activos y ninguna voz declarada ` +
+      `(${available.join(', ')}) — usando el primero; declarar builder_input.voice_id para fijar la voz`,
+    );
+  }
+  return genomes[0];
+}
+
+// Token ceiling by destination (§3.5). The flat 1600 served neither destino:
+// editorial 4000 · social 640 en modo carril; el modo UI mantiene 1600.
+function maxTokensFor(builderInput: { destination?: string } | null | undefined): number {
+  if (!builderInput) return 1600;
+  if (builderInput.destination === 'editorial') return 4000;
+  if (builderInput.destination === 'social') return 640;
+  return 1600;
+}
+
+// Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
+// sentinel is internal to CopyLab — the carril receives title/body already split
+// and never parses again. body is trimmed and never carries a trailing signature.
+function parsePiece(output: string): { title: string | null; body: string } {
+  const text = String(output ?? '').trim();
+  const m = text.match(/^\s*T[IÍ]TULO:\s*(.+?)\s*(?:\n|$)/i);
+  if (m) {
+    const title = m[1].trim();
+    return { title: title || null, body: text.slice(m[0].length).trim() };
+  }
+  return { title: null, body: text };
+}
+
+// The signature travels WITHOUT stamping (§4.3): stampSignature runs in the
+// carril's finalizePiece AFTER the Watcher PASS, so CopyLab must NEVER append it
+// to the body. When a rule declares a signature (kind ~ firma/signature), surface
+// it as { text, rule } so the carril can stamp post-Watcher; otherwise null.
+function deriveSignature(
+  rules: Array<{ code: string; kind: string; statement: string }> | null | undefined,
+): { text: string; rule: string } | null {
+  if (!Array.isArray(rules)) return null;
+  const sig = rules.find(r => r && typeof r.kind === 'string' && /firma|signature/i.test(r.kind) && r.statement);
+  return sig ? { text: String(sig.statement).trim(), rule: sig.code } : null;
+}
+
+// ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
+
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
 
+// sb/sbArray distinguish ABSENCE from FAILURE (§6). Heredar gobierno a un motor
+// fail-silent es perder la garantía: un 4xx era indistinguible de un [] vacío y
+// un fallo de red se tragaba en null. Ahora:
+//   • 200 + fila/[]  → dato o ausencia legítima (null / []).
+//   • 4xx / 5xx      → throw con el CUERPO de la respuesta (PostgREST nombra ahí
+//                      la columna ofensora).
+//   • red / abort    → throw etiquetado.
+// El carril etiqueta y persiste estos errores en orchestrator_jobs.error_log.
 async function sb<T>(path: string): Promise<T | null> {
+  let res: Response;
   try {
-    const res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
+    res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
       headers: { apikey: SB_KEY(), Authorization: `Bearer ${SB_KEY()}` },
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return Array.isArray(data) ? (data[0] ?? null) : data;
-  } catch { return null; }
+  } catch (e) {
+    throw new Error(`COPYLAB_SB_FETCH_FAILED ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`COPYLAB_SB_${res.status} ${path}: ${bodyText}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? (data[0] ?? null) : data;
 }
 
 async function sbArray<T>(path: string): Promise<T[]> {
+  let res: Response;
   try {
-    const res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
+    res = await fetch(`${SB_URL()}/rest/v1/${path}`, {
       headers: { apikey: SB_KEY(), Authorization: `Bearer ${SB_KEY()}` },
     });
-    if (!res.ok) return [];
-    return await res.json();
-  } catch { return []; }
+  } catch (e) {
+    throw new Error(`COPYLAB_SB_FETCH_FAILED ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`COPYLAB_SB_${res.status} ${path}: ${bodyText}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
 }
 
 // ── BRAND CACHE FETCH v9.5 ─────────────────────────────────────────────────
 
 async function fetchBrandCache(brandId: string): Promise<any | null> {
+  // El fallo del snapshot NO puede caer en silencio a la ruta v1.x y de ahí a
+  // null (§6.4): se avisa en cada salto. Un miss legítimo (200 + []) sí cae al
+  // fallback sin ruido; un fallo duro (4xx/5xx/red) avisa nominalmente.
   try {
     const snap = await sb<{ cache_data: any }>(`brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}&select=cache_data&limit=1`);
     if (snap?.cache_data) {
-      console.log(`[CopyLab v9.7] snapshot v2.0 hit for ${brandId} — ZERO queries`);
+      console.log(`[CopyLab v9.7] snapshot hit for ${brandId}`);
       return snap.cache_data;
     }
-  } catch { /* fall through */ }
+  } catch (e) {
+    console.warn(`[CopyLab] snapshot de ${brandId} falló (${e instanceof Error ? e.message : String(e)}) — probando fallback v1.x, luego fuentes directas`);
+  }
 
   try {
     const res = await fetch(`https://unrlvl-context.vercel.app/api/brand-cache?brand_id=${encodeURIComponent(brandId)}`);
@@ -150,7 +381,10 @@ async function fetchBrandCache(brandId: string): Promise<any | null> {
       console.log(`[CopyLab v9.7] brand-cache v1.x hit for ${brandId}`);
       return await res.json();
     }
-  } catch { /* fall through */ }
+    console.warn(`[CopyLab] fallback v1.x devolvió ${res.status} para ${brandId} — se consultarán las fuentes directas`);
+  } catch (e) {
+    console.warn(`[CopyLab] fallback v1.x de ${brandId} falló (${e instanceof Error ? e.message : String(e)}) — se consultarán las fuentes directas`);
+  }
 
   console.log(`[CopyLab v9.7] cache miss for ${brandId} — falling back to direct queries`);
   return null;
@@ -176,33 +410,6 @@ function resolveAppliedLayersFromData(contentType: string, skills: any[]): strin
 
 function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
-}
-
-async function selectCreativeCombo(
-  contentType: string,
-  aggroLevel: number,
-  previousVectorId?: string,
-): Promise<{ vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null; }> {
-  const [allVectors, allTensions, allAggros, rules] = await Promise.all([
-    sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
-    sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
-    sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
-    sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(contentType)}&active=eq.true&select=*`),
-  ]);
-  return applyCreativeLogic(contentType, aggroLevel, previousVectorId, allVectors, allTensions, allAggros, rules);
-}
-
-function selectCreativeComboFromData(
-  contentType: string,
-  aggroLevel: number,
-  previousVectorId: string | undefined,
-  allVectors: CreativeVector[],
-  allTensions: TensionArchitecture[],
-  allAggros: AggroPreset[],
-  allRules: CompatibilityRule[],
-): { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null } {
-  const rules = allRules.filter((r: any) => r.content_type === contentType);
-  return applyCreativeLogic(contentType, aggroLevel, previousVectorId, allVectors, allTensions, allAggros, rules);
 }
 
 function applyCreativeLogic(
@@ -296,16 +503,6 @@ function assembleVoiceGenomeLayer(genome: VoiceGenome, idioma: string): { layer:
   };
 }
 
-async function buildVoiceGenomeLayer(brandId: string, idioma: string): Promise<{
-  layer: string | null; voice_id: string | null; voice_version: string | null;
-}> {
-  const genome = await sb<VoiceGenome>(
-    `brand_voice_genome?brand_id=eq.${encodeURIComponent(brandId)}&active=eq.true&order=version.desc&limit=1`
-  );
-  if (!genome) return { layer: null, voice_id: null, voice_version: null };
-  return assembleVoiceGenomeLayer(genome, idioma);
-}
-
 // ── EMAIL SEQUENCE CONTEXT ─────────────────────────────────────────────────
 
 async function buildSequenceContext(req: ExecuteRequest): Promise<{
@@ -337,19 +534,43 @@ async function buildSequenceContext(req: ExecuteRequest): Promise<{
 
 // ── BUILD COPY PROMPT ──────────────────────────────────────────────────────
 
-async function buildPrompt(req: ExecuteRequest): Promise<{
+export async function buildPrompt(req: ExecuteRequest): Promise<{
   system: string;
   user: string;
   layers_applied: string[];
   voice_id: string | null;
   voice_version: string | null;
+  language: string;
   creative_seed: { vector_id: string | null; tension_id: string | null; aggro_id: string | null; };
   cache_mode: string;
+  max_tokens: number;
+  signature: { text: string; rule: string } | null;
+  psycho_preset: string | null;
+  platform_key: string | null;
+  copy_profile_id: string | null;
+  humanize_profile_id: string | null;
+  rules_injected: string[];
+  rules_skipped: string[];
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
   const canal   = req.params.canal ?? 'instagram';
   const meta    = req.meta ?? {};
+
+  // ── Modo carril (§3.3): la PRESENCIA de builder_input activa el carril.
+  //    Consumo obligatorio y validación fail-fast en §3.4 — nada de defaults.
+  const bi = req.builder_input ?? null;
+  if (bi) {
+    if (bi.destination !== 'editorial' && bi.destination !== 'social') {
+      throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
+    }
+    if (!bi.voice_id || !String(bi.voice_id).trim()) {
+      throw new Error('COPYLAB_VOICE_ID_REQUIRED: builder_input.voice_id es obligatorio en modo carril — nunca [0]');
+    }
+    if (!bi.iid_brief || !String(bi.iid_brief).trim()) {
+      throw new Error('COPYLAB_IID_BRIEF_REQUIRED: builder_input.iid_brief es obligatorio en modo carril');
+    }
+  }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
   const isProductB2C     = pack === 'product_description_pack';
@@ -373,85 +594,136 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   };
   const aggroLevel = aggroByType[creativeContentType] ?? aggroByType[pipelineContentType] ?? 2;
 
-  // ── Cache resolution v9.5 ──────────────────────────────────────────────
-  let bc = (req.previousOutputs as any)?.brandContext ?? null;
-  if (!bc) {
-    bc = await fetchBrandCache(brandId);
+  // ── Cache resolution — per-slice suppression (§5.3) ────────────────────
+  // The old design cancelled all 8 queries whenever `bc` was truthy, so a
+  // present-but-hollow cache silently produced a piece with no L0. Now every
+  // source decides ALONE: a slice that is absent OR empty falls through to its
+  // own direct query. `isV2` as a global flag is gone (§5.3.4).
+  const rawCache = (req.previousOutputs as any)?.brandContext ?? await fetchBrandCache(brandId);
+  const { cache: bc, keys: cacheKeys } = normalizeCache(rawCache);
+  if (rawCache && !bc) {
+    console.warn(`[CopyLab] cache de marca con forma desconocida para ${brandId} — keys=[${cacheKeys.join(', ')}]; se ignora el cache y se consultan las fuentes directas`);
   }
 
-  // v9.7: tolerant v2 detection — recognize the cache as v2 if it carries
-  // ANY of the v2-only payloads (voice genome / copy profile / creative
-  // engine). Older brands may not have creative_vectors populated yet.
-  const isV2 = !!bc && (
-    Array.isArray((bc as any).creative_vectors)
-    || Array.isArray((bc as any).brand_voice_genome)
-    || Array.isArray((bc as any).brand_copy_profiles)
-  );
+  const eBrand = encodeURIComponent(brandId);
+  const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
-  const [brandData, humanize, goals, personas, compliance, keywords, ctas, copyProfile, seqContext] =
-    await Promise.all([
-      bc ? Promise.resolve(null) : sb<any>(`brands?id=eq.${brandId}&select=id,display_name,market,language_primary`),
-      bc ? Promise.resolve(null) : sb<any>(`humanize_profiles?brand_id=eq.${brandId}&select=*`),
-      bc ? Promise.resolve([])   : sbArray<any>(`brand_goals?brand_id=eq.${brandId}&select=goal_text,priority&order=priority`),
-      bc ? Promise.resolve([])   : sbArray<any>(`brand_personas?brand_id=eq.${brandId}&active=eq.true&select=*&order=priority`),
-      bc ? Promise.resolve(null) : sb<any>(`compliance_rules?brand_id=eq.${brandId}&active=eq.true&select=rule_text`),
-      bc ? Promise.resolve([])   : sbArray<any>(`keywords?brand_id=eq.${brandId}&select=keyword,type&limit=20`),
-      bc ? Promise.resolve([])   : sbArray<any>(`ctas?brand_id=eq.${brandId}&select=*&active=eq.true&limit=5`),
-      bc ? Promise.resolve(null) : sb<any>(`brand_copy_profiles?brand_id=eq.${brandId}&active=eq.true&select=*`),
-      isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
-    ]);
+  const [
+    brand, hum, goalsList, personasList, complianceRows, kwList, ctaList, cp,
+    genomes, allVectors, allTensions, allAggros, compatSliceRaw,
+    pipelineSkillsSlice, outputTemplatesSlice, seqContext,
+  ] = await Promise.all([
+    (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
+    (sliceOf(bc, 'humanize_profiles')?.[0]) ?? sb<any>(`humanize_profiles?brand_id=eq.${eBrand}&select=*`),
+    sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=goal_text,priority&order=priority`),
+    sliceOf(bc, 'brand_personas') ?? sbArray<any>(`brand_personas?brand_id=eq.${eBrand}&active=eq.true&select=*&order=priority`),
+    sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text`),
+    sliceOf(bc, 'keywords') ?? sbArray<any>(`keywords?brand_id=eq.${eBrand}&select=keyword,type&limit=20`),
+    sliceOf(bc, 'ctas') ?? sbArray<any>(`ctas?brand_id=eq.${eBrand}&select=*&active=eq.true&limit=5`),
+    (sliceOf(bc, 'brand_copy_profiles')?.[0]) ?? sb<any>(`brand_copy_profiles?brand_id=eq.${eBrand}&active=eq.true&select=*`),
+    sliceOf(bc, 'brand_voice_genome') ?? sbArray<any>(`brand_voice_genome?brand_id=eq.${eBrand}&active=eq.true&order=version.desc`),
+    sliceOf(bc, 'creative_vectors') ?? sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
+    sliceOf(bc, 'tension_architectures') ?? sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
+    sliceOf(bc, 'aggro_presets') ?? sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
+    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&active=eq.true&select=*`),
+    sliceOf(bc, 'pipeline_skills'),
+    sliceOf(bc, 'output_templates'),
+    isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
+  ]);
 
-  let brand: any, hum: any, goalsList: any[], personasList: any[], comp: any, kwList: any[], ctaList: any[], cp: any;
+  const comp = (complianceRows as any[]).length
+    ? { rule_text: (complianceRows as any[]).map((c: any) => c.rule_text).filter(Boolean).join('\n') }
+    : null;
 
-  if (bc) {
-    brand        = (bc as any).brands?.[0] ?? { id: brandId, display_name: brandId, market: '', language_primary: 'ES' };
-    hum          = bc.humanize_profiles?.[0]   ?? null;
-    goalsList    = bc.brand_goals              ?? [];
-    personasList = bc.brand_personas           ?? [];
-    comp         = bc.compliance_rules?.length
-                     ? { rule_text: bc.compliance_rules.map((c: any) => c.rule_text).join('\n') }
-                     : null;
-    kwList       = isV2 ? ((bc as any).keywords  ?? []) : [];
-    ctaList      = isV2 ? ((bc as any).ctas       ?? []) : [];
-    cp           = bc.brand_copy_profiles?.[0] ?? null;
-  } else {
-    brand = brandData; hum = humanize; goalsList = goals; personasList = personas;
-    comp = compliance; kwList = keywords; ctaList = ctas; cp = copyProfile;
+  // Language precedence — no 'ES' literal, no default (§5.3.3). brand may come
+  // from cache slice or from the direct query above; either way its real
+  // language_primary is honoured before anything falls to an error.
+  const idioma = resolveLanguage(bi?.language, meta.language, req.params.idioma, brand?.language_primary);
+  if (!idioma) {
+    throw new Error(`COPYLAB_LANGUAGE_UNRESOLVED: sin idioma para ${brandId} — declarar builder_input.language, meta.language, params.idioma o brands.language_primary`);
   }
-
-  const idioma    = meta.language ?? req.params.idioma ?? brand?.language_primary ?? 'ES';
   const market    = brand?.market ?? '';
   const brandName = brand?.display_name ?? brand?.name ?? brandId;
 
-  const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
-
-  let creativeCombo: { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null };
-  let voiceGenomeResult: { layer: string | null; voice_id: string | null; voice_version: string | null };
-  let appliedLayers: string[];
-  let outputTemplate: OutputTemplate | null;
-
-  if (isV2) {
-    creativeCombo = selectCreativeComboFromData(
-      creativeContentType, aggroLevel, previousVectorId,
-      (bc as any).creative_vectors ?? [],
-      (bc as any).tension_architectures ?? [],
-      (bc as any).aggro_presets ?? [],
-      (bc as any).creative_compatibility_rules ?? [],
-    );
-    const genome = (bc as any).brand_voice_genome?.[0] ?? null;
-    voiceGenomeResult = genome ? assembleVoiceGenomeLayer(genome, idioma) : { layer: null, voice_id: null, voice_version: null };
-    appliedLayers     = resolveAppliedLayersFromData(pipelineContentType, (bc as any).pipeline_skills ?? []);
-    outputTemplate    = ((bc as any).output_templates ?? []).find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null;
-  } else {
-    [creativeCombo, voiceGenomeResult, appliedLayers, outputTemplate] = await Promise.all([
-      selectCreativeCombo(creativeContentType, aggroLevel, previousVectorId),
-      buildVoiceGenomeLayer(brandId, idioma),
-      resolveAppliedLayers(pipelineContentType),
-      sb<OutputTemplate>(
-        `output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`
-      ),
-    ]);
+  // Creative engine — resolved per-slice; a genuinely empty catalogue or a
+  // missing compatibility rule degrades, but NEVER in silence (§5.3.4 / §7).
+  const compatForType = (compatSliceRaw as CompatibilityRule[]).filter(
+    (r: any) => r.content_type === creativeContentType,
+  );
+  if (!(allVectors as CreativeVector[]).length) {
+    console.warn(`[CopyLab] sin creative_vectors para ${brandId} (content_type=${creativeContentType}) — motor creativo degradado`);
+  } else if (!compatForType.length) {
+    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} — selección degradada a filtro por aggro`);
   }
+  const creativeCombo = applyCreativeLogic(
+    creativeContentType, aggroLevel, previousVectorId,
+    allVectors as CreativeVector[], allTensions as TensionArchitecture[],
+    allAggros as AggroPreset[], compatForType,
+  );
+
+  const appliedLayers = pipelineSkillsSlice
+    ? resolveAppliedLayersFromData(pipelineContentType, pipelineSkillsSlice)
+    : await resolveAppliedLayers(pipelineContentType);
+
+  const outputTemplate: OutputTemplate | null = outputTemplatesSlice
+    ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
+    : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
+
+  const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
+  const voiceGenomeResult = genome
+    ? assembleVoiceGenomeLayer(genome, idioma)
+    : { layer: null, voice_id: null, voice_version: null };
+
+  const bcShape = bc?._shape ?? null;
+
+  // Psycho preset — injection_copy TEXTUAL desde public.psycho_presets (§3.4).
+  // Un preset inexistente o inactivo es ERROR, no default: escribir con un
+  // estímulo que nadie declaró es el sesgo que la Ruta B vino a matar, y gate7
+  // juzgaría contra un preset que el Builder nunca aplicó.
+  let psychoInjection: string | null = null;
+  if (bi?.psycho_preset) {
+    const preset = await sb<{ id: string; injection_copy: string }>(
+      `psycho_presets?id=eq.${encodeURIComponent(bi.psycho_preset)}&active=eq.true&select=id,injection_copy`,
+    );
+    if (!preset) {
+      throw new Error(`COPYLAB_PSYCHO_PRESET_NOT_FOUND: psycho_preset '${bi.psycho_preset}' no existe o está inactivo en public.psycho_presets`);
+    }
+    psychoInjection = preset.injection_copy ?? null;
+  }
+
+  // Watcher rules → bloque citable por código (§3.4). [] es legítimo. Una regla
+  // sin statement se registra en rules_skipped en vez de inyectarse muda.
+  const rulesInjected: string[] = [];
+  const rulesSkipped: string[] = [];
+  let watcherRulesBlock: string | null = null;
+  if (bi) {
+    const lines: string[] = [];
+    for (const r of bi.rules ?? []) {
+      if (r && r.statement && String(r.statement).trim()) {
+        rulesInjected.push(r.code);
+        lines.push(`- [${r.code}${r.kind ? ' · ' + r.kind : ''}] ${String(r.statement).trim()}`);
+      } else if (r) {
+        rulesSkipped.push(r.code ?? '∅');
+      }
+    }
+    if (lines.length) {
+      watcherRulesBlock = `REGLAS DEL WATCHER (citables por código — el stage 5 juzga con estas mismas):\n${lines.join('\n')}`;
+    }
+  }
+
+  // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
+  const AUDIENCE_CTA: Record<string, string> = {
+    jd: 'CTA orientado a la decisión de compra directa (quien decide). Claro y sin rodeos.',
+    doliente: 'CTA empático, de acompañamiento — la audiencia está en un momento sensible; invita sin presionar ni urgir.',
+    general: 'CTA de conversión estándar, claro y orientado al resultado.',
+  };
+  const audienceCtaBlock = bi?.audience_frame
+    ? `POLÍTICA DE CTA [audiencia: ${bi.audience_frame}]:\n${AUDIENCE_CTA[bi.audience_frame] ?? ''}`
+    : null;
+
+  // signature — surfaced, NUNCA estampada (§4.3). Se estampa en el carril
+  // (finalizePiece) DESPUÉS del PASS del Watcher.
+  const signature = deriveSignature(bi?.rules);
 
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
@@ -493,6 +765,10 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     if (parts.length) layers.push(`PERFIL DE COPY BP_COPY_1.0:\n${parts.join('\n')}`);
   }
 
+  if (bi && bi.angle && bi.angle.trim()) {
+    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
+  }
+
   if (voiceLayer) layers.push(voiceLayer);
 
   if (kwList.length) layers.push(`KEYWORDS: ${kwList.map((k: any) => k.keyword).join(', ')}`);
@@ -503,6 +779,9 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   }
 
   if (comp?.rule_text) layers.push(`COMPLIANCE — REGLAS OBLIGATORIAS:\n${comp.rule_text}`);
+
+  if (watcherRulesBlock) layers.push(watcherRulesBlock);
+  if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
   if (outputTemplate?.template_text) {
     layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${outputTemplate.template_text}`);
@@ -532,11 +811,17 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     layers.push(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
   }
 
+  if (psychoInjection) {
+    layers.push(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
+  }
+
   if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
   if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
-  const cacheMode = isV2 ? 'v2.0_zero_query' : bc ? 'v1.x_partial' : 'no_cache';
+  const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
+    : bcShape === 'context_json' ? 'context_json_per_slice'
+    : 'no_cache';
   const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
@@ -567,18 +852,37 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;
   }
 
+  // Carril mode overrides the user instruction: destination drives the format
+  // (editorial → TÍTULO: sentinel; social → body only) and the iid_brief is the
+  // neutral raw material — interpret it, NEVER copy it verbatim (§3.4 / §4.3).
+  if (bi) {
+    const fmt = bi.destination === 'editorial'
+      ? 'FORMATO (editorial):\n- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n- Luego una línea en blanco y el cuerpo.\n- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
+      : 'FORMATO (social):\n- Sin título, sin la etiqueta "TÍTULO:".\n- Solo el cuerpo, listo para publicar.\n- Termina en su última frase de contenido: sin CTA final añadido, sin firma.';
+    userInstruction = `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
+  }
+
   return {
     system,
     user: userInstruction,
     layers_applied: appliedLayers,
     voice_id,
     voice_version,
+    language: idioma,
     creative_seed: {
       vector_id: vector?.id ?? null,
       tension_id: tension?.id ?? null,
       aggro_id: aggro?.id ?? null,
     },
     cache_mode: cacheMode,
+    max_tokens: maxTokensFor(bi),
+    signature,
+    psycho_preset: bi?.psycho_preset ?? null,
+    platform_key: bi?.platform ?? null,
+    copy_profile_id: cp?.id ?? null,
+    humanize_profile_id: hum?.id ?? null,
+    rules_injected: rulesInjected,
+    rules_skipped: rulesSkipped,
   };
 }
 
@@ -704,7 +1008,7 @@ Generate now.`;
 
   const user = `LITERAL TEXT (USE VERBATIM):\n${literal}`;
 
-  const raw = await callClaude(system, user);
+  const { text: raw } = await callClaude(system, user);
   let parsed: { caption?: string; hashtags?: string[] } = {};
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
@@ -723,7 +1027,13 @@ Generate now.`;
 
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
-async function callClaude(system: string, user: string): Promise<string> {
+interface ClaudeUsage { input_tokens: number; output_tokens: number; }
+
+export async function callClaude(
+  system: string,
+  user: string,
+  maxTokens = 1600,
+): Promise<{ text: string; usage: ClaudeUsage }> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -733,8 +1043,9 @@ async function callClaude(system: string, user: string): Promise<string> {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      // Sonnet 5 tokenizer runs ~30% heavier than sonnet-4; bumped from 1200.
-      max_tokens: 1600,
+      // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
+      // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
+      max_tokens: maxTokens,
       // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
       // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
       // any non-default sampling value with a 400.
@@ -745,7 +1056,13 @@ async function callClaude(system: string, user: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
   const data = await res.json();
-  return data.content?.[0]?.text ?? '';
+  // usage is asserted by the carril to log real copylab cost (§4.1/§4.3) — it
+  // was silently discarded before.
+  const usage = data.usage ?? {};
+  return {
+    text: data.content?.[0]?.text ?? '',
+    usage: { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 },
+  };
 }
 
 // ── CORS HEADERS ───────────────────────────────────────────────────────────
@@ -817,24 +1134,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
-    console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position}`);
+    const carril   = !!body.builder_input;
+    console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position} mode=${carril ? 'carril' : 'ui'}`);
 
-    const { system, user, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
-      await buildPrompt(body);
+    const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${cache_mode} — calling Claude`);
-    const output = await callClaude(system, user);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} — calling Claude`);
+    const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
 
+    // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
+    //    SIN estampar, usage real. El modo UI conserva su forma histórica.
+    if (carril) {
+      const { title, body: pieceBody } = parsePiece(output);
+      return res.status(200).json({
+        status: 'ok',
+        title,
+        body: pieceBody,
+        signature: built.signature,
+        usage,
+        meta: {
+          voice_id: built.voice_id,
+          voice_version: built.voice_version,
+          language: built.language,
+          psycho_preset: built.psycho_preset,
+          platform_key: built.platform_key,
+          copy_profile_id: built.copy_profile_id,
+          humanize_profile_id: built.humanize_profile_id,
+          rules_injected: built.rules_injected,
+          rules_skipped: built.rules_skipped,
+          rules_count: built.rules_injected.length,
+          creative_seed: built.creative_seed,
+          cache_mode: built.cache_mode,
+          layers_applied: built.layers_applied,
+        },
+      });
+    }
+
+    // ── UI response (sin cambios) ──────────────────────────────────────
     return res.status(200).json({
       output,
       status: 'ok',
       meta: {
         pipeline_version: '2.6',
         copylab_version:  '9.7',
-        cache_mode,
-        layers_applied,
-        voice_genome: voice_id ? { voice_id, version: voice_version } : null,
-        creative_seed,
+        cache_mode: built.cache_mode,
+        layers_applied: built.layers_applied,
+        voice_genome: built.voice_id ? { voice_id: built.voice_id, version: built.voice_version } : null,
+        creative_seed: built.creative_seed,
       },
     });
   } catch (err) {

@@ -1,2 +1,9 @@
 # Artefacto incremental de `tsc -b` (gate de typecheck en el script build)
 tsconfig.tsbuildinfo
+
+# Dependencias y build (nunca se commitean — ver .github/CLAUDE.md)
+node_modules/
+dist/
+
+# Lockfile generado localmente (el repo no lo versiona)
+package-lock.json
