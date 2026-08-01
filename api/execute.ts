@@ -190,11 +190,19 @@ function normalizeCache(raw: any | null): { cache: NormalizedCache | null; shape
     Array.isArray(raw.brands) || Array.isArray(raw.brand_voice_genome) ||
     Array.isArray(raw.brand_copy_profiles) || Array.isArray(raw.creative_vectors) ||
     Array.isArray(raw.brand_goals) || Array.isArray(raw.brand_personas) ||
-    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles);
+    Array.isArray(raw.compliance_rules) || Array.isArray(raw.humanize_profiles) ||
+    (raw.brand && typeof raw.brand === 'object');
 
   if (looksSnapshot) {
     const nc = emptyNormalizedCache('snapshot');
     for (const k of CACHE_SLICES) if (Array.isArray(raw[k])) (nc as any)[k] = raw[k];
+    // brand-cache.js v2.1 emite el registro como `brand` (singular, objeto);
+    // v2.0 y anteriores lo emiten como `brands` (array). El lector acepta las
+    // dos porque hay snapshots vivos de ambas versiones en la tabla y reescribir
+    // el escritor no arregla los que ya están escritos.
+    if (!nc.brands.length && raw.brand && typeof raw.brand === 'object') {
+      nc.brands = [raw.brand];
+    }
     return { cache: nc, shape: 'snapshot', keys };
   }
 

@@ -321,19 +321,20 @@ async function run() {
 
   // Case 2b — la forma REAL de producción: bc.brand (singular, objeto) que
   // escribe brand-cache.js v2.1 (línea 201), no solo bc.brands[] (plural).
-  await xfail('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)',
-    'DEFECTO main: normalizeCache (execute.ts) mapea `brands`[]/`identity` pero NO `brand` (singular), que es lo que brand-cache.js v2.1 escribe (línea 201). El brand del cache se ignora ⇒ siempre cae a query directa; sin fila viva → COPYLAB_LANGUAGE_UNRESOLVED. Fuera de alcance (§7).',
-    async () => {
-    const rec = { id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+  // Cache completo en ambas formas ⇒ el registro se resuelve del cache y NO se
+  // consulta nada (fx.calls === 0): la forma singular alcanza el modo cero-query.
+  await test('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)', async () => {
+    const rec = { id: 'B', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+    const { brands: _b, ...rest } = FULL_SNAPSHOT;
     const fx = installFetch({});
     try {
-      const singular = await buildPrompt(reqWith({ brandContext: { brand: rec, brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
-      const plural = await buildPrompt(reqWith({ brandContext: { brands: [rec], brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      const singular = await buildPrompt(reqWith({ brandContext: { ...rest, brand: rec } }, { brandId: 'B' }));
+      const plural   = await buildPrompt(reqWith({ brandContext: { ...rest, brands: [rec] } }, { brandId: 'B' }));
       eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
       assert(singular.system.includes('MARCA: UNRLVL | MERCADO: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
-      eq(fx.calls.length, 0, 'con el registro resuelto no se consulta brands');
+      eq(fx.calls.length, 0, 'con el registro resuelto y el cache completo: CERO queries');
     } finally { fx.restore(); }
   });
 
