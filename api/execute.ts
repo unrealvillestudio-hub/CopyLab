@@ -273,6 +273,40 @@ function selectGenome(genomes: any[], voiceId: string | null | undefined, brandI
   return genomes[0];
 }
 
+// Token ceiling by destination (§3.5). The flat 1600 served neither destino:
+// editorial 4000 · social 640 en modo carril; el modo UI mantiene 1600.
+function maxTokensFor(builderInput: { destination?: string } | null | undefined): number {
+  if (!builderInput) return 1600;
+  if (builderInput.destination === 'editorial') return 4000;
+  if (builderInput.destination === 'social') return 640;
+  return 1600;
+}
+
+// Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
+// sentinel is internal to CopyLab — the carril receives title/body already split
+// and never parses again. body is trimmed and never carries a trailing signature.
+function parsePiece(output: string): { title: string | null; body: string } {
+  const text = String(output ?? '').trim();
+  const m = text.match(/^\s*T[IÍ]TULO:\s*(.+?)\s*(?:\n|$)/i);
+  if (m) {
+    const title = m[1].trim();
+    return { title: title || null, body: text.slice(m[0].length).trim() };
+  }
+  return { title: null, body: text };
+}
+
+// The signature travels WITHOUT stamping (§4.3): stampSignature runs in the
+// carril's finalizePiece AFTER the Watcher PASS, so CopyLab must NEVER append it
+// to the body. When a rule declares a signature (kind ~ firma/signature), surface
+// it as { text, rule } so the carril can stamp post-Watcher; otherwise null.
+function deriveSignature(
+  rules: Array<{ code: string; kind: string; statement: string }> | null | undefined,
+): { text: string; rule: string } | null {
+  if (!Array.isArray(rules)) return null;
+  const sig = rules.find(r => r && typeof r.kind === 'string' && /firma|signature/i.test(r.kind) && r.statement);
+  return sig ? { text: String(sig.statement).trim(), rule: sig.code } : null;
+}
+
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
 
 async function sb<T>(path: string): Promise<T | null> {
@@ -469,13 +503,37 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   layers_applied: string[];
   voice_id: string | null;
   voice_version: string | null;
+  language: string;
   creative_seed: { vector_id: string | null; tension_id: string | null; aggro_id: string | null; };
   cache_mode: string;
+  max_tokens: number;
+  signature: { text: string; rule: string } | null;
+  psycho_preset: string | null;
+  platform_key: string | null;
+  copy_profile_id: string | null;
+  humanize_profile_id: string | null;
+  rules_injected: string[];
+  rules_skipped: string[];
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
   const canal   = req.params.canal ?? 'instagram';
   const meta    = req.meta ?? {};
+
+  // ── Modo carril (§3.3): la PRESENCIA de builder_input activa el carril.
+  //    Consumo obligatorio y validación fail-fast en §3.4 — nada de defaults.
+  const bi = req.builder_input ?? null;
+  if (bi) {
+    if (bi.destination !== 'editorial' && bi.destination !== 'social') {
+      throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
+    }
+    if (!bi.voice_id || !String(bi.voice_id).trim()) {
+      throw new Error('COPYLAB_VOICE_ID_REQUIRED: builder_input.voice_id es obligatorio en modo carril — nunca [0]');
+    }
+    if (!bi.iid_brief || !String(bi.iid_brief).trim()) {
+      throw new Error('COPYLAB_IID_BRIEF_REQUIRED: builder_input.iid_brief es obligatorio en modo carril');
+    }
+  }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
   const isProductB2C     = pack === 'product_description_pack';
@@ -543,7 +601,7 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   // Language precedence — no 'ES' literal, no default (§5.3.3). brand may come
   // from cache slice or from the direct query above; either way its real
   // language_primary is honoured before anything falls to an error.
-  const idioma = resolveLanguage(req.builder_input?.language, meta.language, req.params.idioma, brand?.language_primary);
+  const idioma = resolveLanguage(bi?.language, meta.language, req.params.idioma, brand?.language_primary);
   if (!idioma) {
     throw new Error(`COPYLAB_LANGUAGE_UNRESOLVED: sin idioma para ${brandId} — declarar builder_input.language, meta.language, params.idioma o brands.language_primary`);
   }
@@ -574,12 +632,61 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
     : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
 
-  const genome = selectGenome(genomes as any[], req.builder_input?.voice_id, brandId);
+  const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
   const voiceGenomeResult = genome
     ? assembleVoiceGenomeLayer(genome, idioma)
     : { layer: null, voice_id: null, voice_version: null };
 
   const bcShape = bc?._shape ?? null;
+
+  // Psycho preset — injection_copy TEXTUAL desde public.psycho_presets (§3.4).
+  // Un preset inexistente o inactivo es ERROR, no default: escribir con un
+  // estímulo que nadie declaró es el sesgo que la Ruta B vino a matar, y gate7
+  // juzgaría contra un preset que el Builder nunca aplicó.
+  let psychoInjection: string | null = null;
+  if (bi?.psycho_preset) {
+    const preset = await sb<{ id: string; injection_copy: string }>(
+      `psycho_presets?id=eq.${encodeURIComponent(bi.psycho_preset)}&active=eq.true&select=id,injection_copy`,
+    );
+    if (!preset) {
+      throw new Error(`COPYLAB_PSYCHO_PRESET_NOT_FOUND: psycho_preset '${bi.psycho_preset}' no existe o está inactivo en public.psycho_presets`);
+    }
+    psychoInjection = preset.injection_copy ?? null;
+  }
+
+  // Watcher rules → bloque citable por código (§3.4). [] es legítimo. Una regla
+  // sin statement se registra en rules_skipped en vez de inyectarse muda.
+  const rulesInjected: string[] = [];
+  const rulesSkipped: string[] = [];
+  let watcherRulesBlock: string | null = null;
+  if (bi) {
+    const lines: string[] = [];
+    for (const r of bi.rules ?? []) {
+      if (r && r.statement && String(r.statement).trim()) {
+        rulesInjected.push(r.code);
+        lines.push(`- [${r.code}${r.kind ? ' · ' + r.kind : ''}] ${String(r.statement).trim()}`);
+      } else if (r) {
+        rulesSkipped.push(r.code ?? '∅');
+      }
+    }
+    if (lines.length) {
+      watcherRulesBlock = `REGLAS DEL WATCHER (citables por código — el stage 5 juzga con estas mismas):\n${lines.join('\n')}`;
+    }
+  }
+
+  // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
+  const AUDIENCE_CTA: Record<string, string> = {
+    jd: 'CTA orientado a la decisión de compra directa (quien decide). Claro y sin rodeos.',
+    doliente: 'CTA empático, de acompañamiento — la audiencia está en un momento sensible; invita sin presionar ni urgir.',
+    general: 'CTA de conversión estándar, claro y orientado al resultado.',
+  };
+  const audienceCtaBlock = bi?.audience_frame
+    ? `POLÍTICA DE CTA [audiencia: ${bi.audience_frame}]:\n${AUDIENCE_CTA[bi.audience_frame] ?? ''}`
+    : null;
+
+  // signature — surfaced, NUNCA estampada (§4.3). Se estampa en el carril
+  // (finalizePiece) DESPUÉS del PASS del Watcher.
+  const signature = deriveSignature(bi?.rules);
 
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
@@ -621,6 +728,10 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     if (parts.length) layers.push(`PERFIL DE COPY BP_COPY_1.0:\n${parts.join('\n')}`);
   }
 
+  if (bi && bi.angle && bi.angle.trim()) {
+    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
+  }
+
   if (voiceLayer) layers.push(voiceLayer);
 
   if (kwList.length) layers.push(`KEYWORDS: ${kwList.map((k: any) => k.keyword).join(', ')}`);
@@ -631,6 +742,9 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
   }
 
   if (comp?.rule_text) layers.push(`COMPLIANCE — REGLAS OBLIGATORIAS:\n${comp.rule_text}`);
+
+  if (watcherRulesBlock) layers.push(watcherRulesBlock);
+  if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
   if (outputTemplate?.template_text) {
     layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${outputTemplate.template_text}`);
@@ -658,6 +772,10 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     if (seqContext.spPool) seqLayers.push(seqContext.spPool);
     if (meta.psycho_presets?.length) seqLayers.push(`PSYCHO PRESETS (en arquitectura, no en copy): ${meta.psycho_presets.join(', ')}`);
     layers.push(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
+  }
+
+  if (psychoInjection) {
+    layers.push(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
   }
 
   if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
@@ -697,18 +815,37 @@ async function buildPrompt(req: ExecuteRequest): Promise<{
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;
   }
 
+  // Carril mode overrides the user instruction: destination drives the format
+  // (editorial → TÍTULO: sentinel; social → body only) and the iid_brief is the
+  // neutral raw material — interpret it, NEVER copy it verbatim (§3.4 / §4.3).
+  if (bi) {
+    const fmt = bi.destination === 'editorial'
+      ? 'FORMATO (editorial):\n- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n- Luego una línea en blanco y el cuerpo.\n- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
+      : 'FORMATO (social):\n- Sin título, sin la etiqueta "TÍTULO:".\n- Solo el cuerpo, listo para publicar.\n- Termina en su última frase de contenido: sin CTA final añadido, sin firma.';
+    userInstruction = `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
+  }
+
   return {
     system,
     user: userInstruction,
     layers_applied: appliedLayers,
     voice_id,
     voice_version,
+    language: idioma,
     creative_seed: {
       vector_id: vector?.id ?? null,
       tension_id: tension?.id ?? null,
       aggro_id: aggro?.id ?? null,
     },
     cache_mode: cacheMode,
+    max_tokens: maxTokensFor(bi),
+    signature,
+    psycho_preset: bi?.psycho_preset ?? null,
+    platform_key: bi?.platform ?? null,
+    copy_profile_id: cp?.id ?? null,
+    humanize_profile_id: hum?.id ?? null,
+    rules_injected: rulesInjected,
+    rules_skipped: rulesSkipped,
   };
 }
 
@@ -834,7 +971,7 @@ Generate now.`;
 
   const user = `LITERAL TEXT (USE VERBATIM):\n${literal}`;
 
-  const raw = await callClaude(system, user);
+  const { text: raw } = await callClaude(system, user);
   let parsed: { caption?: string; hashtags?: string[] } = {};
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
@@ -853,7 +990,13 @@ Generate now.`;
 
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
-async function callClaude(system: string, user: string): Promise<string> {
+interface ClaudeUsage { input_tokens: number; output_tokens: number; }
+
+async function callClaude(
+  system: string,
+  user: string,
+  maxTokens = 1600,
+): Promise<{ text: string; usage: ClaudeUsage }> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -863,8 +1006,9 @@ async function callClaude(system: string, user: string): Promise<string> {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      // Sonnet 5 tokenizer runs ~30% heavier than sonnet-4; bumped from 1200.
-      max_tokens: 1600,
+      // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
+      // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
+      max_tokens: maxTokens,
       // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
       // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
       // any non-default sampling value with a 400.
@@ -875,7 +1019,13 @@ async function callClaude(system: string, user: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
   const data = await res.json();
-  return data.content?.[0]?.text ?? '';
+  // usage is asserted by the carril to log real copylab cost (§4.1/§4.3) — it
+  // was silently discarded before.
+  const usage = data.usage ?? {};
+  return {
+    text: data.content?.[0]?.text ?? '',
+    usage: { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 },
+  };
 }
 
 // ── CORS HEADERS ───────────────────────────────────────────────────────────
@@ -947,24 +1097,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
-    console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position}`);
+    const carril   = !!body.builder_input;
+    console.log(`[CopyLab v9.7] sync brand=${body.brandId} pack=${pack} pos=${position} mode=${carril ? 'carril' : 'ui'}`);
 
-    const { system, user, layers_applied, voice_id, voice_version, creative_seed, cache_mode } =
-      await buildPrompt(body);
+    const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${cache_mode} — calling Claude`);
-    const output = await callClaude(system, user);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} — calling Claude`);
+    const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
 
+    // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
+    //    SIN estampar, usage real. El modo UI conserva su forma histórica.
+    if (carril) {
+      const { title, body: pieceBody } = parsePiece(output);
+      return res.status(200).json({
+        status: 'ok',
+        title,
+        body: pieceBody,
+        signature: built.signature,
+        usage,
+        meta: {
+          voice_id: built.voice_id,
+          voice_version: built.voice_version,
+          language: built.language,
+          psycho_preset: built.psycho_preset,
+          platform_key: built.platform_key,
+          copy_profile_id: built.copy_profile_id,
+          humanize_profile_id: built.humanize_profile_id,
+          rules_injected: built.rules_injected,
+          rules_skipped: built.rules_skipped,
+          rules_count: built.rules_injected.length,
+          creative_seed: built.creative_seed,
+          cache_mode: built.cache_mode,
+          layers_applied: built.layers_applied,
+        },
+      });
+    }
+
+    // ── UI response (sin cambios) ──────────────────────────────────────
     return res.status(200).json({
       output,
       status: 'ok',
       meta: {
         pipeline_version: '2.6',
         copylab_version:  '9.7',
-        cache_mode,
-        layers_applied,
-        voice_genome: voice_id ? { voice_id, version: voice_version } : null,
-        creative_seed,
+        cache_mode: built.cache_mode,
+        layers_applied: built.layers_applied,
+        voice_genome: built.voice_id ? { voice_id: built.voice_id, version: built.voice_version } : null,
+        creative_seed: built.creative_seed,
       },
     });
   } catch (err) {
