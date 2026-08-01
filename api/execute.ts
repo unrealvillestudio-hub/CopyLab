@@ -98,6 +98,7 @@ interface ExecuteRequest {
     sequence_type?: string;
     position?: number;
     language?: string;
+    voice_id?: string;
     persona_key?: string;
     psycho_presets?: string[];
     mechanism_primary?: string;
@@ -934,12 +935,15 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
  *                  compliance_prohibited_words
  * Returns empty string when no signals are available (caller falls back to a
  * neutral system prompt).
+ *
+ * A3: recibe el genoma y el perfil YA RESUELTOS por el caller (normalizeCache +
+ * selectGenome), no el cache crudo. Antes leía `bc.brand_voice_genome[0]` — el
+ * mismo bug del `[0]` que §5.4 corrigió en buildPrompt, intacto en este camino:
+ * LucienSael tiene dos genomas activos y el modo literal (teasers/announcements
+ * del Orchestrator, camino de producción) tomaba el que el array trajera primero.
  */
-function buildLiteralBrandBlock(bc: any | null, brandId: string): { block: string; hashtagStyle: string; allowEmoji: boolean } {
-  if (!bc) return { block: '', hashtagStyle: '', allowEmoji: false };
-
-  const voice   = bc?.brand_voice_genome?.[0]  ?? null;
-  const profile = bc?.brand_copy_profiles?.[0] ?? null;
+function buildLiteralBrandBlock(voice: any | null, profile: any | null, brandId: string): { block: string; hashtagStyle: string; allowEmoji: boolean } {
+  if (!voice && !profile) return { block: '', hashtagStyle: '', allowEmoji: false };
 
   const parts: string[] = [];
   parts.push(`BRAND: ${brandId}`);
@@ -993,7 +997,7 @@ function buildLiteralBrandBlock(bc: any | null, brandId: string): { block: strin
   return { block: parts.length > 1 ? parts.join('\n\n') : '', hashtagStyle, allowEmoji };
 }
 
-async function runLiteralCopy(literal: string, language: string, brandId: string): Promise<{ output: string; caption: string; hashtags: string[]; cache_mode: string }> {
+export async function runLiteralCopy(literal: string, language: string, brandId: string, voiceId: string | null = null): Promise<{ output: string; caption: string; hashtags: string[]; cache_mode: string }> {
   const lang = (language || 'EN').toUpperCase();
   const langInstruction =
     lang === 'EN+ES' ? 'Output the caption with the English version first, then a blank line, then the Spanish version. The literal text MUST appear verbatim in BOTH languages — if the literal is in English, translate it precisely for the Spanish version (no creative reinterpretation, only direct translation). Hashtags can mix EN and ES.'
@@ -1003,8 +1007,13 @@ async function runLiteralCopy(literal: string, language: string, brandId: string
   // v9.7: pull the brand cache so the literal mode reflects the brand
   // identity (voice + hashtag style + compliance) instead of a generic
   // "social media caption with emojis and generic hashtags" output.
-  const bc = await fetchBrandCache(brandId);
-  const { block: brandBlock, hashtagStyle, allowEmoji } = buildLiteralBrandBlock(bc, brandId);
+  // A3: normalizar el cache y elegir la voz por voice_id (o warn nominal si hay
+  // más de un genoma y nadie declaró voz) — nunca `[0]` mudo.
+  const { cache: nc } = normalizeCache(await fetchBrandCache(brandId));
+  const genomes = sliceOf(nc, 'brand_voice_genome') ?? [];
+  const voice = genomes.length ? selectGenome(genomes, voiceId, brandId) : null;
+  const profile = (sliceOf(nc, 'brand_copy_profiles') ?? [])[0] ?? null;
+  const { block: brandBlock, hashtagStyle, allowEmoji } = buildLiteralBrandBlock(voice, profile, brandId);
   const cache_mode = brandBlock ? 'v2.0_brand_context' : 'no_cache';
 
   const emojiRule = allowEmoji
@@ -1144,7 +1153,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const language = String(body.meta?.language ?? params?.language ?? 'EN');
       console.log(`[CopyLab v9.7] literal brand=${body.brandId} lang=${language} len=${literal_text.length}`);
-      const { output, caption, hashtags, cache_mode } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown');
+      const literalVoiceId = body.builder_input?.voice_id ?? body.meta?.voice_id ?? null;
+      const { output, caption, hashtags, cache_mode } = await runLiteralCopy(literal_text, language, body.brandId ?? 'unknown', literalVoiceId);
       return res.status(200).json({
         output,
         status: 'ok',

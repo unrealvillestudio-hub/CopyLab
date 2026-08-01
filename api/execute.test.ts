@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -137,10 +137,14 @@ function res(data: any, status = 200) {
 type TableReply = any[] | ((url: string) => any);
 function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; snapshot?: any[] }) {
   const calls: string[] = [];
-  globalThis.fetch = (async (url: any) => {
+  const claudeBodies: any[] = [];
+  globalThis.fetch = (async (url: any, init?: any) => {
     const u = String(url);
     calls.push(u);
-    if (u.includes('api.anthropic.com')) return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } });
+    if (u.includes('api.anthropic.com')) {
+      try { claudeBodies.push(JSON.parse(init?.body ?? '{}')); } catch { /* ignore */ }
+      return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } });
+    }
     if (u.includes('unrlvl-context.vercel.app')) return res('', 404);
     if (u.includes('/rest/v1/')) {
       const table = u.split('/rest/v1/')[1].split('?')[0];
@@ -151,7 +155,7 @@ function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any;
     }
     return res([]);
   }) as any;
-  return { calls, restore: () => { globalThis.fetch = REAL_FETCH; } };
+  return { calls, claudeBodies, restore: () => { globalThis.fetch = REAL_FETCH; } };
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -399,6 +403,32 @@ async function run() {
     const b = [...a].reverse();
     eq(PURE.selectHumanize(a, 'B').id, PURE.selectHumanize(b, 'B').id, 'mismo id sin importar el orden');
     eq(PURE.selectHumanize(a, 'B').id, '4', 'marca + copy gana');
+  });
+
+  // A3 — el modo literal (teasers/announcements del Orchestrator) elegía el
+  // genoma por `[0]`: el mismo bug que §5.4 corrigió en buildPrompt, intacto en
+  // el otro camino. LucienSael tiene dos genomas activos.
+  await test('A3-a·literal: selecciona el genoma por voice_id (no [0])', async () => {
+    const cache = { brand_voice_genome: [
+      { voice_id: 'lucien_editorial', identity_anchors: 'ANCHOR_EDITORIAL' },
+      { voice_id: 'lucien_social', identity_anchors: 'ANCHOR_SOCIAL' },
+    ] };
+    const fx = installFetch({ snapshot: [{ cache_data: cache }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'LucienSael', 'lucien_social');
+      const sys = String(fx.claudeBodies[0]?.system ?? '');
+      assert(sys.includes('ANCHOR_SOCIAL') && !sys.includes('ANCHOR_EDITORIAL'), 'usa el genoma social, no el [0] del array');
+    } finally { fx.restore(); }
+  });
+  await test('A3-a-warn·literal: sin voice_id y >1 genoma → warn nominal, no silencio', async () => {
+    const warns: string[] = [];
+    const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
+    const cache = { brand_voice_genome: [{ voice_id: 'lucien_editorial' }, { voice_id: 'lucien_social' }] };
+    const fx = installFetch({ snapshot: [{ cache_data: cache }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'LucienSael', null);
+      assert(warns.some(w => w.includes('LucienSael') && w.includes('lucien_editorial') && w.includes('lucien_social')), 'warn nominal listando las voces');
+    } finally { fx.restore(); console.warn = realWarn; }
   });
 
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo
