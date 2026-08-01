@@ -20,6 +20,7 @@ import handler, { buildPrompt, callClaude } from './execute.ts';
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
 const failures: string[] = [];
+const xfails: string[] = [];
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return (async () => {
     try {
@@ -30,6 +31,24 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
       failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
       console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : String(e)}`);
     }
+  })();
+}
+// xfail — el test EXPONE un defecto vivo en `main` que este PR NO puede reparar
+// (§7: api/execute.ts está fuera de alcance). La aserción NO se debilita: se
+// espera que falle contra el código actual, se documenta con su evidencia, y si
+// algún día PASA (defecto reparado) se marca XPASS para promover xfail→test.
+function xfail(name: string, reason: string, fn: () => void | Promise<void>): Promise<void> {
+  return (async () => {
+    try {
+      await fn();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      xfails.push(`${name}\n      motivo: ${reason}\n      evidencia: ${detail}`);
+      console.log(`  ⊘ xfail ${name}\n      (${reason})\n      evidencia: ${detail.split('\n')[0]}`);
+      return;
+    }
+    failures.push(`${name}: XPASS — el defecto de main parece reparado; promover xfail→test`);
+    console.log(`  ✗ XPASS ${name} — el defecto de main parece reparado; promover xfail→test`);
   })();
 }
 function assert(cond: any, msg: string) { if (!cond) throw new Error(msg); }
@@ -51,6 +70,43 @@ async function assertThrows(fn: () => any, includes: string): Promise<void> {
     return;
   }
   throw new Error(`se esperaba throw con "${includes}", no lanzó`);
+}
+
+// ── diff línea a línea para el golden (LCS) ─────────────────────────────────
+type DiffLine = { tag: '-' | '+'; line: string };
+function diffLines(a: string, b: string): DiffLine[] {
+  const A = a.split('\n'), B = b.split('\n');
+  const n = A.length, m = B.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { out.push({ tag: '-', line: A[i++] }); }
+    else { out.push({ tag: '+', line: B[j++] }); }
+  }
+  while (i < n) out.push({ tag: '-', line: A[i++] });
+  while (j < m) out.push({ tag: '+', line: B[j++] });
+  return out;
+}
+// Clasifica un renglón de diff por CONTENIDO (no por número de línea — un cambio
+// de longitud desplazaría todo el resto). La lista es CERRADA: lo que no encaje
+// en los tres deltas declarados hace fallar el test con el diff impreso.
+function clasificar(d: DiffLine): string | null {
+  const l = d.line;
+  if (/\bIDIOMA\b|IDIOMA DE GENERACIÓN/.test(l)) return 'DELTA_IDIOMA';
+  if (/VOICE GENOME INJECTION|^VOICE ID:|\bvoice_id\b/.test(l)) return 'DELTA_GENOMA';
+  if (/VOZ DE MARCA — BASE|^Personalidad:|^Reglas de autenticidad:|^Anti-patterns:/.test(l)) return 'DELTA_HUMANIZE';
+  return null;
+}
+function fmtDiff(d: DiffLine): string { return `${d.tag} ${d.line}`; }
+function stripGoldenHeader(raw: string): string {
+  const lines = raw.split('\n');
+  let k = 0; while (k < lines.length && lines[k].startsWith('# ')) k++;
+  return lines.slice(k).join('\n');
 }
 
 // ── extracción del bloque puro desde la fuente desplegada ───────────────────
@@ -200,8 +256,33 @@ async function run() {
 
   console.log('\n[integración · buildPrompt / handler con fetch mockeado]');
 
-  // Case 1 — retrocompat: sin builder_input, ensamblado UI estable y sin fugas
-  await test('1·retrocompat: UI sin builder_input — orden de capas estable, sin fugas de carril', async () => {
+  // Case 1 — golden: la UI solo puede diferir del código PRE-contratos en los
+  // tres deltas declarados (§3.6). El golden se generó desde api/execute.ts
+  // @ da182aa (43056 b), no desde main — comparar main contra sí mismo sería el
+  // defecto que este caso repara. Lista blanca CERRADA: cualquier otra
+  // diferencia falla con el diff impreso.
+  await test('1·golden: la UI solo difiere del pre-contratos en los 3 deltas declarados', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const actual = (await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }))).system;
+      const golden = stripGoldenHeader(readFileSync(new URL('./__fixtures__/golden_ui_main.txt', import.meta.url), 'utf8'));
+      const diffs = diffLines(golden, actual);
+      const sinClasificar = diffs.filter(d => !clasificar(d));
+      assert(
+        sinClasificar.length === 0,
+        `delta NO declarado (${sinClasificar.length} de ${diffs.length} renglones de diff):\n${sinClasificar.map(fmtDiff).join('\n')}`,
+      );
+      // los renglones que sí cambiaron deben pertenecer a la lista blanca
+      for (const d of diffs) {
+        const k = clasificar(d);
+        assert(k === 'DELTA_IDIOMA' || k === 'DELTA_GENOMA' || k === 'DELTA_HUMANIZE', `delta fuera de lista: ${fmtDiff(d)}`);
+      }
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // Case 1b — determinismo + ausencia de fugas de carril en modo UI
+  await test('1b·determinismo + sin fugas de carril (UI sin builder_input)', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({});
     try {
@@ -235,6 +316,52 @@ async function run() {
       eq(built.language, 'en/FL', 'idioma real de brands.language_primary');
       assert(built.system.includes('IDIOMA: en/FL'), 'system con idioma real');
       assert(!/IDIOMA(?: OBLIGATORIO)?: ES\b/.test(built.system), "el literal 'ES' no aparece por ningún camino");
+    } finally { fx.restore(); }
+  });
+
+  // Case 2b — la forma REAL de producción: bc.brand (singular, objeto) que
+  // escribe brand-cache.js v2.1 (línea 201), no solo bc.brands[] (plural).
+  await xfail('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)',
+    'DEFECTO main: normalizeCache (execute.ts) mapea `brands`[]/`identity` pero NO `brand` (singular), que es lo que brand-cache.js v2.1 escribe (línea 201). El brand del cache se ignora ⇒ siempre cae a query directa; sin fila viva → COPYLAB_LANGUAGE_UNRESOLVED. Fuera de alcance (§7).',
+    async () => {
+    const rec = { id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+    const fx = installFetch({});
+    try {
+      const singular = await buildPrompt(reqWith({ brandContext: { brand: rec, brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      const plural = await buildPrompt(reqWith({ brandContext: { brands: [rec], brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
+      eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
+      assert(singular.system.includes('MARCA: UNRLVL | MERCADO: Miami'), 'display_name y market desde la forma singular');
+      eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
+      eq(fx.calls.length, 0, 'con el registro resuelto no se consulta brands');
+    } finally { fx.restore(); }
+  });
+
+  await test('2b-neg·brand null es ausencia, no cobertura', async () => {
+    const fx = installFetch({ tables: { brands: [{ id: 'X', display_name: 'X', market: 'US', language_primary: 'en-US' }] } });
+    try {
+      await buildPrompt(reqWith({ brandContext: { brand: null, brand_voice_genome: [GENOME_V1] } }, { brandId: 'X' }));
+      assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.X')), 'brand:null NO puede cancelar la query');
+    } finally { fx.restore(); }
+  });
+
+  // Case 2c — precedencia de humanize: la fila de la marca gana al DEFAULT, sea
+  // cual sea el orden del array (buildSnapshot mergea DEFAULT primero, línea 204
+  // — orden adverso por construcción). Es el tercer delta de §3.6.
+  await xfail('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente',
+    'DEFECTO main: la resolución de humanize toma `[0]` del array; brand-cache.js mergea [DEFAULT, brand] (línea 204, DEFAULT primero) ⇒ en la ruta de cache gana DEFAULT, nunca la marca. El DELTA_HUMANIZE declarado no está implementado. Fuera de alcance (§7).',
+    async () => {
+    const DEF   = { brand_id: 'DEFAULT', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
+    const BRAND = { brand_id: 'B',       tone: 'seco',   personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
+    const base  = { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] };
+    const fx = installFetch({});
+    try {
+      const adverso = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF, BRAND] } }));
+      const favor   = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [BRAND, DEF] } }));
+      assert(adverso.system.includes('seco') && !adverso.system.includes('neutro'), 'orden adverso: gana la marca');
+      eq(adverso.system, favor.system, 'orden-independiente');
+      const solo = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF] } }));
+      assert(solo.system.includes('neutro'), 'sin fila de marca, DEFAULT es lo correcto');
     } finally { fx.restore(); }
   });
 
@@ -309,8 +436,13 @@ async function run() {
     } finally { fx.restore(); }
   });
 
-  console.log(`\n${failures.length ? '✗' : '✓'} ${passed} passed, ${failures.length} failed`);
-  if (failures.length) { for (const f of failures) console.log(`  - ${f}`); process.exit(1); }
+  const total = passed + xfails.length + failures.length;
+  console.log(`\n${failures.length ? '✗' : '✓'} ${passed} passed, ${xfails.length} xfail (defecto de main), ${failures.length} failed — ${total} tests`);
+  if (xfails.length) {
+    console.log('\n⊘ xfail — defectos vivos en main que estos tests atrapan (fuera de alcance de este PR, §7):');
+    for (const x of xfails) console.log(`  - ${x}`);
+  }
+  if (failures.length) { console.log('\n✗ failures:'); for (const f of failures) console.log(`  - ${f}`); process.exit(1); }
 }
 
 void callClaude; // referenced to keep the import meaningful for future usage tests
