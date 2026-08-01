@@ -20,6 +20,7 @@ import handler, { buildPrompt, callClaude } from './execute.ts';
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
 const failures: string[] = [];
+const xfails: string[] = [];
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return (async () => {
     try {
@@ -30,6 +31,24 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
       failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
       console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : String(e)}`);
     }
+  })();
+}
+// xfail — el test EXPONE un defecto vivo en `main` que este PR NO puede reparar
+// (§7: api/execute.ts está fuera de alcance). La aserción NO se debilita: se
+// espera que falle contra el código actual, se documenta con su evidencia, y si
+// algún día PASA (defecto reparado) se marca XPASS para promover xfail→test.
+function xfail(name: string, reason: string, fn: () => void | Promise<void>): Promise<void> {
+  return (async () => {
+    try {
+      await fn();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      xfails.push(`${name}\n      motivo: ${reason}\n      evidencia: ${detail}`);
+      console.log(`  ⊘ xfail ${name}\n      (${reason})\n      evidencia: ${detail.split('\n')[0]}`);
+      return;
+    }
+    failures.push(`${name}: XPASS — el defecto de main parece reparado; promover xfail→test`);
+    console.log(`  ✗ XPASS ${name} — el defecto de main parece reparado; promover xfail→test`);
   })();
 }
 function assert(cond: any, msg: string) { if (!cond) throw new Error(msg); }
@@ -238,6 +257,32 @@ async function run() {
     } finally { fx.restore(); }
   });
 
+  // Case 2b — la forma REAL de producción: bc.brand (singular, objeto) que
+  // escribe brand-cache.js v2.1 (línea 201), no solo bc.brands[] (plural).
+  await xfail('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)',
+    'DEFECTO main: normalizeCache (execute.ts) mapea `brands`[]/`identity` pero NO `brand` (singular), que es lo que brand-cache.js v2.1 escribe (línea 201). El brand del cache se ignora ⇒ siempre cae a query directa; sin fila viva → COPYLAB_LANGUAGE_UNRESOLVED. Fuera de alcance (§7).',
+    async () => {
+    const rec = { id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+    const fx = installFetch({});
+    try {
+      const singular = await buildPrompt(reqWith({ brandContext: { brand: rec, brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      const plural = await buildPrompt(reqWith({ brandContext: { brands: [rec], brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
+      eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
+      assert(singular.system.includes('MARCA: UNRLVL | MERCADO: Miami'), 'display_name y market desde la forma singular');
+      eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
+      eq(fx.calls.length, 0, 'con el registro resuelto no se consulta brands');
+    } finally { fx.restore(); }
+  });
+
+  await test('2b-neg·brand null es ausencia, no cobertura', async () => {
+    const fx = installFetch({ tables: { brands: [{ id: 'X', display_name: 'X', market: 'US', language_primary: 'en-US' }] } });
+    try {
+      await buildPrompt(reqWith({ brandContext: { brand: null, brand_voice_genome: [GENOME_V1] } }, { brandId: 'X' }));
+      assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.X')), 'brand:null NO puede cancelar la query');
+    } finally { fx.restore(); }
+  });
+
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo
   await test('5·cache vacío: creative_vectors [] ⇒ query directa, vector_id NO es null', async () => {
     const fx = installFetch({
@@ -309,8 +354,13 @@ async function run() {
     } finally { fx.restore(); }
   });
 
-  console.log(`\n${failures.length ? '✗' : '✓'} ${passed} passed, ${failures.length} failed`);
-  if (failures.length) { for (const f of failures) console.log(`  - ${f}`); process.exit(1); }
+  const total = passed + xfails.length + failures.length;
+  console.log(`\n${failures.length ? '✗' : '✓'} ${passed} passed, ${xfails.length} xfail (defecto de main), ${failures.length} failed — ${total} tests`);
+  if (xfails.length) {
+    console.log('\n⊘ xfail — defectos vivos en main que estos tests atrapan (fuera de alcance de este PR, §7):');
+    for (const x of xfails) console.log(`  - ${x}`);
+  }
+  if (failures.length) { console.log('\n✗ failures:'); for (const f of failures) console.log(`  - ${f}`); process.exit(1); }
 }
 
 void callClaude; // referenced to keep the import meaningful for future usage tests
