@@ -135,6 +135,12 @@ interface OutputTemplate {
 // deployed source and exercises it in isolation, so it must stay self-contained
 // and pure. Keep new pure logic here.
 
+// ── COPYLAB_PURE:BEGIN ──────────────────────────────────────────────────────
+// The QA harness (api/execute.test.ts) extracts EXACTLY this block from the
+// deployed source, transpiles it, and exercises it in isolation. Nothing here
+// may reference module-level values (env getters, fetch, sb, Math.random,
+// Date) — only JS built-ins, `console`, and each other. Keep it self-contained.
+
 // Canonical internal cache shape. Every slice is an array. A missing OR empty
 // slice is ABSENCE (see sliceOf) — it can never cancel the query that would
 // fill it (§5.3.1 / §5.3.4).
@@ -306,6 +312,8 @@ function deriveSignature(
   const sig = rules.find(r => r && typeof r.kind === 'string' && /firma|signature/i.test(r.kind) && r.statement);
   return sig ? { text: String(sig.statement).trim(), rule: sig.code } : null;
 }
+
+// ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
 
@@ -526,7 +534,7 @@ async function buildSequenceContext(req: ExecuteRequest): Promise<{
 
 // ── BUILD COPY PROMPT ──────────────────────────────────────────────────────
 
-async function buildPrompt(req: ExecuteRequest): Promise<{
+export async function buildPrompt(req: ExecuteRequest): Promise<{
   system: string;
   user: string;
   layers_applied: string[];
@@ -1021,7 +1029,7 @@ Generate now.`;
 
 interface ClaudeUsage { input_tokens: number; output_tokens: number; }
 
-async function callClaude(
+export async function callClaude(
   system: string,
   user: string,
   maxTokens = 1600,
