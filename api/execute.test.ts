@@ -752,6 +752,32 @@ async function run() {
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
+  // INT-5 — el hueco: modo UI en CACHE MISS de compat → query directa. El filtro
+  // top-level sin voz debe ser `voice_id=is.null` (no la forma con punto, que es un
+  // filtro sobre columna inexistente → 400 → sbArray lanza). Los otros tests van por
+  // fixture (slice presente) y nunca ejercen esta rama. El mock devuelve 400 si el
+  // filtro NO es la forma correcta, reproduciendo el fallo real de PostgREST.
+  await test('INT-5·UI cache-miss: compat por query directa usa voice_id=is.null (no rompe con 400)', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({
+      tables: {
+        creative_vectors: [{ id: 'V', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'T', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: (u: string) =>
+          u.includes('voice_id=is.null')
+            ? res([{ content_type: 'social_post', voice_id: null, allowed_vectors: ['V'], excluded_vectors: [], allowed_tensions: ['T'], allowed_aggro: ['AGGRO_2'] }])
+            : res('column creative_compatibility_rules.voice_id.is does not exist', 400),
+      },
+    });
+    try {
+      // modo UI (sin builder_input), cache sin slice de creative_compatibility_rules → query directa
+      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }] } }));
+      assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('voice_id=is.null')), 'la query directa usa voice_id=is.null (forma top-level correcta)');
+      eq(built.creative_seed.aggro_id, 'AGGRO_2', 'resuelve BASE por query directa sin romper (400)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
   const total = passed + xfails.length + failures.length;
   console.log(`\n${failures.length ? '✗' : '✓'} ${passed} passed, ${xfails.length} xfail (defecto de main), ${failures.length} failed — ${total} tests`);
   if (xfails.length) {

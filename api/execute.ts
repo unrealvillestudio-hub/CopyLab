@@ -741,9 +741,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // null → sólo la fila BASE (voice_id null) es candidata. La query directa trae voz
   // + BASE de una vez (un viaje), y selectCompatRule elige.
   const compatVoiceId = bi?.voice_id ?? null;
+  // Ojo PostgREST: la forma con punto (`voice_id.is.null`) SÓLO es válida DENTRO de
+  // `or=(...)`. Como parámetro top-level exige `voice_id=is.null` (columna=operador.valor);
+  // con punto apunta a una columna inexistente → 400 → sbArray lanza y rompe el modo UI
+  // en cache miss. Por eso las dos ramas usan sintaxis distinta.
   const compatVoiceFilter = compatVoiceId
     ? `or=(voice_id.eq.${encodeURIComponent(compatVoiceId)},voice_id.is.null)`
-    : 'voice_id.is.null';
+    : 'voice_id=is.null';
 
   const [
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
