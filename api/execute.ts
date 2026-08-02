@@ -3,6 +3,14 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * B2 (2026-08-02) — el mapa del carril (bloque PURO COPYLAB_PURE, testeable):
+ *   resolveCarrilContentType(destination, platform) → { content_type, canal }. En modo carril,
+ *   content_type y canal salen del mapa (no del pack ni del `?? 'instagram'` mudo del modo UI); plataforma
+ *   desconocida → warn nominal + par de su destination. Además, builder_input.rules (que PR-1 manda SIN
+ *   filtrar por kind) se filtra a las imperativas (prohibition|requirement|proof) antes de inyectarse.
+ *   Modo UI (sin builder_input) intacto. Nota (§4, fuera de este PR): editorial_post/email_divulgacion aún
+ *   no tienen fila en creative_compatibility_rules → el motor degrada con warn a filtro por aggro (?? 2).
+ *
  * v9.7 (2026-05-28) — LITERAL mode for teasers/announcements:
  *   When params.mode === 'literal', the prompt's literal_text is treated as
  *   the immutable copy. CopyLab only generates caption + hashtags around it,
@@ -344,6 +352,54 @@ function deriveSignature(
   return sig ? { text: String(sig.statement).trim(), rule: sig.code } : null;
 }
 
+// ── B2 · el mapa del carril ─────────────────────────────────────────────────
+// resolveCarrilContentType(destination, platform) → { content_type, canal }. En
+// modo carril, content_type y canal salen de ACÁ (no del pack ni del `?? 'instagram'`
+// mudo del modo UI). El destino manda; la plataforma afina el canal:
+//   social (x/meta_fb/meta_ig/tiktok/linkedin)      → social_post,     canal = la plataforma
+//   editorial (blog/blog_forumphs→blog; linkedin)   → editorial_post,  canal = blog | linkedin
+//   email_propietarios (cualquier destino)          → email_divulgacion, canal = email
+// Plataforma desconocida → WARN NOMINAL que la nombra + caída al par de su destination
+// (nunca una coerción muda). Puro y self-contained: sólo built-ins + console.
+const CARRIL_SOCIAL_PLATFORMS = new Set(['x', 'meta_fb', 'meta_ig', 'tiktok', 'linkedin']);
+const CARRIL_EDITORIAL_CANAL: Record<string, string> = { blog: 'blog', blog_forumphs: 'blog', linkedin: 'linkedin' };
+
+function resolveCarrilContentType(destination: string, platform: string): { content_type: string; canal: string } {
+  const d = String(destination ?? '').trim().toLowerCase();
+  const p = String(platform ?? '').trim().toLowerCase();
+
+  // El email de divulgación se ancla en la PLATAFORMA, no en el destino.
+  if (p === 'email_propietarios') return { content_type: 'email_divulgacion', canal: 'email' };
+
+  if (d === 'social') {
+    if (CARRIL_SOCIAL_PLATFORMS.has(p)) return { content_type: 'social_post', canal: p };
+    console.warn(`[CopyLab][carril] plataforma social desconocida '${p}' → social_post, canal='${p || 'social'}' (nominal, sin coerción)`);
+    return { content_type: 'social_post', canal: p || 'social' };
+  }
+
+  if (d === 'editorial') {
+    const canal = CARRIL_EDITORIAL_CANAL[p];
+    if (canal) return { content_type: 'editorial_post', canal };
+    console.warn(`[CopyLab][carril] plataforma editorial desconocida '${p}' → editorial_post, canal='blog' (par de su destination)`);
+    return { content_type: 'editorial_post', canal: 'blog' };
+  }
+
+  // destination fuera de {social, editorial}: ruidoso pero no mudo (§3.4 ya lo valida aguas arriba).
+  console.warn(`[CopyLab][carril] destination desconocido '${d}' (platform '${p}') → social_post, canal='${p || 'social'}' (nominal)`);
+  return { content_type: 'social_post', canal: p || 'social' };
+}
+
+// El filtro imperativo que PR-1 dejó a cargo de CopyLab: builder_input.rules viaja SIN filtrar por kind
+// (todas las reglas del Watcher). Antes de inyectarlas al modelo se filtran a las de forma imperativa
+// (prohibition | requirement | proof) — las órdenes. Similitud/duplicación se VERIFICAN aguas abajo (gate
+// del Watcher), no se prescriben: meterlas al prompt es pedirle al modelo que cumpla algo que no es orden.
+const CARRIL_IMPERATIVE_KINDS = new Set(['prohibition', 'requirement', 'proof']);
+function filterCarrilImperativeRules(
+  rules: Array<{ code: string; kind: string; statement: string }> | null | undefined,
+): Array<{ code: string; kind: string; statement: string }> {
+  return (rules ?? []).filter(r => CARRIL_IMPERATIVE_KINDS.has(String(r?.kind)));
+}
+
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -585,7 +641,6 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
-  const canal   = req.params.canal ?? 'instagram';
   const meta    = req.meta ?? {};
 
   // ── Modo carril (§3.3): la PRESENCIA de builder_input activa el carril.
@@ -603,17 +658,26 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
   }
 
+  // B2 — en modo carril, content_type y canal salen del MAPA (destino + plataforma). En modo UI
+  // `carril` es null y todo sigue saliendo del pack / `req.params.canal ?? 'instagram'` (byte-idéntico).
+  const carril = bi ? resolveCarrilContentType(bi.destination, bi.platform) : null;
+  const canal  = carril ? carril.canal : (req.params.canal ?? 'instagram');
+
   const isEmailSeq       = pack.startsWith('email_sequence');
   const isProductB2C     = pack === 'product_description_pack';
   const sequenceSubType  = meta.sequence_type ?? 'generic';
   const position         = meta.position ?? 1;
 
-  const creativeContentType = isEmailSeq
+  const creativeContentType = carril
+    ? carril.content_type
+    : isEmailSeq
     ? `${sequenceSubType}_${position}`
     : isProductB2C ? 'product_description_b2c'
     : pack.replace('_pack', '');
 
-  const pipelineContentType = isEmailSeq
+  const pipelineContentType = carril
+    ? carril.content_type
+    : isEmailSeq
     ? 'email_sequence'
     : isProductB2C ? 'product_description_b2c'
     : pack.replace('_pack', '');
@@ -728,12 +792,15 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   // Watcher rules → bloque citable por código (§3.4). [] es legítimo. Una regla
   // sin statement se registra en rules_skipped en vez de inyectarse muda.
+  // B2 — PR-1 manda TODAS las reglas del Watcher (sin filtrar por kind); acá se filtran a las IMPERATIVAS
+  // (prohibition|requirement|proof) antes de inyectar: las órdenes. Las de similitud/duplicación se
+  // verifican aguas abajo, no se prescriben — no se inyectan ni cuentan como skipped.
   const rulesInjected: string[] = [];
   const rulesSkipped: string[] = [];
   let watcherRulesBlock: string | null = null;
   if (bi) {
     const lines: string[] = [];
-    for (const r of bi.rules ?? []) {
+    for (const r of filterCarrilImperativeRules(bi.rules)) {
       if (r && r.statement && String(r.statement).trim()) {
         rulesInjected.push(r.code);
         lines.push(`- [${r.code}${r.kind ? ' · ' + r.kind : ''}] ${String(r.statement).trim()}`);
