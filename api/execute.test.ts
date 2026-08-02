@@ -125,7 +125,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS };`,
   );
   return factory();
 }
@@ -278,6 +278,37 @@ async function run() {
     eq(p.title, 'Un título', 'title'); eq(p.body, 'Este es el cuerpo.', 'body');
     assert(!p.body.endsWith(sig.text), 'body no debe terminar con la firma');
     eq(PURE.parsePiece('Solo cuerpo social.').title, null, 'social sin título');
+  });
+
+  // B2 (pure) — el mapa del carril: destino + plataforma → content_type + canal
+  await test('B2·pure resolveCarrilContentType — el mapa (las 5 filas)', () => {
+    for (const p of ['x', 'meta_fb', 'meta_ig', 'tiktok'])
+      eq(JSON.stringify(PURE.resolveCarrilContentType('social', p)), JSON.stringify({ content_type: 'social_post', canal: p }), `social/${p}`);
+    eq(JSON.stringify(PURE.resolveCarrilContentType('social', 'linkedin')), JSON.stringify({ content_type: 'social_post', canal: 'linkedin' }), 'social/linkedin');
+    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'blog')), JSON.stringify({ content_type: 'editorial_post', canal: 'blog' }), 'editorial/blog');
+    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'blog_forumphs')), JSON.stringify({ content_type: 'editorial_post', canal: 'blog' }), 'editorial/blog_forumphs');
+    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'linkedin')), JSON.stringify({ content_type: 'editorial_post', canal: 'linkedin' }), 'editorial/linkedin');
+    for (const d of ['social', 'editorial'])
+      eq(JSON.stringify(PURE.resolveCarrilContentType(d, 'email_propietarios')), JSON.stringify({ content_type: 'email_divulgacion', canal: 'email' }), `${d}/email_propietarios`);
+  });
+  await test('B2·pure resolveCarrilContentType — plataforma desconocida: nombra + par de destination, nunca instagram mudo', () => {
+    const s = PURE.resolveCarrilContentType('social', 'threads');
+    eq(s.content_type, 'social_post', 'social desconocida → social_post'); eq(s.canal, 'threads', 'canal = la plataforma nombrada');
+    const e = PURE.resolveCarrilContentType('editorial', 'substack');
+    eq(e.content_type, 'editorial_post', 'editorial desconocida → editorial_post'); eq(e.canal, 'blog', 'canal = par de su destination (blog)');
+    for (const [d, p] of [['social', 'bluesky'], ['editorial', 'medium']] as const)
+      assert(PURE.resolveCarrilContentType(d, p).canal !== 'instagram', `nunca el ?? instagram mudo (${d}/${p})`);
+    eq(PURE.resolveCarrilContentType('  SOCIAL ', ' Meta_IG ').canal, 'meta_ig', 'normaliza trim + lowercase');
+  });
+  await test('B2·pure filterCarrilImperativeRules — sólo prohibition|requirement|proof se prescriben', () => {
+    eq(JSON.stringify([...PURE.CARRIL_IMPERATIVE_KINDS].sort()), JSON.stringify(['prohibition', 'proof', 'requirement']), 'kinds imperativos');
+    const rules = [
+      { code: 'HR-1', kind: 'prohibition', statement: 'a' }, { code: 'HR-2', kind: 'requirement', statement: 'b' },
+      { code: 'HR-3', kind: 'proof', statement: 'c' }, { code: 'SIM-1', kind: 'similarity', statement: 'd' },
+      { code: 'DUP-1', kind: 'duplication', statement: 'e' },
+    ];
+    eq(JSON.stringify(PURE.filterCarrilImperativeRules(rules).map((r: any) => r.code).sort()), JSON.stringify(['HR-1', 'HR-2', 'HR-3']), 'similitud/duplicación fuera');
+    eq(JSON.stringify(PURE.filterCarrilImperativeRules(null)), JSON.stringify([]), 'null → []');
   });
 
   // Case 2 (pure) — precedencia de idioma sin literal 'ES'; empty = absence
@@ -513,7 +544,9 @@ async function run() {
       const r = makeRes();
       const body = reqWith(
         { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } },
-        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'en-US', psycho_preset: null, rules: [{ code: 'SIG-1', kind: 'firma', statement: '— Lucien Sael' }], iid_brief: 'Algo pasó hoy', angle: null, audience_frame: 'general' } },
+        // B2 — la regla 'firma' se SURFACEA como signature (deriveSignature), NO se inyecta como orden; la
+        // 'prohibition' SÍ se inyecta. Por eso rules_count = 1 (sólo la imperativa), y la firma va aparte.
+        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'en-US', psycho_preset: null, rules: [{ code: 'SIG-1', kind: 'firma', statement: '— Lucien Sael' }, { code: 'HR-9', kind: 'prohibition', statement: 'No prometer resultados.' }], iid_brief: 'Algo pasó hoy', angle: null, audience_frame: 'general' } },
       );
       await handler({ method: 'POST', body } as any, r as any);
       const o = r._out;
@@ -527,7 +560,8 @@ async function run() {
       eq(o._json.body, 'Cuerpo de la pieza social lista.', 'body limpio');
       assert(!o._json.body.endsWith(o._json.signature.text), 'body NO termina con signature.text (sin estampar)');
       eq(o._json.meta.voice_id, 'v1', 'meta.voice_id');
-      eq(o._json.meta.rules_count, 1, 'meta.rules_count');
+      eq(o._json.meta.rules_count, 1, 'meta.rules_count — sólo la imperativa (la firma se surfacea, no se inyecta)');
+      assert(!(o._json.meta.rules_injected ?? []).includes('SIG-1'), 'la regla firma NO entra en rules_injected');
     } finally { fx.restore(); }
   });
 
