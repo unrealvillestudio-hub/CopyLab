@@ -1,16 +1,14 @@
-# Claude Code -- reglas para este repo
+# Claude Code — reglas para este repo
 
-## OBLIGATORIO antes de cualquier commit
-- Trabajar siempre en una branch, nunca en main directamente
-- Crear la branch con: `git checkout -b fix/descripcion` o `feat/descripcion`
-- `tsc --noEmit` o `vite build` debe pasar antes de commitear
-- Commit message descriptivo en ingles o espanol
+La fuente de verdad de cómo debe comportarse CC en TODOS los repos del ecosistema es:
+**`unrlvl-context/protocols/CC_PROTOCOL.md`**
+https://unrlvl-context.vercel.app/protocols/CC_PROTOCOL.md
 
-## OBLIGATORIO antes de hacer push
-- Confirmar que el build local pasa
-- No incluir en el commit: tsconfig.tsbuildinfo, .next/, dist/, node_modules/
+CC lo carga y lo obedece antes de tocar nada. Este archivo NO duplica reglas: si algo
+parece contradecirlo, manda el protocolo.
 
-## Para mergear a main
-- Push a la branch, no a main
-- Verificar Vercel Preview URL
-- Solo entonces hacer merge o pedir merge
+Recordatorios operativos (no sustituyen al protocolo):
+- Siempre rama, nunca `main`. `git checkout -b fix/... | feat/... | ctx/...`
+- El build local (`tsc --noEmit` o `vite build`) pasa antes de commitear.
+- CC publica la rama y abre el PR. **CC nunca mergea. El merge es de Sam.**
+- No commitear `tsconfig.tsbuildinfo`, `.next/`, `dist/`, `node_modules/`, ni secretos.
