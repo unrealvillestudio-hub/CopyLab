@@ -5,6 +5,21 @@
  * GET /api/brand-cache?action=build_all&secret=XXX         → reconstruye todas las marcas activas
  * GET /api/brand-cache?brand_id=X&action=invalidate&secret=XXX → marca como stale
  *
+ * v2.2 — 2026-08-02:
+ *   Cableado del registro (Fase B). El snapshot NO emitía tres slices que api/execute.ts
+ *   consume, y como sliceOf() trata vacío/ausente igual, caían a query directa —
+ *   que además buscaba el vocabulario equivocado:
+ *     + pipeline_skills            — no viajaba en ningún snapshot vivo (LucienSael y
+ *       UnrealvilleStudio sin la clave; NeuroneSCF con 0). Se emite completo (active,
+ *       con applies_to y layer_order) — resolveAppliedLayersFromData lo consume.
+ *     + content_type_registry      — tabla nueva; única fuente de pipeline_family /
+ *       output_template_id / aggro_default. Se emite completa.
+ *     + creative_compatibility_rules ya viajaba, pero AHORA la tabla tiene la columna
+ *       voice_id (precedencia voz > BASE). select=* ya la incluye; los snapshots viejos
+ *       la omiten porque se escribieron antes de la columna → REGENERAR tras el merge.
+ *   version bumpeada 2.1→2.2. Un snapshot viejo no se arregla reescribiendo el escritor:
+ *   hay que regenerar los tres snapshots vivos después del merge.
+ *
  * v2.1 — 2026-07-31:
  *   FIX motor creativo. El snapshot traía la clave creative_vectors PRESENTE pero VACÍA:
  *   TABLES_INCLUDED no listaba las cuatro tablas creativas y buildSnapshot no las buscaba,
@@ -72,7 +87,13 @@ const TABLES_INCLUDED = [
   'creative_vectors',            // 44 ángulos de apertura (L14)
   'tension_architectures',       // 10 curvas de tensión (L15)
   'aggro_presets',               // 5 dials de agresividad + anti_hedging (L16)
-  'creative_compatibility_rules',// reglas por content_type (filtradas en JS por execute.ts)
+  'creative_compatibility_rules',// reglas por content_type + voice_id (precedencia voz>BASE en JS por execute.ts)
+  // ── Cableado del registro (globales) — v2.2 ────────────────────
+  // Faltaban en el snapshot: caían a query directa (que además hablaba el vocabulario
+  // equivocado). pipeline_skills → resolveAppliedLayersFromData; content_type_registry
+  // → pipeline_family / output_template_id / aggro_default.
+  'pipeline_skills',       // capas del pipeline por pipeline_family (applies_to, layer_order)
+  'content_type_registry', // pipeline_family / output_template_id / aggro_default por content_type
   // ── Operacionales (con brand_id, sin filtro lang/service) ─────
   'keywords',              // TODOS los keywords — filtrado lang/service en consumo
   'ctas',                  // TODOS los CTAs — filtrado service en consumo
@@ -147,6 +168,8 @@ async function buildSnapshot(brandId) {
     tensionArchitectures,
     aggroPresets,
     creativeCompatibilityRules,
+    pipelineSkills,
+    contentTypeRegistry,
   ] = await Promise.all([
     sbFetch(`brands?id=eq.${enc(brandId)}&select=*&limit=1`),
     sbFetch(`brand_personas?brand_id=eq.${enc(brandId)}&active=is.true&order=priority.asc&select=*`),
@@ -181,7 +204,14 @@ async function buildSnapshot(brandId) {
     sbFetch('creative_vectors?active=eq.true&select=*'),
     sbFetch('tension_architectures?active=eq.true&select=*'),
     sbFetch('aggro_presets?active=eq.true&select=*&order=level.asc'),
+    // select=* incluye la columna voice_id (v2.2): la precedencia voz>BASE la resuelve
+    // selectCompatRule en execute.ts sobre TODAS las filas activas del snapshot.
     sbFetch('creative_compatibility_rules?active=eq.true&select=*'),
+    // Cableado del registro (v2.2). Globales, sin filtro de marca — mismo criterio que
+    // el motor creativo. pipeline_skills lleva applies_to + layer_order (se ordena en
+    // consumo por layer_order); content_type_registry lleva TODAS las filas activas.
+    sbFetch('pipeline_skills?active=eq.true&select=*&order=layer_order.asc'),
+    sbFetch('content_type_registry?active=eq.true&select=*&order=content_type.asc'),
   ]);
 
   // Merge imagelab presets (global + brand, brand overrides global)
@@ -195,7 +225,7 @@ async function buildSnapshot(brandId) {
       generated_at:   new Date().toISOString(),
       ttl_hours:      CACHE_TTL_HOURS,
       tables_included: TABLES_INCLUDED,
-      version:        '2.1',
+      version:        '2.2',
     },
     // Marca
     brand:              brandRecord[0] ?? null,
@@ -227,6 +257,10 @@ async function buildSnapshot(brandId) {
     tension_architectures:        tensionArchitectures,
     aggro_presets:                aggroPresets,
     creative_compatibility_rules: creativeCompatibilityRules,
+    // Cableado del registro (v2.2). Claves EXACTAS que consume api/execute.ts:
+    // sliceOf(bc,'pipeline_skills') y sliceOf(bc,'content_type_registry').
+    pipeline_skills:              pipelineSkills,
+    content_type_registry:        contentTypeRegistry,
     // Operacionales — filtrar en consumo por language/service
     keywords,
     ctas,
@@ -249,7 +283,7 @@ async function upsertSnapshot(brandId, cacheData, builtBy = 'on_demand') {
         built_at:        new Date().toISOString(),
         stale_after:     staleAfter,
         built_by:        builtBy,
-        version:         '2.1',
+        version:         '2.2',
         tables_included: TABLES_INCLUDED,
       }),
     });

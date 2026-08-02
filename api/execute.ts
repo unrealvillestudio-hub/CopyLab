@@ -126,6 +126,15 @@ interface AggroPreset { id: string; level: number; label: string; instruction: s
 interface CompatibilityRule {
   content_type: string; allowed_vectors: string[]; excluded_vectors: string[];
   allowed_tensions: string[]; allowed_aggro: string[];
+  voice_id?: string | null;   // Cambio 2 — fila específica de voz vs. BASE (null)
+}
+// Cambio 1 — el registro de content_type. Única fuente (keyed por pipelineContentType)
+// de pipeline_family (el vocabulario que hablan pipeline_skills.applies_to y demás),
+// output_template_id y aggro_default. Reemplaza el objeto literal aggroByType y los
+// lookups por content_type crudo contra tablas que hablan otro vocabulario.
+interface ContentTypeRegistry {
+  content_type: string; pipeline_family: string; output_template_id: string | null;
+  aggro_default: number; active?: boolean; notes?: string | null;
 }
 interface VoiceGenome {
   voice_id: string; version: string; maturity: string;
@@ -169,6 +178,7 @@ interface NormalizedCache {
   creative_compatibility_rules: any[];
   pipeline_skills: any[];
   output_templates: any[];
+  content_type_registry: any[];
   _shape: 'snapshot' | 'context_json';
 }
 
@@ -176,7 +186,7 @@ const CACHE_SLICES: Array<keyof NormalizedCache> = [
   'brands', 'humanize_profiles', 'brand_goals', 'brand_personas', 'compliance_rules',
   'keywords', 'ctas', 'brand_copy_profiles', 'brand_voice_genome', 'creative_vectors',
   'tension_architectures', 'aggro_presets', 'creative_compatibility_rules',
-  'pipeline_skills', 'output_templates',
+  'pipeline_skills', 'output_templates', 'content_type_registry',
 ];
 
 function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
@@ -400,6 +410,30 @@ function filterCarrilImperativeRules(
   return (rules ?? []).filter(r => CARRIL_IMPERATIVE_KINDS.has(String(r?.kind)));
 }
 
+// ── Cambio 2 · precedencia por voz en la compatibilidad ─────────────────────
+// La precedencia es LÓGICA, no I/O, así que vive acá (pura) y sirve a los dos
+// caminos: la query directa (que trae voz + BASE de una vez) y el .filter() del
+// snapshot (que traía TODAS las reglas y filtraba sólo por content_type, quedando
+// desalineado si sólo se arreglaba la query). Reglas:
+//   • fila con voice_id === voiceId  → gana          (source 'voice')
+//   • si no, fila con voice_id null  → BASE          (source 'base')
+//   • si ninguna                     → null          (source 'none')
+// Orden-independiente: no depende del orden en que PostgREST devuelva las filas.
+function selectCompatRule(
+  rows: any[] | null | undefined,
+  contentType: string,
+  voiceId: string | null | undefined,
+): { rule: any | null; source: 'voice' | 'base' | 'none' } {
+  const forType = (rows ?? []).filter(r => r && r.content_type === contentType);
+  if (voiceId) {
+    const v = forType.find(r => r.voice_id === voiceId);
+    if (v) return { rule: v, source: 'voice' };
+  }
+  const base = forType.find(r => r.voice_id === null || r.voice_id === undefined);
+  if (base) return { rule: base, source: 'base' };
+  return { rule: null, source: 'none' };
+}
+
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -506,10 +540,11 @@ function applyCreativeLogic(
   allVectors: CreativeVector[],
   allTensions: TensionArchitecture[],
   allAggros: AggroPreset[],
-  rules: CompatibilityRule[],
+  rule: CompatibilityRule | null,
 ): { vector: CreativeVector | null; tension: TensionArchitecture | null; aggro: AggroPreset | null } {
-  const rule = rules[0] ?? null;
-
+  // Cambio 2 — recibe la regla YA ELEGIDA por selectCompatRule (voz > BASE), no un
+  // array del que sacar rules[0]. El rules[0] era de la misma familia que los [0]
+  // que ya se corrigieron aguas arriba.
   let eligibleVectors = allVectors.filter(v => {
     if (aggroLevel < v.aggro_min || aggroLevel > v.aggro_max) return false;
     if (rule) {
@@ -636,6 +671,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   platform_key: string | null;
   copy_profile_id: string | null;
   humanize_profile_id: string | null;
+  output_template_id: string | null;
   rules_injected: string[];
   rules_skipped: string[];
 }> {
@@ -682,12 +718,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     : isProductB2C ? 'product_description_b2c'
     : pack.replace('_pack', '');
 
-  const aggroByType: Record<string, number> = {
-    abandoned_cart_1: 2, abandoned_cart_2: 4,
-    welcome: 1, post_purchase: 1, review_request: 2, win_back: 3,
-    ad_copy: 3, social_post: 2, landing_page: 3, product_description_b2c: 2,
-  };
-  const aggroLevel = aggroByType[creativeContentType] ?? aggroByType[pipelineContentType] ?? 2;
+  // Cambio 1 — aggroLevel, pipeline_family y output_template_id salen del registro
+  // (content_type_registry), resuelto tras el Promise.all. El objeto literal
+  // aggroByType se borró: era el hardcode que el registro reemplaza.
 
   // ── Cache resolution — per-slice suppression (§5.3) ────────────────────
   // The old design cancelled all 8 queries whenever `bc` was truthy, so a
@@ -703,10 +736,23 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const eBrand = encodeURIComponent(brandId);
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
+  // Cambio 2 — la voz que decide la precedencia de compatibilidad. En modo carril
+  // viene YA RESUELTA en builder_input.voice_id; en modo UI no hay voz declarada →
+  // null → sólo la fila BASE (voice_id null) es candidata. La query directa trae voz
+  // + BASE de una vez (un viaje), y selectCompatRule elige.
+  const compatVoiceId = bi?.voice_id ?? null;
+  // Ojo PostgREST: la forma con punto (`voice_id.is.null`) SÓLO es válida DENTRO de
+  // `or=(...)`. Como parámetro top-level exige `voice_id=is.null` (columna=operador.valor);
+  // con punto apunta a una columna inexistente → 400 → sbArray lanza y rompe el modo UI
+  // en cache miss. Por eso las dos ramas usan sintaxis distinta.
+  const compatVoiceFilter = compatVoiceId
+    ? `or=(voice_id.eq.${encodeURIComponent(compatVoiceId)},voice_id.is.null)`
+    : 'voice_id=is.null';
+
   const [
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
-    pipelineSkillsSlice, outputTemplatesSlice, seqContext,
+    pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice, seqContext,
   ] = await Promise.all([
     (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
     // humanize: marca Y DEFAULT juntas; la precedencia la resuelve selectHumanize,
@@ -722,9 +768,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'creative_vectors') ?? sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
     sliceOf(bc, 'tension_architectures') ?? sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
     sliceOf(bc, 'aggro_presets') ?? sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
-    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&active=eq.true&select=*`),
+    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&${compatVoiceFilter}&active=eq.true&select=*`),
     sliceOf(bc, 'pipeline_skills'),
     sliceOf(bc, 'output_templates'),
+    sliceOf(bc, 'content_type_registry') ?? sbArray<ContentTypeRegistry>(`content_type_registry?content_type=in.(${encodeURIComponent(creativeContentType)},${encodeURIComponent(pipelineContentType)})&active=eq.true&select=*`),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
 
@@ -744,29 +791,75 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const market    = brand?.market ?? '';
   const brandName = brand?.display_name ?? brand?.name ?? brandId;
 
+  // ── Cambio 1 · el registro decide, en DOS ejes ─────────────────────────────
+  // El registro se lee con dos llaves distintas, cada campo con la suya:
+  //   • aggro_default: cadena creativeContentType → pipelineContentType → 2. Replica
+  //     EXACTAMENTE el viejo aggroByType (que caía en creative y luego en pipeline);
+  //     así abandoned_cart_2 (creativo) conserva su aggro 4 aunque el pipeline sea
+  //     'email_sequence' (aggro 2). Aplastar los dos ejes en uno bajaría ese 4 a 2.
+  //   • pipeline_family / output_template_id: SIEMPRE por pipelineContentType, nunca
+  //     del creativo (el template de la secuencia vive en la fila del pipeline).
+  // Una sola query trajo ambas filas (in.(creative,pipeline)); si coinciden, PostgREST
+  // devuelve una y la resolución es idéntica. Snapshot: trae TODAS → se busca por llave.
+  const registryRows = contentTypeRegistrySlice as ContentTypeRegistry[];
+  const registryFor = (ct: string) =>
+    registryRows.find((r: any) => r.content_type === ct && r.active !== false) ?? null;
+  const registryByCreative = registryFor(creativeContentType);
+  const registryByPipeline = creativeContentType === pipelineContentType
+    ? registryByCreative
+    : registryFor(pipelineContentType);
+
+  const aggroLevel = registryByCreative?.aggro_default ?? registryByPipeline?.aggro_default ?? 2;
+  if (registryByCreative?.aggro_default == null && registryByPipeline?.aggro_default == null) {
+    console.warn(`[CopyLab] sin content_type_registry para ${brandId} (creativo=${creativeContentType} · pipeline=${pipelineContentType}) — aggro degradado a ?? 2`);
+  }
+  // pipeline_family y output_template_id: SIEMPRE por pipelineContentType.
+  const pipelineFamily = registryByPipeline?.pipeline_family ?? pipelineContentType;
+
   // Creative engine — resolved per-slice; a genuinely empty catalogue or a
   // missing compatibility rule degrades, but NEVER in silence (§5.3.4 / §7).
-  const compatForType = (compatSliceRaw as CompatibilityRule[]).filter(
-    (r: any) => r.content_type === creativeContentType,
+  // Cambio 2 — la precedencia por voz: la fila de la voz gana a la BASE; si sólo hay
+  // BASE habiendo voz declarada, es degradación (warn distinto); si no hay ninguna,
+  // el motor cae a filtro por aggro (warn que nombra la voz, no sólo el tipo).
+  const { rule: compatRule, source: compatSource } = selectCompatRule(
+    compatSliceRaw as any[], creativeContentType, compatVoiceId,
   );
   if (!(allVectors as CreativeVector[]).length) {
     console.warn(`[CopyLab] sin creative_vectors para ${brandId} (content_type=${creativeContentType}) — motor creativo degradado`);
-  } else if (!compatForType.length) {
-    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} — selección degradada a filtro por aggro`);
+  } else if (compatSource === 'none') {
+    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} voice=${compatVoiceId ?? '∅'} (ni fila de voz ni BASE) — selección degradada a filtro por aggro`);
+  } else if (compatSource === 'base' && compatVoiceId) {
+    console.warn(`[CopyLab] creative_compatibility_rules usando fila BASE — ${compatVoiceId} no tiene la suya (content_type=${creativeContentType})`);
   }
   const creativeCombo = applyCreativeLogic(
     creativeContentType, aggroLevel, previousVectorId,
     allVectors as CreativeVector[], allTensions as TensionArchitecture[],
-    allAggros as AggroPreset[], compatForType,
+    allAggros as AggroPreset[], compatRule,
   );
 
+  // Cambio 1 — las capas se resuelven por pipeline_family (el vocabulario que
+  // pipeline_skills.applies_to realmente habla: post/blog/email), no por el
+  // content_type crudo.
   const appliedLayers = pipelineSkillsSlice
-    ? resolveAppliedLayersFromData(pipelineContentType, pipelineSkillsSlice)
-    : await resolveAppliedLayers(pipelineContentType);
+    ? resolveAppliedLayersFromData(pipelineFamily, pipelineSkillsSlice)
+    : await resolveAppliedLayers(pipelineFamily);
 
-  const outputTemplate: OutputTemplate | null = outputTemplatesSlice
-    ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
-    : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
+  // Cambio 1 — outputTemplate por id === registry[pipelineContentType].output_template_id.
+  // NULL → null sin query y sin warn (ausencia declarada). Sin fila de pipeline en el
+  // registro → comportamiento actual (por category), nunca throw.
+  let outputTemplate: OutputTemplate | null = null;
+  if (registryByPipeline) {
+    const tid = registryByPipeline.output_template_id;
+    if (tid) {
+      outputTemplate = outputTemplatesSlice
+        ? (outputTemplatesSlice.find((t: any) => t.id === tid && t.active !== false) ?? null)
+        : await sb<OutputTemplate>(`output_templates?id=eq.${encodeURIComponent(tid)}&active=eq.true&select=id,name,category,template_text&limit=1`);
+    }
+  } else {
+    outputTemplate = outputTemplatesSlice
+      ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
+      : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
+  }
 
   const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
   const voiceGenomeResult = genome
@@ -983,6 +1076,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     platform_key: bi?.platform ?? null,
     copy_profile_id: cp?.id ?? null,
     humanize_profile_id: hum?.id ?? null,
+    output_template_id: outputTemplate?.id ?? null,
     rules_injected: rulesInjected,
     rules_skipped: rulesSkipped,
   };

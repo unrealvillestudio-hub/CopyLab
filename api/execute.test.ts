@@ -125,7 +125,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule };`,
   );
   return factory();
 }
@@ -183,6 +183,13 @@ const FULL_SNAPSHOT = {
   creative_compatibility_rules: [{ content_type: 'social_post', allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
   pipeline_skills: [{ layer_code: 'LX', layer_order: 1, applies_to: ['social_post'] }],
   output_templates: [{ id: 't1', name: 'TPL', category: 'social_post', template_text: 'tmpl', active: true }],
+  // Cambio 1 — un snapshot COMPLETO ahora incluye el registro. La fila mantiene los
+  // valores implícitos del código pre-cableado (pipeline_family='social_post' ≡ el
+  // applies_to del pipeline_skills de arriba; output_template_id='t1' ≡ el template de
+  // arriba; aggro_default=2 ≡ el viejo aggroByType['social_post']) → la UI queda
+  // byte-idéntica y el golden no se toca. El mapeo real (social_post→'post', 'SMPC_full')
+  // lo ejercen los tests de integración del registro, no el golden.
+  content_type_registry: [{ content_type: 'social_post', pipeline_family: 'social_post', output_template_id: 't1', aggro_default: 2, active: true }],
 };
 // Forma de producción real (PR C): registro como `brand` singular (v2.1) · dos
 // genomas hermanos · humanize [DEFAULT×5 (copy/image/video/voice/web), marca(text)].
@@ -214,6 +221,8 @@ const PROD_SNAPSHOT = {
   creative_compatibility_rules: [{ content_type: 'social_post', allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
   pipeline_skills: [{ layer_code: 'LX', layer_order: 1, applies_to: ['social_post'] }],
   output_templates: [{ id: 't1', name: 'TPL', category: 'social_post', template_text: 'tmpl', active: true }],
+  // Ver nota en FULL_SNAPSHOT: valores del registro que preservan la UI byte a byte.
+  content_type_registry: [{ content_type: 'social_post', pipeline_family: 'social_post', output_template_id: 't1', aggro_default: 2, active: true }],
 };
 function reqWith(previousOutputs: any, extra: any = {}): any {
   return {
@@ -309,6 +318,31 @@ async function run() {
     ];
     eq(JSON.stringify(PURE.filterCarrilImperativeRules(rules).map((r: any) => r.code).sort()), JSON.stringify(['HR-1', 'HR-2', 'HR-3']), 'similitud/duplicación fuera');
     eq(JSON.stringify(PURE.filterCarrilImperativeRules(null)), JSON.stringify([]), 'null → []');
+  });
+
+  // Cambio 2 (pure) — precedencia por voz: voz > BASE > none, orden-independiente
+  await test('Cambio2·pure selectCompatRule — voz gana, base, none, orden-independiente', () => {
+    const rows = [
+      { content_type: 'editorial_post', voice_id: null, allowed_aggro: ['AGGRO_1'] },              // BASE
+      { content_type: 'editorial_post', voice_id: 'lucien_editorial', allowed_aggro: ['AGGRO_3'] }, // voz
+      { content_type: 'social_post', voice_id: null, allowed_aggro: ['AGGRO_2'] },                   // otro tipo
+    ];
+    const voice = PURE.selectCompatRule(rows, 'editorial_post', 'lucien_editorial');
+    eq(voice.source, 'voice', 'la fila de la voz gana');
+    eq(JSON.stringify(voice.rule.allowed_aggro), JSON.stringify(['AGGRO_3']), 'devuelve la regla de la voz');
+    const base = PURE.selectCompatRule(rows, 'editorial_post', 'voz_sin_fila');
+    eq(base.source, 'base', 'sin fila de voz → BASE');
+    eq(JSON.stringify(base.rule.allowed_aggro), JSON.stringify(['AGGRO_1']), 'devuelve la regla BASE');
+    const ui = PURE.selectCompatRule(rows, 'social_post', null);
+    eq(ui.source, 'base', 'sin voz declarada (UI) → BASE');
+    const none = PURE.selectCompatRule([], 'editorial_post', 'lucien_editorial');
+    eq(none.source, 'none', 'array vacío → none'); eq(none.rule, null, 'none → rule null');
+    const noneType = PURE.selectCompatRule(rows, 'no_existe', 'lucien_editorial');
+    eq(noneType.source, 'none', 'content_type sin filas → none');
+    // orden-independiente: no depender del orden en que PostgREST devuelva las filas
+    const rev = PURE.selectCompatRule([...rows].reverse(), 'editorial_post', 'lucien_editorial');
+    eq(rev.source, 'voice', 'orden invertido: la voz sigue ganando');
+    eq(JSON.stringify(rev.rule.allowed_aggro), JSON.stringify(['AGGRO_3']), 'orden invertido: misma regla');
   });
 
   // Case 2 (pure) — precedencia de idioma sin literal 'ES'; empty = absence
@@ -593,6 +627,155 @@ async function run() {
       const ui = await buildPrompt(reqWith(bctx));
       eq(ed.max_tokens, 4000, 'editorial'); eq(so.max_tokens, 640, 'social'); eq(ui.max_tokens, 1600, 'UI');
     } finally { fx.restore(); }
+  });
+
+  // ── Cambio 1 + 2 · integración del registro y la precedencia por voz ────────
+
+  // Base para los tres tests de registro: catálogo creativo con AGGRO_1/2/3 para
+  // distinguir de qué fila salió el aggro (voz vs BASE).
+  const REG_BASE = {
+    brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en-US' }],
+    brand_voice_genome: [
+      { voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
+      { voice_id: 'lucien_social', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
+    ],
+    creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+    tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
+    aggro_presets: [
+      { id: 'AGGRO_1', level: 1, label: 'L', instruction: 'i', anti_hedging: 'h' },
+      { id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' },
+      { id: 'AGGRO_3', level: 3, label: 'L', instruction: 'i', anti_hedging: 'h' },
+    ],
+  };
+  const carrilBI = (extra: any) => ({ domain: 'd', voice_id: 'v', destination: 'social', platform: 'x', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+
+  // INT-1 — editorial_post + lucien_editorial: gana la fila de la voz; el aggro sale
+  // de SU allowed_aggro (AGGRO_3), no del de la BASE (AGGRO_1) ni del aggro_default del
+  // registro (2). Prueba el registro (editorial_post→blog) y la precedencia por voz juntos.
+  await test('INT-1·registro+voz: editorial_post + lucien_editorial → fila de voz, aggro_id=AGGRO_3', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'editorial_post', pipeline_family: 'blog', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [
+          { content_type: 'editorial_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_1'] },
+          { content_type: 'editorial_post', voice_id: 'lucien_editorial', allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_3'] },
+        ],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_editorial', destination: 'editorial', platform: 'blog' }) }));
+      eq(built.creative_seed.aggro_id, 'AGGRO_3', 'el aggro sale de la fila de la voz, no de la BASE (AGGRO_1) ni del aggro_default (2)');
+      eq(built.max_tokens, 4000, 'techo editorial (confirma que resolvió editorial_post)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // INT-2 — social_post + lucien_social: no hay fila de voz → cae a BASE, y como HAY
+  // voz declarada el warn es el específico ("usando fila BASE — <voz> no tiene la suya").
+  await test('INT-2·registro+voz: social_post + lucien_social → BASE con warn nominal de voz', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const warns: string[] = [];
+    const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [
+          { content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] },
+        ],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_social', destination: 'social', platform: 'x' }) }));
+      eq(built.creative_seed.aggro_id, 'AGGRO_2', 'aggro de la fila BASE');
+      assert(warns.some(w => w.includes('fila BASE') && w.includes('lucien_social')), 'warn nominal: BASE + la voz que no tiene la suya');
+      assert(!warns.some(w => w.includes('ni fila de voz ni BASE')), 'NO es el warn de degradación total (sí hay BASE)');
+    } finally { fx.restore(); Math.random = realRandom; console.warn = realWarn; }
+  });
+
+  // INT-3 — un content_type sin fila en el registro: degrada con warn nominal
+  // (pipeline_family = el content_type, aggro ?? 2, template por category) y NO rompe.
+  await test('INT-3·registro: content_type sin fila → warn nominal + degrada, no throw', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const warns: string[] = [];
+    const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        // el registro NO tiene social_post (sólo editorial_post) → la fila pedida falta
+        content_type_registry: [{ content_type: 'editorial_post', pipeline_family: 'blog', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache })); // UI mode, pack default → social_post
+      assert(warns.some(w => w.includes('sin content_type_registry') && w.includes('social_post')), 'warn nominal nombrando el content_type');
+      eq(built.creative_seed.aggro_id, 'AGGRO_2', 'degrada: aggro ?? 2 → BASE permite AGGRO_2');
+      assert(built.system.length > 0, 'no rompe: sigue armando el prompt');
+    } finally { fx.restore(); Math.random = realRandom; console.warn = realWarn; }
+  });
+
+  // INT-4 — la DOBLE lectura del registro (corrección de Sam al brief). Un email_sequence
+  // en position 2 (creativeContentType='abandoned_cart_2', pipelineContentType='email_sequence'):
+  //   • aggro sale del EJE CREATIVO (abandoned_cart_2 → 4), no del pipeline (2).
+  //   • output_template sale del EJE PIPELINE (email_sequence → prompt_Email_Sequence),
+  //     no del creativo (Email_Campaign).
+  // Aplastar los dos ejes en uno rompería uno u otro (bajaría el aggro a 2 o borraría el
+  // template de la secuencia — el bug gemelo).
+  await test('INT-4·registro doble eje: email_sequence + abandoned_cart_2 → aggro AGGRO_4 (creativo) + template del pipeline', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        brand_voice_genome: [{ voice_id: 'v1', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] }],
+        aggro_presets: [
+          { id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' },
+          { id: 'AGGRO_4', level: 4, label: 'L', instruction: 'i', anti_hedging: 'h' },
+        ],
+        content_type_registry: [
+          { content_type: 'abandoned_cart_2', pipeline_family: 'email', output_template_id: 'Email_Campaign', aggro_default: 4, active: true },
+          { content_type: 'email_sequence', pipeline_family: 'email_sequence', output_template_id: 'prompt_Email_Sequence', aggro_default: 2, active: true },
+        ],
+        output_templates: [
+          { id: 'Email_Campaign', name: 'CAMP', category: 'email', template_text: 'camp', active: true },
+          { id: 'prompt_Email_Sequence', name: 'SEQ', category: 'email_sequence', template_text: 'seqtmpl', active: true },
+        ],
+        // sin creative_compatibility_rules para abandoned_cart_2 → el aggro_id cae al
+        // AGGRO_<aggroLevel> (4), probando que aggroLevel salió del eje creativo.
+      };
+      const built = await buildPrompt(reqWith(
+        { brandContext: cache },
+        { params: { pack: 'email_sequence_cart' }, meta: { sequence_type: 'abandoned_cart', position: 2, language: 'en-US' } },
+      ));
+      eq(built.creative_seed.aggro_id, 'AGGRO_4', 'aggro del EJE CREATIVO (abandoned_cart_2 → 4), no del pipeline (2)');
+      eq(built.output_template_id, 'prompt_Email_Sequence', 'template del EJE PIPELINE (email_sequence), no del creativo (Email_Campaign)');
+      assert(built.system.includes('TEMPLATE DE OUTPUT [SEQ]') && !built.system.includes('[CAMP]'), 'el system lleva el template de la secuencia, no el del carrito');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // INT-5 — el hueco: modo UI en CACHE MISS de compat → query directa. El filtro
+  // top-level sin voz debe ser `voice_id=is.null` (no la forma con punto, que es un
+  // filtro sobre columna inexistente → 400 → sbArray lanza). Los otros tests van por
+  // fixture (slice presente) y nunca ejercen esta rama. El mock devuelve 400 si el
+  // filtro NO es la forma correcta, reproduciendo el fallo real de PostgREST.
+  await test('INT-5·UI cache-miss: compat por query directa usa voice_id=is.null (no rompe con 400)', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({
+      tables: {
+        creative_vectors: [{ id: 'V', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'T', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: (u: string) =>
+          u.includes('voice_id=is.null')
+            ? res([{ content_type: 'social_post', voice_id: null, allowed_vectors: ['V'], excluded_vectors: [], allowed_tensions: ['T'], allowed_aggro: ['AGGRO_2'] }])
+            : res('column creative_compatibility_rules.voice_id.is does not exist', 400),
+      },
+    });
+    try {
+      // modo UI (sin builder_input), cache sin slice de creative_compatibility_rules → query directa
+      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }] } }));
+      assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('voice_id=is.null')), 'la query directa usa voice_id=is.null (forma top-level correcta)');
+      eq(built.creative_seed.aggro_id, 'AGGRO_2', 'resuelve BASE por query directa sin romper (400)');
+    } finally { fx.restore(); Math.random = realRandom; }
   });
 
   const total = passed + xfails.length + failures.length;
