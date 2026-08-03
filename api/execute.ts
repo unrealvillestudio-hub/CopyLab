@@ -434,6 +434,66 @@ function selectCompatRule(
   return { rule: null, source: 'none' };
 }
 
+// ── A1 · sustitución de variables de template ───────────────────────────────
+// Portado de src/lib/buildCopyPrompt.ts. buildPrompt inyectaba outputTemplate.template_text
+// crudo: 18 de 24 templates activos traen {{...}} (prompt_Email_Sequence, Email_Campaign,
+// Landing_Page_Full, los de YouTube, etc.) que llegaban LITERALES al modelo. Diferencia
+// clave con el original: una variable sin valor (ausente o vacía) → cadena vacía + se
+// REGISTRA como no resuelta, NUNCA el placeholder crudo `{{clave}}` (que era lo que dejaba
+// el original). Soporta {{clave}} y {clave}. Puro: regex sobre strings.
+//
+// El reemplazo usa función (no string): así un VALOR que contenga `$&`, `$1`, `$\`` u otro
+// patrón especial de String.replace se inserta LITERAL, no se interpola.
+function applyTemplateVars(
+  template: string | null | undefined,
+  vars: Record<string, string>,
+): { text: string; unresolved: string[] } {
+  const unresolved = new Set<string>();
+  const sub = (key: string): string => {
+    const v = vars[key];
+    if (v === undefined || v === null || v === '') { unresolved.add(key); return ''; }
+    return String(v);
+  };
+  const text = String(template ?? '')
+    .replace(/\{\{(\w+)\}\}/g, (_m, key) => sub(key))
+    .replace(/\{(\w+)\}/g,     (_m, key) => sub(key));
+  return { text, unresolved: [...unresolved] };
+}
+
+// Mapa de variables desde el registro de marca (que ahora llega con select=*) + el idioma
+// YA RESUELTO. Adaptado del original: en modo carril `servicio` y `extra_notes` no existen
+// (van vacíos), y `language` sale de `idioma` (no de un input crudo ni del 'ES' literal).
+// Toda ausencia queda como '' → applyTemplateVars la marca como no resuelta.
+function buildTemplateVars(brand: any, idioma: string, cta: string, keywords: string[]): Record<string, string> {
+  const b = brand ?? {};
+  return {
+    marca:              b.display_name ?? b.name ?? '',
+    contexto_marca:     b.brand_context ?? '',
+    geo_principal:      b.geo_principal ?? '',
+    tono_base:          b.tono_base ?? '',
+    canal_base:         b.canal_base ?? '',
+    canales_activos:    Array.isArray(b.canales_activos)  ? b.canales_activos.join(', ')  : (b.canales_activos ?? ''),
+    formatos_activos:   Array.isArray(b.formatos_activos) ? b.formatos_activos.join(', ') : (b.formatos_activos ?? ''),
+    cta_base:           b.cta_base ?? '',
+    cta_ads:            b.cta_ads ?? cta ?? '',
+    diferenciador_base: b.diferenciador_base ?? '',
+    disclaimer_base:    b.disclaimer_base ?? '',
+    url_base:           b.url_base ?? '',
+    cta_url_base:       b.cta_url_base ?? '',
+    keywords_top:       (keywords ?? []).slice(0, 5).join(', '),
+    grupo_3:            '',
+    servicio:           '',      // no existe en modo carril
+    language:           idioma,  // el idioma ya resuelto (nunca el 'ES' literal)
+    extra_notes:        '',      // no existe en modo carril
+  };
+}
+
+// Variables de CUMPLIMIENTO: existen para cumplir, no para decorar. Su ausencia no es
+// cosmética — si un template las pide y la marca no las tiene, va cadena vacía (nunca el
+// literal '[DISCLAIMER]', que parece contenido y así termina publicándose) PERO se marca
+// aparte, con severidad distinta, para que el Watcher lo lea (template_vars_unresolved_compliance).
+const TEMPLATE_COMPLIANCE_VARS = new Set(['disclaimer_base']);
+
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -672,6 +732,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   copy_profile_id: string | null;
   humanize_profile_id: string | null;
   output_template_id: string | null;
+  template_vars_unresolved: string[];
+  template_vars_unresolved_compliance: string[];
   rules_injected: string[];
   rules_skipped: string[];
 }> {
@@ -754,7 +816,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice, seqContext,
   ] = await Promise.all([
-    (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=id,display_name,market,language_primary`),
+    // select=* (A1): las variables de template necesitan cta_base, diferenciador_base,
+    // disclaimer_base, url_base, cta_url_base, geo_principal, tono_base, canales_activos,
+    // formatos_activos, brand_context. Por snapshot ya vienen (el escritor usa select=*);
+    // por query directa NO, y sin esto las variables saldrían vacías en silencio.
+    (sliceOf(bc, 'brands')?.[0]) ?? sb<any>(`brands?id=eq.${eBrand}&select=*`),
     // humanize: marca Y DEFAULT juntas; la precedencia la resuelve selectHumanize,
     // no `[0]` (que sería el DEFAULT, mergeado primero — §5.3.6 / A2).
     sliceOf(bc, 'humanize_profiles') ?? sbArray<any>(`humanize_profiles?brand_id=in.(${eBrand},DEFAULT)&select=*`),
@@ -978,8 +1044,26 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
+  // A1 — sustituir las variables del template ANTES de inyectarlo; nunca mandar {{...}}
+  // crudo al modelo. Las que no resuelven van vacías y se registran (template_vars_unresolved)
+  // para que el carril las audite.
+  let templateVarsUnresolved: string[] = [];
+  let templateVarsUnresolvedCompliance: string[] = [];
   if (outputTemplate?.template_text) {
-    layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${outputTemplate.template_text}`);
+    const ctaForVars = (ctaList as any[])[0]?.cta_smpc ?? (ctaList as any[])[0]?.cta_text ?? (ctaList as any[])[0]?.cta_ads ?? '';
+    const templateVars = buildTemplateVars(brand, idioma, ctaForVars, (kwList as any[]).map((k: any) => k.keyword));
+    const { text: filledTemplate, unresolved } = applyTemplateVars(outputTemplate.template_text, templateVars);
+    templateVarsUnresolved = unresolved;
+    templateVarsUnresolvedCompliance = unresolved.filter(k => TEMPLATE_COMPLIANCE_VARS.has(k));
+    const cosmetic = unresolved.filter(k => !TEMPLATE_COMPLIANCE_VARS.has(k));
+    if (cosmetic.length) {
+      console.warn(`[CopyLab] template ${outputTemplate.id} (${outputTemplate.name}) — variables sin valor, se inyectan vacías (nunca el placeholder crudo): ${cosmetic.join(', ')}`);
+    }
+    // Cumplimiento: severidad distinta (error), nombrando la variable — el Watcher lo lee.
+    if (templateVarsUnresolvedCompliance.length) {
+      console.error(`[CopyLab][COMPLIANCE] template ${outputTemplate.id} (${outputTemplate.name}) — variable(s) de cumplimiento SIN valor, se inyectan vacías (${brandId} no las tiene): ${templateVarsUnresolvedCompliance.join(', ')}`);
+    }
+    layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${filledTemplate}`);
   }
 
   const extra = req.params.extra_instructions ?? '';
@@ -1077,6 +1161,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     copy_profile_id: cp?.id ?? null,
     humanize_profile_id: hum?.id ?? null,
     output_template_id: outputTemplate?.id ?? null,
+    template_vars_unresolved: templateVarsUnresolved,
+    template_vars_unresolved_compliance: templateVarsUnresolvedCompliance,
     rules_injected: rulesInjected,
     rules_skipped: rulesSkipped,
   };
@@ -1371,11 +1457,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           creative_seed: built.creative_seed,
           cache_mode: built.cache_mode,
           layers_applied: built.layers_applied,
+          output_template_id: built.output_template_id,
+          template_vars_unresolved: built.template_vars_unresolved,
+          template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
         },
       });
     }
 
-    // ── UI response (sin cambios) ──────────────────────────────────────
+    // ── UI response ────────────────────────────────────────────────────
     return res.status(200).json({
       output,
       status: 'ok',
@@ -1386,6 +1475,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         layers_applied: built.layers_applied,
         voice_genome: built.voice_id ? { voice_id: built.voice_id, version: built.voice_version } : null,
         creative_seed: built.creative_seed,
+        template_vars_unresolved: built.template_vars_unresolved,
+        template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
       },
     });
   } catch (err) {

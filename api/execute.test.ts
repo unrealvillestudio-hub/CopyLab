@@ -125,7 +125,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars };`,
   );
   return factory();
 }
@@ -343,6 +343,25 @@ async function run() {
     const rev = PURE.selectCompatRule([...rows].reverse(), 'editorial_post', 'lucien_editorial');
     eq(rev.source, 'voice', 'orden invertido: la voz sigue ganando');
     eq(JSON.stringify(rev.rule.allowed_aggro), JSON.stringify(['AGGRO_3']), 'orden invertido: misma regla');
+  });
+
+  // A1 (pure) — sustitución de variables: ambas sintaxis; ausente → vacío (no placeholder);
+  // valor con caracteres especiales de regex ($&, $1) se inserta literal; unresolved nominal.
+  await test('A1·pure applyTemplateVars — {{ }} y { }, ausente→vacío (no placeholder), $& literal', () => {
+    const r1 = PURE.applyTemplateVars('Hola {{marca}} en {geo}', { marca: 'ACME', geo: 'Miami' });
+    eq(r1.text, 'Hola ACME en Miami', 'ambas sintaxis {{ }} y { }');
+    eq(JSON.stringify(r1.unresolved), JSON.stringify([]), 'todo resuelto → unresolved vacío');
+    const r2 = PURE.applyTemplateVars('A {{falta}} B {presente}', { presente: 'X' });
+    eq(r2.text, 'A  B X', 'clave ausente → cadena vacía, NUNCA el placeholder');
+    assert(!r2.text.includes('{{') && !r2.text.includes('}}') && !r2.text.includes('{falta'), 'sin placeholder crudo');
+    eq(JSON.stringify(r2.unresolved), JSON.stringify(['falta']), 'unresolved nombra la clave');
+    // valor vacío = sin valor → unresolved + vacío
+    const r3 = PURE.applyTemplateVars('[{{cta_base}}]', { cta_base: '' });
+    eq(r3.text, '[]', 'valor vacío → cadena vacía');
+    eq(JSON.stringify(r3.unresolved), JSON.stringify(['cta_base']), 'valor vacío cuenta como no resuelto');
+    // un valor con patrones especiales de String.replace ($&, $1, $`) va LITERAL
+    const r4 = PURE.applyTemplateVars('{{v}}', { v: 'precio $& $1 $` fin' });
+    eq(r4.text, 'precio $& $1 $` fin', 'el valor con $&/$1/$` se inserta literal, no se interpola');
   });
 
   // Case 2 (pure) — precedencia de idioma sin literal 'ES'; empty = absence
@@ -776,6 +795,83 @@ async function run() {
       assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('voice_id=is.null')), 'la query directa usa voice_id=is.null (forma top-level correcta)');
       eq(built.creative_seed.aggro_id, 'AGGRO_2', 'resuelve BASE por query directa sin romper (400)');
     } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // A1-int-1 — email_sequence + prompt_Email_Sequence: los {{...}} del template se
+  // sustituyen; el system no lleva ningún placeholder crudo. (position=1 para no arrastrar
+  // los {{ item.* }} de Klaviyo que las CART B RULES meten en position=2 — esos son Liquid
+  // del proveedor de email, no variables de template.)
+  await test('A1-int-1: email_sequence + prompt_Email_Sequence → el system no contiene {{ ni }}', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        brand_voice_genome: [],
+        brands: [{ id: 'B', display_name: 'ACME', market: 'US', language_primary: 'en-US', cta_base: 'Comprá ya', geo_principal: 'Miami' }],
+        content_type_registry: [
+          { content_type: 'email_sequence', pipeline_family: 'email_sequence', output_template_id: 'prompt_Email_Sequence', aggro_default: 2, active: true },
+        ],
+        output_templates: [
+          { id: 'prompt_Email_Sequence', name: 'SEQ', category: 'email_sequence', template_text: 'Hola {{marca}} — {{cta_base}} en {geo_principal}. {{disclaimer_base}}', active: true },
+        ],
+      };
+      const built = await buildPrompt(reqWith(
+        { brandContext: cache },
+        { params: { pack: 'email_sequence_welcome' }, meta: { sequence_type: 'welcome', position: 1, language: 'en-US' } },
+      ));
+      assert(!built.system.includes('{{') && !built.system.includes('}}'), 'ningún placeholder {{ }} crudo llega al modelo');
+      assert(built.system.includes('Hola ACME — Comprá ya en Miami'), 'las variables con valor se sustituyen');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // A1-int-2 — un template con una variable inexistente: se sustituye por vacío, se nombra
+  // en template_vars_unresolved, y NUNCA llega cruda al system.
+  await test('A1-int-2: variable inexistente → template_vars_unresolved la nombra, no va cruda al system', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        brand_voice_genome: [],
+        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en-US' }],
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: 'tX', aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        output_templates: [{ id: 'tX', name: 'TX', category: 'social_post', template_text: 'Foo {{no_existe_var}} bar', active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache })); // UI mode, pack default → social_post
+      assert(built.template_vars_unresolved.includes('no_existe_var'), 'template_vars_unresolved nombra la variable inexistente');
+      assert(!built.system.includes('{{') && !built.system.includes('no_existe_var'), 'la variable no llega cruda al system');
+      assert(built.system.includes('TEMPLATE DE OUTPUT [TX]:\nFoo  bar'), 'sustituida por vacío (Foo  bar)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // A1-int-3 — disclaimer_base es variable de CUMPLIMIENTO: si el template la pide y la
+  // marca no la tiene, va vacía (NUNCA '[DISCLAIMER]'), entra en template_vars_unresolved
+  // Y además se marca aparte en template_vars_unresolved_compliance (el Watcher la lee).
+  await test('A1-int-3: disclaimer_base ausente → vacío (no [DISCLAIMER]) + template_vars_unresolved_compliance', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const errs: string[] = [];
+    const realErr = console.error; console.error = (...a: any[]) => { errs.push(a.join(' ')); };
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        brand_voice_genome: [],
+        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en-US' }], // sin disclaimer_base
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: 'tD', aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        output_templates: [{ id: 'tD', name: 'TD', category: 'social_post', template_text: 'Legal: {{disclaimer_base}} fin', active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }));
+      assert(built.template_vars_unresolved.includes('disclaimer_base'), 'entra en el unresolved general');
+      assert(built.template_vars_unresolved_compliance.includes('disclaimer_base'), 'marcada aparte como compliance');
+      assert(!built.system.includes('[DISCLAIMER]'), "NUNCA el literal '[DISCLAIMER]'");
+      assert(built.system.includes('Legal:  fin'), 'sustituida por vacío');
+      assert(errs.some(e => e.includes('COMPLIANCE') && e.includes('disclaimer_base')), 'warn de severidad distinta (error) nombrando la variable');
+    } finally { fx.restore(); Math.random = realRandom; console.error = realErr; }
   });
 
   const total = passed + xfails.length + failures.length;
