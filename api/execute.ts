@@ -187,6 +187,7 @@ interface NormalizedCache {
   content_type_registry: any[];
   canal_blocks: any[];
   platform_canal_map: any[];
+  geomix: any[];
   _shape: 'snapshot' | 'context_json';
 }
 
@@ -199,6 +200,8 @@ const CACHE_SLICES: Array<keyof NormalizedCache> = [
   // canal_blocks ya viajaba en el snapshot pero execute.ts no lo mapeaba como slice; se añade
   // para poder leerlo por id sin segundo viaje.
   'canal_blocks', 'platform_canal_map',
+  // A2·b — geomix (mezcla geográfica); ya viaja en el snapshot, execute.ts no lo mapeaba.
+  'geomix',
 ];
 
 function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
@@ -530,6 +533,176 @@ function resolveCanalBlockId(
   return { canal_block_id: match.canal_block_id ?? null, forced_content_type: match.content_type ?? null, source: 'map' };
 }
 
+// ── A2·b · builders trasplantados de src/lib/buildCopyPrompt.ts ──────────────
+// Trasplante del resto de bloques que buildCopyPrompt arma y /api/execute no. Todos
+// puros (string ops). La forma (## headers) y el orden se alinean con buildCopyPrompt para
+// que el prompt tenga UNA sola gramática — un prompt con dos formatos tiene dos autores y
+// el modelo lo nota. NOTA: buildHumanizeBlock NO se trasplanta: el modelo de datos de
+// humanize en /api/execute (humanize_profiles: tone/personality/authenticity_rules/
+// anti_patterns) difiere del de buildCopyPrompt (humanize.value/notes); portarlo a ciegas
+// rompería. El bloque humanize conserva su formato actual a propósito (ver buildPrompt).
+
+function ensureArray(val: any): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') return [val];
+  return [];
+}
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  ES: 'Español (neutro)', 'es-ES': 'Español de España', 'es-FL': 'Español — mercado Florida/Miami (es-FL)',
+  'es-PA': 'Español de Panamá', 'es-MX': 'Español de México',
+  EN: 'English (neutral)', 'en-US': 'English — US market', 'en-FL': 'English — Florida market',
+  PT: 'Português', FR: 'Français',
+};
+
+// CTA field por canal_block_id (A2·a lo resuelve). Los IDs (META_ADS, BLOG, INSTAGRAM_
+// ORGANICO…) son el vocabulario que esta función espera. cta_ads sale de aquí (lo usa ADS).
+function getCTAFieldForCanal(canalId: string): string {
+  const adsCanals   = ['META_ADS', 'META_FEED', 'META_STORY', 'META_REEL', 'TIKTOK_ADS', 'GOOGLE_SEARCH_(RSA)', 'GOOGLE_PMAX'];
+  const seoCanals   = ['BLOG', 'BLOG_HTML', 'WEB', 'WEB_HTML', 'LANDING_PAGE', 'LANDING_HTML'];
+  const storyCanals = ['INSTAGRAM_ORGANICO', 'TIKTOK_ORGANICO'];
+  if (adsCanals.includes(canalId))   return 'cta_ads';
+  if (seoCanals.includes(canalId))   return 'cta_seo';
+  if (storyCanals.includes(canalId)) return 'cta_story';
+  return 'cta_smpc';
+}
+
+function getActiveCTA(ctas: any[] | null | undefined, ctaField: string, brandCtaBase: string): string {
+  const cta = (ctas ?? [])[0];
+  if (!cta) return brandCtaBase ?? '';
+  return cta[ctaField] ?? cta.cta_smpc ?? brandCtaBase ?? '';
+}
+
+function getTopKeywords(keywords: any[] | null | undefined, limit = 10): string[] {
+  return (keywords ?? []).filter((k: any) => (k.prioridad ?? 99) <= 3).slice(0, limit).map((k: any) => k.keyword);
+}
+
+function getGrupo3(keywords: any[] | null | undefined): string {
+  const kw1 = (keywords ?? []).find((k: any) => (k.prioridad ?? 99) === 1);
+  return kw1?.grupo_3 ?? getTopKeywords(keywords, 3).join(', ');
+}
+
+// Compliance ORDENADO: severity 'hard' primero, resto después. El caller lo numera.
+function getComplianceRules(rows: any[] | null | undefined): string[] {
+  const rs = rows ?? [];
+  const hard = rs.filter((r: any) => r.severity === 'hard').map((r: any) => r.rule_text).filter(Boolean);
+  const soft = rs.filter((r: any) => r.severity !== 'hard').map((r: any) => r.rule_text).filter(Boolean);
+  return [...hard, ...soft];
+}
+
+function buildBrandBlock(brand: any): string {
+  const b = brand ?? {};
+  const lines = [`## MARCA: ${b.display_name ?? b.name ?? ''}`];
+  if (b.brand_context)      lines.push(`Contexto: ${b.brand_context}`);
+  if (b.geo_principal)      lines.push(`Geo principal: ${b.geo_principal}`);
+  if (b.tono_base)          lines.push(`Tono base: ${b.tono_base}`);
+  if (b.canales_activos)    lines.push(`Canales activos: ${Array.isArray(b.canales_activos) ? b.canales_activos.join(', ') : b.canales_activos}`);
+  if (b.formatos_activos)   lines.push(`Formatos: ${Array.isArray(b.formatos_activos) ? b.formatos_activos.join(', ') : b.formatos_activos}`);
+  if (b.cta_base)           lines.push(`CTA base: ${b.cta_base}`);
+  if (b.diferenciador_base) lines.push(`Diferenciador: ${b.diferenciador_base}`);
+  if (b.disclaimer_base)    lines.push(`Disclaimer: ${b.disclaimer_base}`);
+  if (b.market)             lines.push(`Mercado: ${b.market}`);
+  if (b.language_primary)   lines.push(`Idioma: ${b.language_primary}`);
+  return lines.join('\n');
+}
+
+function buildGoalsBlock(goals: any[] | null | undefined): string {
+  const gs = goals ?? [];
+  if (!gs.length) return '';
+  const horizonLabels: Record<string, string> = { '6m': '6 meses', '12m': '12 meses (año 1)', '24m': '24 meses (año 2)' };
+  const lines = ['## OBJETIVOS ESTRATÉGICOS DE LA MARCA'];
+  lines.push('Estos objetivos deben guiar el enfoque del copy — priorizar mensajes que acerquen al lector a estos resultados.');
+  const grouped = gs.reduce((acc: Record<string, any[]>, goal: any) => {
+    const h = goal.horizon ?? 'general';
+    (acc[h] = acc[h] ?? []).push(goal);
+    return acc;
+  }, {});
+  for (const [horizon, items] of Object.entries(grouped)) {
+    const label = horizonLabels[horizon] ?? horizon;
+    lines.push(`\n**Horizonte ${label}:**`);
+    for (const item of (items as any[]).slice(0, 3)) {
+      const kpiStr = item.kpi && item.target ? ` → KPI: ${item.kpi} ${item.target}` : '';
+      lines.push(`- [${item.category?.toUpperCase() ?? 'GENERAL'}] ${item.goal ?? item.goal_text ?? ''}${kpiStr}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function buildPersonasBlock(personas: any[] | null | undefined): string {
+  const ps = personas ?? [];
+  if (!ps.length) return '';
+  const lines = ['## SEGMENTOS OBJETIVO (ICP)'];
+  lines.push('Escribe para estas personas. Sus dolores, motivaciones y objeciones deben resonar en el copy.');
+  const sorted = [...ps].sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2)).slice(0, 3);
+  for (const p of sorted) {
+    lines.push(`\n**${p.label}** (${p.segment_type?.toUpperCase() ?? 'B2C'})`);
+    if (p.age_range || p.gender || p.location) {
+      lines.push(`  Perfil: ${[p.age_range, p.gender, p.location].filter(Boolean).join(' · ')}`);
+    }
+    if (p.pain_points?.length) lines.push(`  Dolores: ${p.pain_points.slice(0, 2).join(' | ')}`);
+    if (p.motivations?.length) lines.push(`  Motivaciones: ${p.motivations.slice(0, 2).join(' | ')}`);
+    if (p.objections?.length)  lines.push(`  Objeciones a superar: ${p.objections.slice(0, 2).join(' | ')}`);
+    if (p.copy_hooks?.length)  lines.push(`  Hooks que convierten: ${p.copy_hooks.slice(0, 2).join(' | ')}`);
+    if (p.tone_for_segment)    lines.push(`  Tono recomendado: ${p.tone_for_segment}`);
+    if (p.avoid?.length)       lines.push(`  Evitar: ${p.avoid.slice(0, 2).join(' | ')}`);
+    if (p.buying_trigger)      lines.push(`  Trigger de compra: ${p.buying_trigger}`);
+  }
+  return lines.join('\n');
+}
+
+function buildIdiomaBlock(language: string): string {
+  return [
+    '## IDIOMA DE OUTPUT',
+    `Genera TODO el contenido exclusivamente en: **${LANGUAGE_LABELS[language] ?? language}**`,
+    'Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.',
+    'No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.',
+  ].join('\n');
+}
+
+function buildGeomixBlock(geo: any): string {
+  if (!geo) return '';
+  const lines = [`## GEOMIX — ${geo.geo}`];
+  if (geo.servicios?.length) lines.push(`Servicios en esta zona: ${geo.servicios.join(', ')}`);
+  if (geo.combos?.length)    lines.push(`Combos SEO: ${geo.combos.slice(0, 3).join(' | ')}`);
+  lines.push(`Integrar la geo "${geo.geo}" de forma natural en el copy.`);
+  if (geo.local_slang)       lines.push(`Lenguaje local: ${geo.local_slang}`);
+  if (geo.cultural_refs)     lines.push(`Referencias culturales: ${geo.cultural_refs}`);
+  return lines.join('\n');
+}
+
+function buildKeywordsBlock(keywords: any[] | null | undefined): string {
+  const top = getTopKeywords(keywords, 10);
+  if (!top.length) return '';
+  const grupo3 = getGrupo3(keywords);
+  return `## KEYWORDS\nPrincipales: ${top.slice(0, 5).join(', ')}` + (grupo3 ? `\nGrupo SEO (grupo_3): ${grupo3}` : '');
+}
+
+function buildCopyProfileLayer(profile: any): string {
+  if (!profile) return '';
+  const lines = ['## VOZ DE MARCA — BP_COPY_1.0'];
+  lines.push('Aplica estos parámetros de voz con prioridad sobre cualquier configuración genérica de tono.');
+  if (profile.voice_tone_primary)    lines.push(`TONO PRINCIPAL: ${profile.voice_tone_primary}`);
+  if (profile.voice_tone_secondary)  lines.push(`TONO SECUNDARIO: ${profile.voice_tone_secondary}`);
+  if (profile.voice_writing_style)   lines.push(`ESTILO DE ESCRITURA: ${profile.voice_writing_style}`);
+  if (profile.voice_pov)             lines.push(`PUNTO DE VISTA: ${profile.voice_pov}`);
+  if (profile.style_sentence_length) lines.push(`LONGITUD DE FRASES: ${profile.style_sentence_length}`);
+  if (profile.style_emoji_usage)     lines.push(`USO DE EMOJIS: ${profile.style_emoji_usage}`);
+  if (profile.style_cta_style)       lines.push(`ESTILO DE CTA: ${profile.style_cta_style}`);
+  const hooks = ensureArray(profile.style_hooks);
+  if (hooks.length)                  lines.push(`HOOKS RECOMENDADOS: ${hooks.join(' | ')}`);
+  const signatures = ensureArray(profile.style_signature_phrases);
+  if (signatures.length)             lines.push(`FRASES FIRMA: "${signatures.join('" | "')}"`);
+  const avoid = ensureArray(profile.style_avoid_phrases);
+  if (avoid.length)                  lines.push(`FRASES A EVITAR: ${avoid.join(', ')}`);
+  const prohibited = ensureArray(profile.compliance_prohibited_words);
+  if (prohibited.length)             lines.push(`PALABRAS PROHIBIDAS: ${prohibited.join(', ')}`);
+  const disclaimers = ensureArray(profile.compliance_required_disclaimers);
+  if (disclaimers.length)            lines.push(`DISCLAIMERS REQUERIDOS: ${disclaimers.join(' | ')}`);
+  if (profile.compliance_rules)      lines.push(`COMPLIANCE ADICIONAL: ${profile.compliance_rules}`);
+  return lines.join('\n');
+}
+
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -851,7 +1024,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice,
-    canalBlocksSlice, platformCanalMapSlice, seqContext,
+    canalBlocksSlice, platformCanalMapSlice, geomixSlice, seqContext,
   ] = await Promise.all([
     // select=* (A1): las variables de template necesitan cta_base, diferenciador_base,
     // disclaimer_base, url_base, cta_url_base, geo_principal, tono_base, canales_activos,
@@ -861,10 +1034,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // humanize: marca Y DEFAULT juntas; la precedencia la resuelve selectHumanize,
     // no `[0]` (que sería el DEFAULT, mergeado primero — §5.3.6 / A2).
     sliceOf(bc, 'humanize_profiles') ?? sbArray<any>(`humanize_profiles?brand_id=in.(${eBrand},DEFAULT)&select=*`),
-    sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=goal_text,priority&order=priority`),
+    // A2·b — select=* : buildGoalsBlock necesita horizon/kpi/target/category/goal (antes
+    // sólo goal_text,priority → sin horizonte ni KPI).
+    sliceOf(bc, 'brand_goals') ?? sbArray<any>(`brand_goals?brand_id=eq.${eBrand}&select=*&order=priority`),
     sliceOf(bc, 'brand_personas') ?? sbArray<any>(`brand_personas?brand_id=eq.${eBrand}&active=eq.true&select=*&order=priority`),
-    sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text`),
-    sliceOf(bc, 'keywords') ?? sbArray<any>(`keywords?brand_id=eq.${eBrand}&select=keyword,type&limit=20`),
+    // A2·b — +severity : getComplianceRules ordena hard primero (antes sólo rule_text).
+    sliceOf(bc, 'compliance_rules') ?? sbArray<any>(`compliance_rules?brand_id=eq.${eBrand}&active=eq.true&select=rule_text,severity`),
+    // A2·b — select=* : buildKeywordsBlock filtra por prioridad≤3 y usa grupo_3 (antes keyword,type).
+    sliceOf(bc, 'keywords') ?? sbArray<any>(`keywords?brand_id=eq.${eBrand}&active=eq.true&select=*&order=prioridad&limit=50`),
     sliceOf(bc, 'ctas') ?? sbArray<any>(`ctas?brand_id=eq.${eBrand}&select=*&active=eq.true&limit=5`),
     (sliceOf(bc, 'brand_copy_profiles')?.[0]) ?? sb<any>(`brand_copy_profiles?brand_id=eq.${eBrand}&active=eq.true&select=*`),
     sliceOf(bc, 'brand_voice_genome') ?? sbArray<any>(`brand_voice_genome?brand_id=eq.${eBrand}&active=eq.true&order=version.desc`),
@@ -879,14 +1056,17 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // función pura resuelve sin segundo viaje). Sólo se leen en modo carril.
     sliceOf(bc, 'canal_blocks') ?? sbArray<any>(`canal_blocks?active=eq.true&select=*`),
     sliceOf(bc, 'platform_canal_map') ?? sbArray<PlatformCanalMap>(`platform_canal_map?active=eq.true&select=*`),
+    // A2·b — geomix por marca (buildGeomixBlock). Se omite el bloque si la marca no tiene fila.
+    sliceOf(bc, 'geomix') ?? sbArray<any>(`geomix?brand_id=eq.${eBrand}&active=eq.true&select=*`),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
 
   const hum = selectHumanize(humRows as any[], brandId);
 
-  const comp = (complianceRows as any[]).length
-    ? { rule_text: (complianceRows as any[]).map((c: any) => c.rule_text).filter(Boolean).join('\n') }
-    : null;
+  // A2·b — compliance ORDENADO (severity 'hard' primero), la capa lo numera.
+  const complianceRules = getComplianceRules(complianceRows as any[]);
+  // A2·b — geomix: primera fila de la marca (getGeomix sin geo → geomix[0]); null → bloque omitido.
+  const geomixRow = (geomixSlice as any[])[0] ?? null;
 
   // Language precedence — no 'ES' literal, no default (§5.3.3). brand may come
   // from cache slice or from the direct query above; either way its real
@@ -895,8 +1075,6 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (!idioma) {
     throw new Error(`COPYLAB_LANGUAGE_UNRESOLVED: sin idioma para ${brandId} — declarar builder_input.language, meta.language, params.idioma o brands.language_primary`);
   }
-  const market    = brand?.market ?? '';
-  const brandName = brand?.display_name ?? brand?.name ?? brandId;
 
   // ── Cambio 1 · el registro decide, en DOS ejes ─────────────────────────────
   // El registro se lee con dos llaves distintas, cada campo con la suya:
@@ -1030,34 +1208,31 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const { vector, tension, aggro } = creativeCombo;
   const { layer: voiceLayer, voice_id, voice_version } = voiceGenomeResult;
 
+  // A2·b — orden de capas alineado con buildCopyPrompt (una sola gramática):
+  //   contexto → restricciones → ángulo creativo → forma de salida → instrucción.
   const layers: string[] = [];
 
-  layers.push(`MARCA: ${brandName} | MERCADO: ${market} | IDIOMA: ${idioma}`);
+  // ── CONTEXTO ──────────────────────────────────────────────────────────────
+  layers.push(buildBrandBlock(brand));                                  // ## MARCA
 
-  if (goalsList.length) {
-    layers.push(`OBJETIVOS:\n${goalsList.slice(0, 3).map((g: any) => `- ${g.goal ?? g.goal_text}`).join('\n')}`);
-  }
+  const goalsBlock = buildGoalsBlock(goalsList as any[]);
+  if (goalsBlock) layers.push(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
 
-  if (personasList.length) {
-    const targetPersona = meta.persona_key
-      ? personasList.find((p: any) => p.persona_key === meta.persona_key) ?? personasList[0]
-      : personasList[0];
-    if (targetPersona) {
-      const pains = Array.isArray(targetPersona.pain_points) ? targetPersona.pain_points.slice(0, 3).join(' | ') : targetPersona.pain_points ?? '';
-      const hooks = Array.isArray(targetPersona.copy_hooks)  ? targetPersona.copy_hooks.slice(0, 2).join(' | ')  : '';
-      layers.push(`AUDIENCIA OBJETIVO:\n${targetPersona.label ?? 'B2C'}\nPain points: ${pains}\nHooks: ${hooks}\nTono: ${targetPersona.tone_for_segment ?? ''}\nEvitar: ${Array.isArray(targetPersona.avoid) ? targetPersona.avoid.join(', ') : targetPersona.avoid ?? ''}`);
-    }
-  }
+  const personasBlock = buildPersonasBlock(personasList as any[]);
+  if (personasBlock) layers.push(personasBlock);                       // ## SEGMENTOS OBJETIVO (ICP)
 
-  layers.push(`IDIOMA OBLIGATORIO: ${idioma}. Genera desde el origen en este idioma. NUNCA traduzcas de otro idioma.`);
+  layers.push(buildIdiomaBlock(idioma));                               // ## IDIOMA DE OUTPUT
 
   // A2·a — bloque de canal REAL en modo carril: platform_canal_map (plataforma → canal_block_id)
-  // + canal_blocks.block_text. Sin bi (UI) el camino queda EXACTO (layer genérico + canal). Sin
-  // mapeo, sin fila o sin block_text: warn nominal + layer genérico, nunca prompt sin canal.
-  // forced_content_type se resuelve pero NO se cablea (gancho ADS, fuera de alcance).
-  let canalLayer = `CANAL: ${canal.toUpperCase()}. Adapta longitud, tono y formato al canal.`;
+  // + canal_blocks.block_text. Sin bi (UI): layer genérico. canalBlockId se reusa para el CTA.
+  let canalBlockId: string | null = null;
+  // A2·b — gramática unificada: el fallback genérico también es `## CANAL` (en carril es
+  // `## CANAL: <id>` con block_text). El 'UI no cambia' era condición de A2·a por el golden
+  // byte-idéntico; A2·b reescribe el golden, así que se unifica el header.
+  let canalLayer = `## CANAL: ${canal.toUpperCase()}\nAdapta longitud, tono y formato al canal.`;
   if (bi) {
     const { canal_block_id, source } = resolveCanalBlockId(platformCanalMapSlice as any[], bi.platform, 'organic');
+    canalBlockId = canal_block_id;
     if (source === 'none') {
       console.warn(`[CopyLab] sin platform_canal_map para plataforma '${bi.platform}' (traffic_type=organic) — cae al layer de canal genérico`);
     } else {
@@ -1069,62 +1244,39 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
       }
     }
   }
-  layers.push(canalLayer);
+  layers.push(canalLayer);                                             // ## CANAL / genérico
 
+  // Humanize — A2·b: NO se armoniza al formato buildCopyPrompt a propósito. El modelo de
+  // datos difiere: acá humanize_profiles trae tone/personality/authenticity_rules/anti_patterns
+  // (selectHumanize); buildCopyPrompt.buildHumanizeBlock espera humanize.value/notes. Portarlo
+  // a ciegas rompería. Se conserva este formato hasta unificar el modelo de datos aguas arriba.
   if (hum) {
     layers.push(`VOZ DE MARCA — BASE (L1):\nTono: ${hum.tone ?? ''}\nPersonalidad: ${hum.personality ?? ''}\nReglas de autenticidad: ${hum.authenticity_rules ?? ''}\nAnti-patterns: ${Array.isArray(hum.anti_patterns) ? (hum.anti_patterns as string[]).join(', ') : hum.anti_patterns ?? ''}`);
   }
 
-  if (cp) {
-    const parts: string[] = [];
-    if (cp.voice_tone_primary)  parts.push(`Tono primario: ${cp.voice_tone_primary}`);
-    if (cp.voice_writing_style) parts.push(`Estilo: ${cp.voice_writing_style}`);
-    const hooks = Array.isArray(cp.style_hooks) ? cp.style_hooks.join(', ') : cp.style_hooks;
-    if (hooks) parts.push(`Hooks de marca: ${hooks}`);
-    const avoid = Array.isArray(cp.style_avoid_phrases) ? cp.style_avoid_phrases.join(', ') : cp.style_avoid_phrases;
-    if (avoid) parts.push(`Nunca usar: ${avoid}`);
-    if (parts.length) layers.push(`PERFIL DE COPY BP_COPY_1.0:\n${parts.join('\n')}`);
+  const geomixBlock = buildGeomixBlock(geomixRow);
+  if (geomixBlock) layers.push(geomixBlock);                          // ## GEOMIX (omitido si no hay fila)
+
+  const keywordsBlock = buildKeywordsBlock(kwList as any[]);
+  if (keywordsBlock) layers.push(keywordsBlock);                      // ## KEYWORDS (prioridad≤3 + grupo_3)
+
+  // ── RESTRICCIONES ─────────────────────────────────────────────────────────
+  // CTA por canal_block_id (A2·a). UI / sin canal → cta_smpc. cta_ads sale de aquí.
+  const ctaField  = getCTAFieldForCanal(canalBlockId ?? '');
+  const ctaActive = getActiveCTA(ctaList as any[], ctaField, brand?.cta_base ?? '');
+  if (ctaActive) layers.push(`## CTA ACTIVO\n${ctaActive}`);
+
+  if (complianceRules.length) {                                       // ## COMPLIANCE (hard primero, numerado)
+    layers.push(`## COMPLIANCE — REGLAS OBLIGATORIAS\n` + complianceRules.map((r, i) => `${i + 1}. ${r}`).join('\n'));
   }
 
-  if (bi && bi.angle && bi.angle.trim()) {
-    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
-  }
+  const copyProfileBlock = buildCopyProfileLayer(cp);
+  if (copyProfileBlock) layers.push(copyProfileBlock);               // ## VOZ DE MARCA — BP_COPY_1.0
 
-  if (voiceLayer) layers.push(voiceLayer);
-
-  if (kwList.length) layers.push(`KEYWORDS: ${kwList.map((k: any) => k.keyword).join(', ')}`);
-
-  if (ctaList.length) {
-    const ctaText = ctaList.map((c: any) => `"${c.cta_smpc ?? c.cta_text ?? c.cta_ads ?? ''}"`).filter(Boolean).join(' | ');
-    if (ctaText) layers.push(`CTAs APROBADOS: ${ctaText}`);
-  }
-
-  if (comp?.rule_text) layers.push(`COMPLIANCE — REGLAS OBLIGATORIAS:\n${comp.rule_text}`);
+  if (voiceLayer) layers.push(voiceLayer);                           // L1.5 genoma — override de ADN, DESPUÉS del copy profile
 
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
-
-  // A1 — sustituir las variables del template ANTES de inyectarlo; nunca mandar {{...}}
-  // crudo al modelo. Las que no resuelven van vacías y se registran (template_vars_unresolved)
-  // para que el carril las audite.
-  let templateVarsUnresolved: string[] = [];
-  let templateVarsUnresolvedCompliance: string[] = [];
-  if (outputTemplate?.template_text) {
-    const ctaForVars = (ctaList as any[])[0]?.cta_smpc ?? (ctaList as any[])[0]?.cta_text ?? (ctaList as any[])[0]?.cta_ads ?? '';
-    const templateVars = buildTemplateVars(brand, idioma, ctaForVars, (kwList as any[]).map((k: any) => k.keyword));
-    const { text: filledTemplate, unresolved } = applyTemplateVars(outputTemplate.template_text, templateVars);
-    templateVarsUnresolved = unresolved;
-    templateVarsUnresolvedCompliance = unresolved.filter(k => TEMPLATE_COMPLIANCE_VARS.has(k));
-    const cosmetic = unresolved.filter(k => !TEMPLATE_COMPLIANCE_VARS.has(k));
-    if (cosmetic.length) {
-      console.warn(`[CopyLab] template ${outputTemplate.id} (${outputTemplate.name}) — variables sin valor, se inyectan vacías (nunca el placeholder crudo): ${cosmetic.join(', ')}`);
-    }
-    // Cumplimiento: severidad distinta (error), nombrando la variable — el Watcher lo lee.
-    if (templateVarsUnresolvedCompliance.length) {
-      console.error(`[CopyLab][COMPLIANCE] template ${outputTemplate.id} (${outputTemplate.name}) — variable(s) de cumplimiento SIN valor, se inyectan vacías (${brandId} no las tiene): ${templateVarsUnresolvedCompliance.join(', ')}`);
-    }
-    layers.push(`TEMPLATE DE OUTPUT [${outputTemplate.name}]:\n${filledTemplate}`);
-  }
 
   const extra = req.params.extra_instructions ?? '';
   if (extra) layers.push(`INSTRUCCIONES ESPECÍFICAS: ${extra}`);
@@ -1154,9 +1306,35 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     layers.push(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
   }
 
+  // ── ÁNGULO CREATIVO ───────────────────────────────────────────────────────
+  if (bi && bi.angle && bi.angle.trim()) {
+    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
+  }
   if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
   if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
+
+  // ── FORMA DE SALIDA (último bloque antes de la instrucción) ────────────────
+  // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
+  // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
+  let templateVarsUnresolved: string[] = [];
+  let templateVarsUnresolvedCompliance: string[] = [];
+  if (outputTemplate?.template_text) {
+    const ctaForVars = ctaActive || ((ctaList as any[])[0]?.cta_smpc ?? '');
+    const templateVars = buildTemplateVars(brand, idioma, ctaForVars, (kwList as any[]).map((k: any) => k.keyword));
+    const { text: filledTemplate, unresolved } = applyTemplateVars(outputTemplate.template_text, templateVars);
+    templateVarsUnresolved = unresolved;
+    templateVarsUnresolvedCompliance = unresolved.filter(k => TEMPLATE_COMPLIANCE_VARS.has(k));
+    const cosmetic = unresolved.filter(k => !TEMPLATE_COMPLIANCE_VARS.has(k));
+    if (cosmetic.length) {
+      console.warn(`[CopyLab] template ${outputTemplate.id} (${outputTemplate.name}) — variables sin valor, se inyectan vacías (nunca el placeholder crudo): ${cosmetic.join(', ')}`);
+    }
+    // Cumplimiento: severidad distinta (error), nombrando la variable — el Watcher lo lee.
+    if (templateVarsUnresolvedCompliance.length) {
+      console.error(`[CopyLab][COMPLIANCE] template ${outputTemplate.id} (${outputTemplate.name}) — variable(s) de cumplimiento SIN valor, se inyectan vacías (${brandId} no las tiene): ${templateVarsUnresolvedCompliance.join(', ')}`);
+    }
+    layers.push(`## TEMPLATE DE OUTPUT [${outputTemplate.name}]\n${filledTemplate}`);
+  }
 
   const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
     : bcShape === 'context_json' ? 'context_json_per_slice'

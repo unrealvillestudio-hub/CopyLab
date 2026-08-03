@@ -92,18 +92,9 @@ function diffLines(a: string, b: string): DiffLine[] {
   while (j < m) out.push({ tag: '+', line: B[j++] });
   return out;
 }
-// Clasifica un renglón de diff por CONTENIDO (no por número de línea — un cambio
-// de longitud desplazaría todo el resto). La lista es CERRADA: lo que no encaje
-// en los tres deltas declarados hace fallar el test con el diff impreso. Anclado
-// a inicios de línea exactos (§C.4) — regex anchas dejarían pasar drift real
-// clasificándolo como delta declarado.
-function clasificar(d: DiffLine): string | null {
-  const l = d.line;
-  if (/^MARCA: |^IDIOMA OBLIGATORIO: |^IDIOMA DE GENERACIÓN: /.test(l)) return 'DELTA_IDIOMA';
-  if (/^VOICE ID: /.test(l)) return 'DELTA_GENOMA';
-  if (/^Tono: |^Personalidad: |^Reglas de autenticidad: |^Anti-patterns: /.test(l)) return 'DELTA_HUMANIZE';
-  return null;
-}
+// A2·b retiró `clasificar` (lista blanca de deltas vs da182aa): con el trasplante el golden
+// pasó a ser la referencia y los golden tests son equidad byte a byte. diffLines/fmtDiff se
+// conservan para imprimir el diff cuando la equidad falla.
 function fmtDiff(d: DiffLine): string { return `${d.tag} ${d.line}`; }
 function stripGoldenHeader(raw: string): string {
   const lines = raw.split('\n');
@@ -125,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer };`,
   );
   return factory();
 }
@@ -173,7 +164,7 @@ const FULL_SNAPSHOT = {
   brand_goals: [{ goal_text: 'g1', priority: 1 }],
   brand_personas: [{ label: 'P', pain_points: ['pp'], copy_hooks: ['ch'], tone_for_segment: 'ts', avoid: ['av'] }],
   compliance_rules: [{ rule_text: 'must comply' }],
-  keywords: [{ keyword: 'k1' }],
+  keywords: [{ keyword: 'k1', prioridad: 1, grupo_3: 'g3' }],
   ctas: [{ cta_smpc: 'Buy now' }],
   brand_copy_profiles: [{ id: 'cp1', voice_tone_primary: 'vtp', voice_writing_style: 'vws', style_hooks: ['sh'], style_avoid_phrases: ['sap'] }],
   brand_voice_genome: [GENOME_V1],
@@ -195,6 +186,8 @@ const FULL_SNAPSHOT = {
   // el aserto de cero-queries siga valiendo (slice presente ⇒ sin query directa).
   canal_blocks: [{ id: 'INSTAGRAM_ORGANICO', block_text: 'IG block text', active: true }],
   platform_canal_map: [{ platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true }],
+  // A2·b — geomix en el snapshot completo (buildGeomixBlock). Mantiene cero-queries.
+  geomix: [{ geo: 'US', servicios: ['s1'], combos: ['c1'] }],
 };
 // Forma de producción real (PR C): registro como `brand` singular (v2.1) · dos
 // genomas hermanos · humanize [DEFAULT×5 (copy/image/video/voice/web), marca(text)].
@@ -217,7 +210,7 @@ const PROD_SNAPSHOT = {
   brand_goals: [{ goal_text: 'g1', priority: 1 }],
   brand_personas: [{ label: 'P', pain_points: ['pp'], copy_hooks: ['ch'], tone_for_segment: 'ts', avoid: ['av'] }],
   compliance_rules: [{ rule_text: 'must comply' }],
-  keywords: [{ keyword: 'k1' }],
+  keywords: [{ keyword: 'k1', prioridad: 1, grupo_3: 'g3' }],
   ctas: [{ cta_smpc: 'Buy now' }],
   brand_copy_profiles: [{ id: 'cp1', voice_tone_primary: 'vtp', voice_writing_style: 'vws', style_hooks: ['sh'], style_avoid_phrases: ['sap'] }],
   creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'inst', aggro_min: 1, aggro_max: 5 }],
@@ -230,6 +223,8 @@ const PROD_SNAPSHOT = {
   content_type_registry: [{ content_type: 'social_post', pipeline_family: 'social_post', output_template_id: 't1', aggro_default: 2, active: true }],
   canal_blocks: [{ id: 'INSTAGRAM_ORGANICO', block_text: 'IG block text', active: true }],
   platform_canal_map: [{ platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true }],
+  // A2·b — geomix en el snapshot completo (buildGeomixBlock). Mantiene cero-queries.
+  geomix: [{ geo: 'US', servicios: ['s1'], combos: ['c1'] }],
 };
 function reqWith(previousOutputs: any, extra: any = {}): any {
   return {
@@ -401,54 +396,34 @@ async function run() {
 
   console.log('\n[integración · buildPrompt / handler con fetch mockeado]');
 
-  // Case 1 — golden: la UI solo puede diferir del código PRE-contratos en los
-  // tres deltas declarados (§3.6). El golden se generó desde api/execute.ts
-  // @ da182aa (43056 b), no desde main — comparar main contra sí mismo sería el
-  // defecto que este caso repara. Lista blanca CERRADA: cualquier otra
-  // diferencia falla con el diff impreso.
-  await test('1·golden: la UI solo difiere del pre-contratos en los 3 deltas declarados', async () => {
+  // Case 1 — golden UI (A2·b). Tras el trasplante, el golden ES la nueva referencia
+  // (gramática buildCopyPrompt). El prompt del modo UI debe reproducirlo BYTE A BYTE.
+  // (Antes de A2·b esto era un test de "deltas vs da182aa"; el reformat lo vuelve equidad
+  // estricta — el mecanismo de lista blanca clasificar/DELTA queda obsoleto y se retira.)
+  // Cualquier drift falla con el diff impreso; el golden sólo se recongela con Sam mirándolo.
+  await test('1·golden UI: buildPrompt(FULL_SNAPSHOT) reproduce el golden byte a byte', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({});
     try {
       const actual = (await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }))).system;
       const golden = stripGoldenHeader(readFileSync(new URL('./__fixtures__/golden_ui_main.txt', import.meta.url), 'utf8'));
       const diffs = diffLines(golden, actual);
-      const sinClasificar = diffs.filter(d => !clasificar(d));
-      assert(
-        sinClasificar.length === 0,
-        `delta NO declarado (${sinClasificar.length} de ${diffs.length} renglones de diff):\n${sinClasificar.map(fmtDiff).join('\n')}`,
-      );
-      // los renglones que sí cambiaron deben pertenecer a la lista blanca
-      for (const d of diffs) {
-        const k = clasificar(d);
-        assert(k === 'DELTA_IDIOMA' || k === 'DELTA_GENOMA' || k === 'DELTA_HUMANIZE', `delta fuera de lista: ${fmtDiff(d)}`);
-      }
+      assert(diffs.length === 0, `el prompt UI difiere del golden (${diffs.length} renglones) — revisar y recongelar con Sam:\n${diffs.map(fmtDiff).join('\n')}`);
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
-  // Case 1-prod — golden sobre la forma de PRODUCCIÓN. A diferencia de
-  // FULL_SNAPSHOT (diff vacío), PROD_SNAPSHOT SÍ dispara los deltas, así que la
-  // lista blanca se estrena: se EXIGE que DELTA_IDIOMA y DELTA_HUMANIZE
-  // aparezcan — un delta declarado que no se manifiesta es un delta que no se
-  // implementó (§C.3). DELTA_GENOMA NO se exige: es carril-only — en modo UI el
-  // código pre y post seleccionan genomes[0] (mismo genoma), así que no puede
-  // manifestarse en un golden de UI; su corrección la cubren los casos 3/4/A3-a.
-  await test('1-prod·golden PROD: DELTA_IDIOMA y DELTA_HUMANIZE se manifiestan; nada fuera de la lista', async () => {
+  // Case 1-prod — golden UI sobre la forma REAL de PRODUCCIÓN (PROD_SNAPSHOT: registro
+  // `brand` singular v2.1, dos genomas hermanos, humanize [DEFAULT×5 + marca(text)], idioma
+  // en/FL). Byte a byte contra su golden — cubre que la forma de producción arma el prompt
+  // esperado (idioma real, humanize de la marca, etc., ahora horneados en la referencia A2·b).
+  await test('1-prod·golden UI PROD: buildPrompt(PROD_SNAPSHOT) reproduce el golden byte a byte', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({});
     try {
       const actual = (await buildPrompt(reqWith({ brandContext: PROD_SNAPSHOT }, { brandId: 'LucienSael' }))).system;
       const golden = stripGoldenHeader(readFileSync(new URL('./__fixtures__/golden_ui_prod.txt', import.meta.url), 'utf8'));
       const diffs = diffLines(golden, actual);
-      assert(diffs.length > 0, 'PROD_SNAPSHOT debe producir diferencias (los deltas)');
-      const sinClasificar = diffs.filter(d => !clasificar(d));
-      assert(
-        sinClasificar.length === 0,
-        `delta NO declarado (${sinClasificar.length} de ${diffs.length}):\n${sinClasificar.map(fmtDiff).join('\n')}`,
-      );
-      const kinds = new Set(diffs.map(clasificar));
-      assert(kinds.has('DELTA_IDIOMA'), 'DELTA_IDIOMA debe manifestarse (idioma real reemplaza el literal ES)');
-      assert(kinds.has('DELTA_HUMANIZE'), 'DELTA_HUMANIZE debe manifestarse (perfil de la marca reemplaza al DEFAULT)');
+      assert(diffs.length === 0, `el prompt UI PROD difiere del golden (${diffs.length} renglones) — revisar y recongelar con Sam:\n${diffs.map(fmtDiff).join('\n')}`);
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
@@ -460,16 +435,22 @@ async function run() {
       const a = await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }));
       const b = await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }));
       eq(a.system, b.system, 'determinista con Math.random fijo');
-      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\nMARCA: BrandX | MERCADO: US | IDIOMA: en-US'), 'preámbulo + MARCA exactos');
+      // A2·b — gramática nueva (buildCopyPrompt) + orden nuevo: contexto → restricciones →
+      // ángulo creativo → forma de salida. El template cierra (último bloque).
+      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## MARCA: BrandX'), 'preámbulo + ## MARCA exactos');
       assertOrdered(a.system, [
-        'MARCA: BrandX | MERCADO: US | IDIOMA: en-US',
-        'OBJETIVOS:', 'AUDIENCIA OBJETIVO:',
-        'IDIOMA OBLIGATORIO: en-US', 'CANAL: INSTAGRAM',
-        'VOZ DE MARCA — BASE (L1):', 'PERFIL DE COPY BP_COPY_1.0:',
-        '## L1.5 VOICE GENOME INJECTION', 'KEYWORDS: k1', 'CTAs APROBADOS: "Buy now"',
-        'COMPLIANCE — REGLAS OBLIGATORIAS:', 'TEMPLATE DE OUTPUT [TPL]:',
+        '## MARCA: BrandX',
+        '## OBJETIVOS ESTRATÉGICOS DE LA MARCA', '## SEGMENTOS OBJETIVO (ICP)',
+        '## IDIOMA DE OUTPUT', '## CANAL: INSTAGRAM',
+        'VOZ DE MARCA — BASE (L1):', '## GEOMIX — US', '## KEYWORDS', '## CTA ACTIVO',
+        '## COMPLIANCE — REGLAS OBLIGATORIAS', '## VOZ DE MARCA — BP_COPY_1.0',
+        '## L1.5 VOICE GENOME INJECTION',
         '## L14 CREATIVE VECTOR [VEC1', '## L15 TENSION ARCHITECTURE [TEN1', '## L16 AGGRO DIAL [AGGRO_2',
+        '## TEMPLATE DE OUTPUT [TPL]',
       ]);
+      // genoma DESPUÉS del copy profile; template DESPUÉS de los creativos (cierra)
+      assert(a.system.indexOf('## VOZ DE MARCA — BP_COPY_1.0') < a.system.indexOf('## L1.5 VOICE GENOME'), 'genoma tras copy profile');
+      assert(a.system.indexOf('## L16 AGGRO DIAL') < a.system.indexOf('## TEMPLATE DE OUTPUT [TPL]'), 'template tras el ángulo creativo (forma de salida al final)');
       for (const leak of ['EJE ESTRUCTURAL', 'REGLAS DEL WATCHER', 'PSICO-ESTÍMULO', 'MATERIA PRIMA', 'FORMATO (']) {
         assert(!a.system.includes(leak) && !a.user.includes(leak), `fuga de carril en modo UI: ${leak}`);
       }
@@ -485,8 +466,8 @@ async function run() {
       const built = await buildPrompt(reqWith({ brandContext: { brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
       assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.UnrealvilleStudio')), 'la query directa de brands debe ejecutarse');
       eq(built.language, 'en/FL', 'idioma real de brands.language_primary');
-      assert(built.system.includes('IDIOMA: en/FL'), 'system con idioma real');
-      assert(!/IDIOMA(?: OBLIGATORIO)?: ES\b/.test(built.system), "el literal 'ES' no aparece por ningún camino");
+      assert(built.system.includes('Idioma: en/FL') && built.system.includes('**en/FL**'), 'system con idioma real (## MARCA + ## IDIOMA DE OUTPUT)');
+      assert(!/(?:en|exclusivamente en): \*\*Español/.test(built.system) && !built.system.includes('IDIOMA: ES'), "el literal 'ES' no aparece por ningún camino");
     } finally { fx.restore(); }
   });
 
@@ -503,7 +484,7 @@ async function run() {
       const plural   = await buildPrompt(reqWith({ brandContext: { ...rest, brands: [rec] } }, { brandId: 'B' }));
       eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
-      assert(singular.system.includes('MARCA: UNRLVL | MERCADO: Miami'), 'display_name y market desde la forma singular');
+      assert(singular.system.includes('## MARCA: UNRLVL') && singular.system.includes('Mercado: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
       eq(fx.calls.length, 0, 'con el registro resuelto y el cache completo: CERO queries');
     } finally { fx.restore(); }
@@ -867,7 +848,7 @@ async function run() {
       const built = await buildPrompt(reqWith({ brandContext: cache })); // UI mode, pack default → social_post
       assert(built.template_vars_unresolved.includes('no_existe_var'), 'template_vars_unresolved nombra la variable inexistente');
       assert(!built.system.includes('{{') && !built.system.includes('no_existe_var'), 'la variable no llega cruda al system');
-      assert(built.system.includes('TEMPLATE DE OUTPUT [TX]:\nFoo  bar'), 'sustituida por vacío (Foo  bar)');
+      assert(built.system.includes('## TEMPLATE DE OUTPUT [TX]\nFoo  bar'), 'sustituida por vacío (Foo  bar)');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
@@ -913,7 +894,7 @@ async function run() {
       };
       const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_editorial', destination: 'editorial', platform: 'blog_forumphs' }) }));
       assert(built.system.includes('## CANAL: BLOG\nBLOQUE DE BLOG: estructura editorial larga.'), 'emite el bloque de canal real por id');
-      assert(!built.system.includes('. Adapta longitud, tono y formato al canal.'), 'ya no está el layer genérico');
+      assert(!built.system.includes('Adapta longitud, tono y formato al canal.'), 'ya no está el layer genérico');
       assert(!built.system.includes('CANAL: BLOG_FORUMPHS'), 'nunca el literal con la plataforma cruda');
     } finally { fx.restore(); Math.random = realRandom; }
   });
@@ -934,19 +915,154 @@ async function run() {
       };
       const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_social', destination: 'social', platform: 'threads' }) }));
       assert(warns.some(w => w.includes('platform_canal_map') && w.includes('threads')), 'warn nominal nombra la plataforma sin mapeo');
-      assert(built.system.includes('CANAL: THREADS. Adapta longitud, tono y formato al canal.'), 'cae al layer genérico');
+      assert(built.system.includes('## CANAL: THREADS') && built.system.includes('Adapta longitud, tono y formato al canal.'), 'cae al layer genérico (unificado ## CANAL)');
       assert(built.system.length > 0, 'no rompe (success)');
     } finally { fx.restore(); Math.random = realRandom; console.warn = realWarn; }
   });
 
-  // A2a-int-3 — UI sin builder_input: el layer de canal queda EXACTO (genérico), sin ## CANAL:.
-  await test('A2a-int-3: UI sin builder_input → layer de canal genérico intacto, sin ## CANAL:', async () => {
+  // A2a-int-3 — UI sin builder_input: canal genérico, ahora con gramática unificada
+  // (## CANAL: <canal> + 'Adapta...'), NO un block_text real de canal_blocks.
+  await test('A2a-int-3: UI sin builder_input → ## CANAL genérico (Adapta…), no block_text real', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({});
     try {
       const built = await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }));
-      assert(built.system.includes('CANAL: INSTAGRAM. Adapta longitud, tono y formato al canal.'), 'layer de canal genérico exacto (UI)');
-      assert(!built.system.includes('## CANAL:'), 'la UI no emite el bloque de canal real');
+      assert(built.system.includes('## CANAL: INSTAGRAM\nAdapta longitud, tono y formato al canal.'), 'canal genérico unificado (UI)');
+      assert(!built.system.includes('IG block text'), 'la UI NO inyecta el block_text real de canal_blocks');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // ── A2·b · PURE por función trasplantada ────────────────────────────────────
+  await test('A2b·pure getCTAFieldForCanal — ads/seo/story/default por canal_block_id', () => {
+    eq(PURE.getCTAFieldForCanal('META_ADS'), 'cta_ads', 'ads');
+    eq(PURE.getCTAFieldForCanal('BLOG'), 'cta_seo', 'seo');
+    eq(PURE.getCTAFieldForCanal('INSTAGRAM_ORGANICO'), 'cta_story', 'story');
+    eq(PURE.getCTAFieldForCanal('cualquier_otro'), 'cta_smpc', 'default');
+    eq(PURE.getCTAFieldForCanal(''), 'cta_smpc', 'sin canal → default (UI)');
+  });
+  await test('A2b·pure getActiveCTA — campo elegido, fallback a cta_smpc y a brand.cta_base', () => {
+    eq(PURE.getActiveCTA([{ cta_ads: 'A', cta_smpc: 'S' }], 'cta_ads', 'base'), 'A', 'campo pedido');
+    eq(PURE.getActiveCTA([{ cta_smpc: 'S' }], 'cta_ads', 'base'), 'S', 'fallback a cta_smpc');
+    eq(PURE.getActiveCTA([], 'cta_ads', 'base'), 'base', 'sin ctas → brand.cta_base');
+    eq(PURE.getActiveCTA([], 'cta_ads', ''), '', 'sin ctas ni cta_base → vacío (no bloque)');
+  });
+  await test('A2b·pure getTopKeywords/getGrupo3 — filtra prioridad≤3, grupo_3', () => {
+    const kws = [{ keyword: 'a', prioridad: 1, grupo_3: 'G' }, { keyword: 'b', prioridad: 3 }, { keyword: 'c', prioridad: 5 }, { keyword: 'd' }];
+    eq(JSON.stringify(PURE.getTopKeywords(kws, 10)), JSON.stringify(['a', 'b']), 'sólo prioridad≤3 (excluye 5 y sin prioridad)');
+    eq(PURE.getGrupo3(kws), 'G', 'grupo_3 de la keyword prioridad 1');
+    eq(JSON.stringify(PURE.getTopKeywords([], 10)), JSON.stringify([]), 'vacío → []');
+  });
+  await test('A2b·pure getComplianceRules — severity hard primero', () => {
+    const rows = [{ severity: 'soft', rule_text: 'S1' }, { severity: 'hard', rule_text: 'H1' }, { severity: 'medium', rule_text: 'M1' }, { severity: 'hard', rule_text: 'H2' }];
+    eq(JSON.stringify(PURE.getComplianceRules(rows)), JSON.stringify(['H1', 'H2', 'S1', 'M1']), 'hard primero, resto después, orden estable');
+    eq(JSON.stringify(PURE.getComplianceRules([])), JSON.stringify([]), 'vacío → []');
+  });
+  await test('A2b·pure buildBrandBlock — ## MARCA + campos ampliados, omite ausentes', () => {
+    const b = PURE.buildBrandBlock({ display_name: 'ACME', brand_context: 'ctx', geo_principal: 'Miami', tono_base: 'seco', diferenciador_base: 'dif', disclaimer_base: 'disc', market: 'US', language_primary: 'en-US' });
+    assert(b.startsWith('## MARCA: ACME'), 'header ## MARCA');
+    for (const s of ['Contexto: ctx', 'Geo principal: Miami', 'Tono base: seco', 'Diferenciador: dif', 'Disclaimer: disc', 'Mercado: US', 'Idioma: en-US']) assert(b.includes(s), `incluye ${s}`);
+    assert(!PURE.buildBrandBlock({ display_name: 'X' }).includes('Contexto:'), 'omite campos ausentes (sin línea vacía)');
+  });
+  await test('A2b·pure buildGoalsBlock — agrupa por horizon, KPI+target, 3/horizonte', () => {
+    const goals = [
+      { horizon: '6m', category: 'growth', goal: 'g1', kpi: 'MRR', target: '10k' },
+      { horizon: '6m', category: 'brand', goal: 'g2' }, { horizon: '6m', goal: 'g3' }, { horizon: '6m', goal: 'g4' },
+      { horizon: '12m', category: 'growth', goal: 'g5', kpi: 'ARR', target: '120k' },
+    ];
+    const out = PURE.buildGoalsBlock(goals);
+    assert(out.startsWith('## OBJETIVOS ESTRATÉGICOS DE LA MARCA'), 'header');
+    assert(out.includes('**Horizonte 6 meses:**') && out.includes('**Horizonte 12 meses (año 1):**'), 'agrupa por horizonte');
+    assert(out.includes('→ KPI: MRR 10k'), 'KPI+target');
+    assert(!out.includes('g4'), 'tope 3 por horizonte (g4 fuera)');
+    eq(PURE.buildGoalsBlock([]), '', 'sin goals → vacío');
+  });
+  await test('A2b·pure buildPersonasBlock — motivations/objections/buying_trigger, orden priority, top 3', () => {
+    const ps = [
+      { label: 'P3', priority: 3, segment_type: 'b2c' }, { label: 'P1', priority: 1, segment_type: 'b2b', motivations: ['m1'], objections: ['o1'], buying_trigger: 'bt1' },
+      { label: 'P2', priority: 2 }, { label: 'P4', priority: 4 },
+    ];
+    const out = PURE.buildPersonasBlock(ps);
+    assert(out.startsWith('## SEGMENTOS OBJETIVO (ICP)'), 'header');
+    assert(out.indexOf('**P1**') < out.indexOf('**P2**') && out.indexOf('**P2**') < out.indexOf('**P3**'), 'orden por priority');
+    assert(!out.includes('**P4**'), 'top 3 (P4 fuera)');
+    for (const s of ['Motivaciones: m1', 'Objeciones a superar: o1', 'Trigger de compra: bt1']) assert(out.includes(s), `incluye ${s}`);
+    eq(PURE.buildPersonasBlock([]), '', 'sin personas → vacío');
+  });
+  await test('A2b·pure buildIdiomaBlock — ## IDIOMA DE OUTPUT + LANGUAGE_LABELS (es-FL/es-PA)', () => {
+    assert(PURE.buildIdiomaBlock('es-FL').includes('Español — mercado Florida/Miami (es-FL)'), 'label es-FL');
+    assert(PURE.buildIdiomaBlock('es-PA').includes('Español de Panamá'), 'label es-PA');
+    const b = PURE.buildIdiomaBlock('en-US');
+    assert(b.startsWith('## IDIOMA DE OUTPUT') && b.includes('prioridad absoluta') && b.includes('No mezcles idiomas'), 'bloque completo, no sólo el header');
+    assert(PURE.buildIdiomaBlock('zz-ZZ').includes('**zz-ZZ**'), 'idioma sin label → el código crudo');
+  });
+  await test('A2b·pure buildGeomixBlock — ## GEOMIX, omite si null', () => {
+    const out = PURE.buildGeomixBlock({ geo: 'Miami', servicios: ['s1', 's2'], combos: ['c1'], local_slang: 'ls', cultural_refs: 'cr' });
+    assert(out.startsWith('## GEOMIX — Miami'), 'header con geo');
+    for (const s of ['Servicios en esta zona: s1, s2', 'Combos SEO: c1', 'Lenguaje local: ls', 'Referencias culturales: cr']) assert(out.includes(s), `incluye ${s}`);
+    eq(PURE.buildGeomixBlock(null), '', 'null → vacío (bloque omitido)');
+  });
+  await test('A2b·pure buildKeywordsBlock — ## KEYWORDS filtrado; 0 relevantes → vacío', () => {
+    const out = PURE.buildKeywordsBlock([{ keyword: 'a', prioridad: 1, grupo_3: 'G' }, { keyword: 'b', prioridad: 2 }]);
+    assert(out.startsWith('## KEYWORDS') && out.includes('Principales: a, b') && out.includes('Grupo SEO (grupo_3): G'), 'bloque con top + grupo_3');
+    eq(PURE.buildKeywordsBlock([{ keyword: 'x', prioridad: 9 }]), '', 'sin keywords prioridad≤3 → vacío (no bloque)');
+    eq(PURE.buildKeywordsBlock([]), '', '[] → vacío');
+  });
+
+  // ── A2·b · integración: NeuroneSCF (todo poblado) y LucienSael (0 en geomix/ctas/keywords) ──
+  await test('A2b-int-NeuroneSCF: cada bloque trasplantado aparece', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      // Cache representativo de NeuroneSCF (prod: geomix 5, ctas 12, personas 9, goals 12).
+      const cache = {
+        brands: [{ id: 'NeuroneSCF', display_name: 'NeuroneSCF', market: 'Panamá', language_primary: 'es-PA', brand_context: 'neuro', geo_principal: 'PA', tono_base: 'clínico', diferenciador_base: 'ciencia', disclaimer_base: 'no es consejo médico' }],
+        brand_voice_genome: [], humanize_profiles: [{ tone: 't', personality: 'p', authenticity_rules: 'a', anti_patterns: ['x'] }],
+        brand_goals: [{ horizon: '6m', category: 'growth', goal: 'crecer', kpi: 'MRR', target: '10k' }, { horizon: '12m', category: 'brand', goal: 'marca' }],
+        brand_personas: [{ label: 'Doctor', priority: 1, segment_type: 'b2b', pain_points: ['pp'], motivations: ['mot'], objections: ['obj'], buying_trigger: 'trig', copy_hooks: ['h'] }],
+        compliance_rules: [{ severity: 'soft', rule_text: 'blando' }, { severity: 'hard', rule_text: 'DURO' }],
+        keywords: [{ keyword: 'neuro', prioridad: 1, grupo_3: 'g3' }],
+        ctas: [{ cta_smpc: 'Agendá', cta_ads: 'Comprá' }],
+        brand_copy_profiles: [{ id: 'cp', voice_tone_primary: 'vtp', style_hooks: ['sh'] }],
+        creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        geomix: [{ geo: 'Panamá', servicios: ['neurofeedback'], combos: ['combo1'] }],
+      };
+      const s = (await buildPrompt(reqWith({ brandContext: cache }, { brandId: 'NeuroneSCF' }))).system;
+      for (const block of ['## MARCA: NeuroneSCF', '## OBJETIVOS ESTRATÉGICOS DE LA MARCA', '## SEGMENTOS OBJETIVO (ICP)', '## IDIOMA DE OUTPUT', '## GEOMIX — Panamá', '## KEYWORDS', '## CTA ACTIVO', '## COMPLIANCE — REGLAS OBLIGATORIAS', '## VOZ DE MARCA — BP_COPY_1.0']) {
+        assert(s.includes(block), `falta el bloque: ${block}`);
+      }
+      assert(s.includes('Motivaciones: mot') && s.includes('Objeciones a superar: obj') && s.includes('Trigger de compra: trig'), 'campos nuevos de persona');
+      assert(s.includes('→ KPI: MRR 10k') && s.includes('**Horizonte 6 meses:**'), 'goals por horizonte con KPI');
+      assert(s.indexOf('1. DURO') < s.indexOf('2. blando'), 'compliance hard primero, numerado');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  await test('A2b-int-LucienSael: geomix/ctas/keywords en 0 → sin bloque vacío', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en/FL' }], // sin cta_base
+        brand_voice_genome: [], humanize_profiles: [{ tone: 't', personality: 'p', authenticity_rules: 'a', anti_patterns: ['x'] }],
+        brand_goals: [{ horizon: '12m', category: 'brand', goal: 'autoridad editorial' }],
+        brand_personas: [{ label: 'Lector', priority: 1 }],
+        compliance_rules: [{ severity: 'hard', rule_text: 'H' }],
+        keywords: [], ctas: [], geomix: [],   // los tres en 0
+        brand_copy_profiles: [{ id: 'cp', voice_tone_primary: 'vtp' }],
+        creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+      };
+      const s = (await buildPrompt(reqWith({ brandContext: cache }, { brandId: 'LucienSael' }))).system;
+      assert(!s.includes('## GEOMIX'), 'geomix 0 → sin bloque');
+      assert(!s.includes('## CTA ACTIVO'), 'ctas 0 y sin cta_base → sin bloque de CTA');
+      assert(!s.includes('## KEYWORDS'), 'keywords 0 → sin bloque');
+      assert(s.includes('## MARCA: Lucien Sael') && s.includes('## OBJETIVOS ESTRATÉGICOS'), 'los bloques con datos sí aparecen');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
