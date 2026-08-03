@@ -125,7 +125,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId };`,
   );
   return factory();
 }
@@ -190,6 +190,11 @@ const FULL_SNAPSHOT = {
   // byte-idéntica y el golden no se toca. El mapeo real (social_post→'post', 'SMPC_full')
   // lo ejercen los tests de integración del registro, no el golden.
   content_type_registry: [{ content_type: 'social_post', pipeline_family: 'social_post', output_template_id: 't1', aggro_default: 2, active: true }],
+  // A2·a — un snapshot completo trae ahora estos dos slices. La UI (sin builder_input) NO los
+  // lee (resolveCanalBlockId sólo corre en carril), así que no afectan el golden; están para que
+  // el aserto de cero-queries siga valiendo (slice presente ⇒ sin query directa).
+  canal_blocks: [{ id: 'INSTAGRAM_ORGANICO', block_text: 'IG block text', active: true }],
+  platform_canal_map: [{ platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true }],
 };
 // Forma de producción real (PR C): registro como `brand` singular (v2.1) · dos
 // genomas hermanos · humanize [DEFAULT×5 (copy/image/video/voice/web), marca(text)].
@@ -223,6 +228,8 @@ const PROD_SNAPSHOT = {
   output_templates: [{ id: 't1', name: 'TPL', category: 'social_post', template_text: 'tmpl', active: true }],
   // Ver nota en FULL_SNAPSHOT: valores del registro que preservan la UI byte a byte.
   content_type_registry: [{ content_type: 'social_post', pipeline_family: 'social_post', output_template_id: 't1', aggro_default: 2, active: true }],
+  canal_blocks: [{ id: 'INSTAGRAM_ORGANICO', block_text: 'IG block text', active: true }],
+  platform_canal_map: [{ platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true }],
 };
 function reqWith(previousOutputs: any, extra: any = {}): any {
   return {
@@ -362,6 +369,23 @@ async function run() {
     // un valor con patrones especiales de String.replace ($&, $1, $`) va LITERAL
     const r4 = PURE.applyTemplateVars('{{v}}', { v: 'precio $& $1 $` fin' });
     eq(r4.text, 'precio $& $1 $` fin', 'el valor con $&/$1/$` se inserta literal, no se interpola');
+  });
+
+  // A2·a (pure) — puente plataforma → canal_block_id
+  await test('A2a·pure resolveCanalBlockId — match, email, inexistente, active:false, traffic_type', () => {
+    const rows = [
+      { platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true },
+      { platform: 'email_propietarios', traffic_type: 'organic', canal_block_id: 'EMAIL', content_type: null, active: true },
+      { platform: 'tiktok', traffic_type: 'organic', canal_block_id: 'TIKTOK_ORGANICO', content_type: null, active: false }, // inactiva
+    ];
+    const ig = PURE.resolveCanalBlockId(rows, 'meta_ig', 'organic');
+    eq(ig.canal_block_id, 'INSTAGRAM_ORGANICO', 'meta_ig + organic → INSTAGRAM_ORGANICO'); eq(ig.source, 'map', 'source map');
+    eq(ig.forced_content_type, null, 'forced_content_type null en organic (gancho ADS)');
+    eq(PURE.resolveCanalBlockId(rows, 'email_propietarios').canal_block_id, 'EMAIL', 'email_propietarios → EMAIL (organic por defecto)');
+    eq(PURE.resolveCanalBlockId(rows, 'no_existe').source, 'none', 'plataforma inexistente → none, sin excepción');
+    eq(PURE.resolveCanalBlockId(rows, 'tiktok', 'organic').source, 'none', 'fila active:false no matchea');
+    // traffic_type distinto: el set actual no tiene paid → none (impide que ADS se cuele antes de tiempo)
+    eq(PURE.resolveCanalBlockId(rows, 'meta_ig', 'paid').source, 'none', "meta_ig + 'paid' → none sobre el set organic");
   });
 
   // Case 2 (pure) — precedencia de idioma sin literal 'ES'; empty = absence
@@ -872,6 +896,58 @@ async function run() {
       assert(built.system.includes('Legal:  fin'), 'sustituida por vacío');
       assert(errs.some(e => e.includes('COMPLIANCE') && e.includes('disclaimer_base')), 'warn de severidad distinta (error) nombrando la variable');
     } finally { fx.restore(); Math.random = realRandom; console.error = realErr; }
+  });
+
+  // A2a-int-1 — carril blog_forumphs: platform_canal_map lo mapea a BLOG y se emite el
+  // block_text real (## CANAL: BLOG), no la línea genérica.
+  await test('A2a-int-1: carril blog_forumphs → ## CANAL: BLOG con block_text real, sin layer genérico', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'editorial_post', pipeline_family: 'blog', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'editorial_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        platform_canal_map: [{ platform: 'blog_forumphs', traffic_type: 'organic', canal_block_id: 'BLOG', content_type: null, active: true }],
+        canal_blocks: [{ id: 'BLOG', block_text: 'BLOQUE DE BLOG: estructura editorial larga.', active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_editorial', destination: 'editorial', platform: 'blog_forumphs' }) }));
+      assert(built.system.includes('## CANAL: BLOG\nBLOQUE DE BLOG: estructura editorial larga.'), 'emite el bloque de canal real por id');
+      assert(!built.system.includes('. Adapta longitud, tono y formato al canal.'), 'ya no está el layer genérico');
+      assert(!built.system.includes('CANAL: BLOG_FORUMPHS'), 'nunca el literal con la plataforma cruda');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // A2a-int-2 — carril con plataforma sin mapeo: warn nominal + layer genérico, sin romper.
+  await test('A2a-int-2: carril plataforma sin mapeo → warn nominal + layer genérico, no rompe', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const warns: string[] = [];
+    const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        platform_canal_map: [{ platform: 'meta_ig', traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true }],
+        canal_blocks: [{ id: 'INSTAGRAM_ORGANICO', block_text: 'IG block', active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ voice_id: 'lucien_social', destination: 'social', platform: 'threads' }) }));
+      assert(warns.some(w => w.includes('platform_canal_map') && w.includes('threads')), 'warn nominal nombra la plataforma sin mapeo');
+      assert(built.system.includes('CANAL: THREADS. Adapta longitud, tono y formato al canal.'), 'cae al layer genérico');
+      assert(built.system.length > 0, 'no rompe (success)');
+    } finally { fx.restore(); Math.random = realRandom; console.warn = realWarn; }
+  });
+
+  // A2a-int-3 — UI sin builder_input: el layer de canal queda EXACTO (genérico), sin ## CANAL:.
+  await test('A2a-int-3: UI sin builder_input → layer de canal genérico intacto, sin ## CANAL:', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const built = await buildPrompt(reqWith({ brandContext: FULL_SNAPSHOT }));
+      assert(built.system.includes('CANAL: INSTAGRAM. Adapta longitud, tono y formato al canal.'), 'layer de canal genérico exacto (UI)');
+      assert(!built.system.includes('## CANAL:'), 'la UI no emite el bloque de canal real');
+    } finally { fx.restore(); Math.random = realRandom; }
   });
 
   const total = passed + xfails.length + failures.length;

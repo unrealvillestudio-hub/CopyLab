@@ -1,9 +1,16 @@
 /**
- * UNRLVL Brand Cache Endpoint v2.3
+ * UNRLVL Brand Cache Endpoint v2.4
  * GET /api/brand-cache?brand_id=NeuroneSCF
  * GET /api/brand-cache?brand_id=NeuroneSCF&refresh=true   → fuerza reconstrucción
  * GET /api/brand-cache?action=build_all&secret=XXX         → reconstruye todas las marcas activas
  * GET /api/brand-cache?brand_id=X&action=invalidate&secret=XXX → marca como stale
+ *
+ * v2.4 — 2026-08-03:
+ *   A2·a — bloque de canal real. Se emite platform_canal_map (active, select=*): el puente
+ *   plataforma → canal_blocks.id que api/execute.ts usa para inyectar el block_text real en vez
+ *   de la línea genérica 'CANAL: X. Adapta...'. canal_blocks YA viajaba (17 filas), no se toca.
+ *   REGENERAR los snapshots vivos tras el merge — los viejos no traen platform_canal_map.
+ *   version 2.3→2.4.
  *
  * v2.3 — 2026-08-02:
  *   FIX persistencia (raíz). brand_cache_snapshots tiene RLS: bcs_anon_read (SELECT/anon) y
@@ -97,7 +104,8 @@ const TABLES_INCLUDED = [
   'psycho_presets',        // 10 presets PSY-*
   'channel_prompt_rules',  // reglas por canal
   'output_templates',      // todos los templates activos
-  'canal_blocks',          // bloques de canal activos
+  'canal_blocks',          // bloques de canal activos (block_text por id)
+  'platform_canal_map',    // A2·a — puente plataforma → canal_blocks.id (organic; paid = ADS)
   'imagelab_presets',      // presets imagelab (global + brand)
   'blueprint_schemas',     // schemas de blueprints
   // ── Motor creativo (globales) — el diferenciador de CopyLab (L14/L15/L16) ──
@@ -198,6 +206,7 @@ async function buildSnapshot(brandId) {
     channelPromptRules,
     outputTemplates,
     canalBlocks,
+    platformCanalMap,
     imagelabGlobal,
     imagelabBrand,
     blueprintSchemas,
@@ -231,6 +240,7 @@ async function buildSnapshot(brandId) {
     sbFetch('channel_prompt_rules?select=*&order=channel_id.asc'),
     sbFetch('output_templates?active=eq.true&select=*&order=id'),
     sbFetch('canal_blocks?active=eq.true&select=*&order=id'),
+    sbFetch('platform_canal_map?active=eq.true&select=*'),   // A2·a — puente plataforma → canal_blocks.id
     sbFetch('imagelab_presets?brand_id=is.null&select=*'),
     sbFetch(`imagelab_presets?brand_id=eq.${enc(brandId)}&select=*`),
     sbFetch('blueprint_schemas?active=eq.true&select=id,version,type,description,labs_using'),
@@ -264,7 +274,7 @@ async function buildSnapshot(brandId) {
       generated_at:   new Date().toISOString(),
       ttl_hours:      CACHE_TTL_HOURS,
       tables_included: TABLES_INCLUDED,
-      version:        '2.3',
+      version:        '2.4',
     },
     // Marca
     brand:              brandRecord[0] ?? null,
@@ -287,6 +297,7 @@ async function buildSnapshot(brandId) {
     channel_prompt_rules: channelPromptRules,
     output_templates:   outputTemplates,
     canal_blocks:       canalBlocks,
+    platform_canal_map: platformCanalMap,
     imagelab_presets:   Array.from(imagelabMap.values()),
     blueprint_schemas:  blueprintSchemas,
     // Motor creativo (L14/L15/L16). Claves EXACTAS que consume api/execute.ts:436-439
@@ -324,7 +335,7 @@ async function upsertSnapshot(brandId, cacheData, builtBy = 'on_demand') {
       built_at:        new Date().toISOString(),
       stale_after:     staleAfter,
       built_by:        builtBy,
-      version:         '2.3',
+      version:         '2.4',
       tables_included: TABLES_INCLUDED,
     }),
   });
