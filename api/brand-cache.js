@@ -1,9 +1,26 @@
 /**
- * UNRLVL Brand Cache Endpoint v2.0
+ * UNRLVL Brand Cache Endpoint v2.3
  * GET /api/brand-cache?brand_id=NeuroneSCF
  * GET /api/brand-cache?brand_id=NeuroneSCF&refresh=true   → fuerza reconstrucción
  * GET /api/brand-cache?action=build_all&secret=XXX         → reconstruye todas las marcas activas
  * GET /api/brand-cache?brand_id=X&action=invalidate&secret=XXX → marca como stale
+ *
+ * v2.3 — 2026-08-02:
+ *   FIX persistencia (raíz). brand_cache_snapshots tiene RLS: bcs_anon_read (SELECT/anon) y
+ *   bcs_service_all (ALL/service_role). El escritor usaba SUPABASE_ANON_KEY → la policy rechazaba el
+ *   POST y el snapshot NUNCA persistía; como upsertSnapshot no comprobaba res.ok, devolvía 200 con
+ *   X-Cache: MISS y la tabla no cambiaba (fail-silent en la función cuyo único trabajo es escribir —
+ *   la peor variante posible). Cambios:
+ *     + SB_WRITE_KEY (SUPABASE_SERVICE_ROLE_KEY) se usa SÓLO al escribir: upsertSnapshot (POST) e
+ *       invalidate (PATCH). Las lecturas siguen con anon (bcs_anon_read alcanza).
+ *     + upsertSnapshot comprueba res.ok y lanza con status + cuerpo.
+ *     + si SUPABASE_SERVICE_ROLE_KEY no está definida, la escritura lanza con mensaje nominal — no se
+ *       cae a anon en silencio (reproduciría el bug).
+ *     + build_all acumula los fallos por marca y responde 207 si alguno falló, en vez de declarar
+ *       'ok' global sobre un upsert que no ocurrió.
+ *   El camino on-demand devuelve el snapshot recién construido igual (es válido) pero marca la falla
+ *   de persistencia como RUIDOSA (log + header X-Cache-Persist: FAILED). version 2.2→2.3.
+ *   REQUIERE: definir SUPABASE_SERVICE_ROLE_KEY en el entorno de Vercel antes del deploy.
  *
  * v2.2 — 2026-08-02:
  *   Cableado del registro (Fase B). El snapshot NO emitía tres slices que api/execute.ts
@@ -51,8 +68,11 @@
 
 export const config = { runtime: 'edge' };
 
-const SB_URL    = () => process.env.SUPABASE_URL      ?? '';
-const SB_KEY    = () => process.env.SUPABASE_ANON_KEY ?? '';
+const SB_URL       = () => process.env.SUPABASE_URL              ?? '';
+const SB_KEY       = () => process.env.SUPABASE_ANON_KEY         ?? '';
+// Escritura → service_role. brand_cache_snapshots tiene RLS: bcs_anon_read (SELECT/anon) y
+// bcs_service_all (ALL/service_role). Con anon el POST/PATCH lo rechaza la policy y NUNCA persiste.
+const SB_WRITE_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 const CACHE_SECRET = () => process.env.CLAUDE_BRIDGE_SECRET ?? '';
 const CACHE_TTL_HOURS = 4;
 
@@ -103,6 +123,25 @@ function sbHeaders() {
   return {
     apikey: SB_KEY(),
     Authorization: `Bearer ${SB_KEY()}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+// Cabeceras de ESCRITURA — service_role. Sólo las usan upsertSnapshot (POST) e invalidate (PATCH).
+// Si SUPABASE_SERVICE_ROLE_KEY no está definida se LANZA acá: caer a anon en silencio reproduce el
+// bug original (RLS bcs_service_all exige service_role; anon sólo tiene SELECT vía bcs_anon_read).
+function sbWriteHeaders() {
+  const key = SB_WRITE_KEY();
+  if (!key) {
+    throw new Error(
+      '[brand-cache] SUPABASE_SERVICE_ROLE_KEY no definida: el escritor no puede persistir. ' +
+      'brand_cache_snapshots exige service_role (RLS bcs_service_all); anon sólo lee. ' +
+      'No se cae a anon en silencio.'
+    );
+  }
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
   };
 }
@@ -225,7 +264,7 @@ async function buildSnapshot(brandId) {
       generated_at:   new Date().toISOString(),
       ttl_hours:      CACHE_TTL_HOURS,
       tables_included: TABLES_INCLUDED,
-      version:        '2.2',
+      version:        '2.3',
     },
     // Marca
     brand:              brandRecord[0] ?? null,
@@ -269,26 +308,29 @@ async function buildSnapshot(brandId) {
 
 // ── Guardar snapshot en Supabase ──────────────────────────────────────────
 async function upsertSnapshot(brandId, cacheData, builtBy = 'on_demand') {
-  try {
-    const staleAfter = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000).toISOString();
-    await fetch(`${SB_URL()}/rest/v1/brand_cache_snapshots`, {
-      method: 'POST',
-      headers: {
-        ...sbHeaders(),
-        Prefer: 'resolution=merge-duplicates',
-      },
-      body: JSON.stringify({
-        brand_id:        brandId,
-        cache_data:      cacheData,
-        built_at:        new Date().toISOString(),
-        stale_after:     staleAfter,
-        built_by:        builtBy,
-        version:         '2.2',
-        tables_included: TABLES_INCLUDED,
-      }),
-    });
-  } catch (e) {
-    console.error(`[brand-cache] upsert failed for ${brandId}: ${e.message}`);
+  // Es la función cuyo ÚNICO trabajo es escribir: fail-silent acá es la peor variante posible.
+  // Va con service_role (sbWriteHeaders) y comprueba res.ok — si el POST no persiste, LANZA con
+  // status + cuerpo para que el llamador lo vea (build_all lo cuenta; on-demand lo marca ruidoso).
+  const staleAfter = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000).toISOString();
+  const res = await fetch(`${SB_URL()}/rest/v1/brand_cache_snapshots`, {
+    method: 'POST',
+    headers: {
+      ...sbWriteHeaders(),
+      Prefer: 'resolution=merge-duplicates',
+    },
+    body: JSON.stringify({
+      brand_id:        brandId,
+      cache_data:      cacheData,
+      built_at:        new Date().toISOString(),
+      stale_after:     staleAfter,
+      built_by:        builtBy,
+      version:         '2.3',
+      tables_included: TABLES_INCLUDED,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`[brand-cache] upsert ${brandId} no persistió: HTTP ${res.status} ${body.slice(0, 300)}`);
   }
 }
 
@@ -321,27 +363,42 @@ export default async function handler(req) {
     // → build_all no reconstruía NADA en silencio. Excluye la marca system DEFAULT.
     const brands = await sbFetch('brands?status=eq.active&type=neq.system&select=id');
     const results = [];
+    let failed = 0;
     for (const b of brands) {
       try {
         const data = await buildSnapshot(b.id);
         await upsertSnapshot(b.id, data, 'build_all');
         results.push({ brand_id: b.id, status: 'ok' });
       } catch (e) {
+        failed += 1;
         results.push({ brand_id: b.id, status: 'error', error: e.message });
       }
     }
-    return json({ action: 'build_all', built: results.length, results });
+    // 207 Multi-Status si alguna marca no persistió: no declarar éxito global sobre un upsert que
+    // no ocurrió (el bug original devolvía 'ok' con la tabla sin cambios). 200 sólo si TODAS pasaron.
+    const status = failed > 0 ? 207 : 200;
+    return json({ action: 'build_all', built: results.length, ok: results.length - failed, failed, results }, status);
   }
 
   // ── action=invalidate: marca el snapshot como stale ──
   if (action === 'invalidate') {
     if (!brandId) return json({ error: 'brand_id required' }, 400);
     if (CACHE_SECRET() && secret !== CACHE_SECRET()) return json({ error: 'Unauthorized' }, 401);
-    await fetch(`${SB_URL()}/rest/v1/brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}`, {
-      method: 'PATCH',
-      headers: sbHeaders(),
-      body: JSON.stringify({ stale_after: new Date().toISOString() }),
-    });
+    // PATCH también escribe → service_role. Comprueba res.ok: sin service_role la policy rechaza y
+    // el snapshot quedaría fresco pese al 'ok' (mismo fail-silent que el POST).
+    try {
+      const res = await fetch(`${SB_URL()}/rest/v1/brand_cache_snapshots?brand_id=eq.${encodeURIComponent(brandId)}`, {
+        method: 'PATCH',
+        headers: sbWriteHeaders(),
+        body: JSON.stringify({ stale_after: new Date().toISOString() }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return json({ action: 'invalidate', brand_id: brandId, status: 'error', http_status: res.status, error: body.slice(0, 300) }, 502);
+      }
+    } catch (e) {
+      return json({ action: 'invalidate', brand_id: brandId, status: 'error', error: e.message }, 500);
+    }
     return json({ action: 'invalidate', brand_id: brandId, status: 'ok' });
   }
 
@@ -368,10 +425,20 @@ export default async function handler(req) {
   //    pese a devolver 200 correcto). El await añade latencia — es el precio de que el caché exista;
   //    esto corre offline por cron, no en el camino caliente del usuario. (Alternativa Edge no
   //    bloqueante: ctx.waitUntil; se prefiere await por simplicidad.)
-  await upsertSnapshot(brandId, cacheData, refresh ? 'manual_refresh' : 'on_demand');
+  //    upsertSnapshot ahora LANZA si no persiste. En on-demand NO tiramos abajo la lectura —el
+  //    snapshot recién construido es válido y se devuelve— pero la falla se hace RUIDOSA: log +
+  //    header X-Cache-Persist: FAILED. build_all (cron) es el camino que la cuenta como error (207).
+  let persisted = true;
+  try {
+    await upsertSnapshot(brandId, cacheData, refresh ? 'manual_refresh' : 'on_demand');
+  } catch (e) {
+    persisted = false;
+    console.error(e.message);
+  }
 
   return json(cacheData, 200, {
     'X-Cache': 'MISS',
+    'X-Cache-Persist': persisted ? 'OK' : 'FAILED',
     'X-Built-At': new Date().toISOString(),
     'X-Brand-Id': brandId,
   });
