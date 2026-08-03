@@ -136,6 +136,12 @@ interface ContentTypeRegistry {
   content_type: string; pipeline_family: string; output_template_id: string | null;
   aggro_default: number; active?: boolean; notes?: string | null;
 }
+// A2·a — puente plataforma → bloque de canal. PK compuesta (platform, traffic_type).
+// canal_block_id → FK a canal_blocks; content_type → gancho de ADS (null en organic).
+interface PlatformCanalMap {
+  platform: string; traffic_type: string; canal_block_id: string;
+  content_type: string | null; active?: boolean; notes?: string | null;
+}
 interface VoiceGenome {
   voice_id: string; version: string; maturity: string;
   identity_anchors: string; lexicon_signature: any; lexicon_forbidden: string[];
@@ -179,6 +185,8 @@ interface NormalizedCache {
   pipeline_skills: any[];
   output_templates: any[];
   content_type_registry: any[];
+  canal_blocks: any[];
+  platform_canal_map: any[];
   _shape: 'snapshot' | 'context_json';
 }
 
@@ -187,6 +195,10 @@ const CACHE_SLICES: Array<keyof NormalizedCache> = [
   'keywords', 'ctas', 'brand_copy_profiles', 'brand_voice_genome', 'creative_vectors',
   'tension_architectures', 'aggro_presets', 'creative_compatibility_rules',
   'pipeline_skills', 'output_templates', 'content_type_registry',
+  // A2·a — el bloque de canal real: canal_blocks (block_text) resuelto vía platform_canal_map.
+  // canal_blocks ya viajaba en el snapshot pero execute.ts no lo mapeaba como slice; se añade
+  // para poder leerlo por id sin segundo viaje.
+  'canal_blocks', 'platform_canal_map',
 ];
 
 function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
@@ -493,6 +505,30 @@ function buildTemplateVars(brand: any, idioma: string, cta: string, keywords: st
 // literal '[DISCLAIMER]', que parece contenido y así termina publicándose) PERO se marca
 // aparte, con severidad distinta, para que el Watcher lo lea (template_vars_unresolved_compliance).
 const TEMPLATE_COMPLIANCE_VARS = new Set(['disclaimer_base']);
+
+// ── A2·a · puente plataforma → bloque de canal ──────────────────────────────
+// La plataforma del carril (meta_ig, blog_forumphs, email_propietarios…) no coincide con
+// canal_blocks.id (INSTAGRAM_ORGANICO, BLOG, EMAIL…). platform_canal_map es el puente:
+// match por platform + traffic_type sobre filas active. Sin match → source 'none' (el
+// caller avisa nominal y cae al layer genérico, nunca un default silencioso).
+// forced_content_type sale de la columna content_type — hoy siempre null (ninguna fila
+// organic la puebla); se devuelve para que el gancho de ADS exista desde ya, pero NO se
+// cablea en este PR: si alguien la puebla, se ignora (eso es del proyecto ADS).
+function resolveCanalBlockId(
+  rows: any[] | null | undefined,
+  platform: string,
+  trafficType: string = 'organic',
+): { canal_block_id: string | null; forced_content_type: string | null; source: 'map' | 'none' } {
+  const p  = String(platform ?? '').trim().toLowerCase();
+  const tt = String(trafficType ?? 'organic').trim().toLowerCase();
+  const match = (rows ?? []).find(r =>
+    r && r.active !== false &&
+    String(r.platform ?? '').trim().toLowerCase() === p &&
+    String(r.traffic_type ?? '').trim().toLowerCase() === tt,
+  );
+  if (!match) return { canal_block_id: null, forced_content_type: null, source: 'none' };
+  return { canal_block_id: match.canal_block_id ?? null, forced_content_type: match.content_type ?? null, source: 'map' };
+}
 
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
@@ -814,7 +850,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const [
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
-    pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice, seqContext,
+    pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice,
+    canalBlocksSlice, platformCanalMapSlice, seqContext,
   ] = await Promise.all([
     // select=* (A1): las variables de template necesitan cta_base, diferenciador_base,
     // disclaimer_base, url_base, cta_url_base, geo_principal, tono_base, canales_activos,
@@ -838,6 +875,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'pipeline_skills'),
     sliceOf(bc, 'output_templates'),
     sliceOf(bc, 'content_type_registry') ?? sbArray<ContentTypeRegistry>(`content_type_registry?content_type=in.(${encodeURIComponent(creativeContentType)},${encodeURIComponent(pipelineContentType)})&active=eq.true&select=*`),
+    // A2·a — canal_blocks (block_text por id) + platform_canal_map (8 filas, sin filtro: la
+    // función pura resuelve sin segundo viaje). Sólo se leen en modo carril.
+    sliceOf(bc, 'canal_blocks') ?? sbArray<any>(`canal_blocks?active=eq.true&select=*`),
+    sliceOf(bc, 'platform_canal_map') ?? sbArray<PlatformCanalMap>(`platform_canal_map?active=eq.true&select=*`),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
 
@@ -1009,7 +1050,26 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   }
 
   layers.push(`IDIOMA OBLIGATORIO: ${idioma}. Genera desde el origen en este idioma. NUNCA traduzcas de otro idioma.`);
-  layers.push(`CANAL: ${canal.toUpperCase()}. Adapta longitud, tono y formato al canal.`);
+
+  // A2·a — bloque de canal REAL en modo carril: platform_canal_map (plataforma → canal_block_id)
+  // + canal_blocks.block_text. Sin bi (UI) el camino queda EXACTO (layer genérico + canal). Sin
+  // mapeo, sin fila o sin block_text: warn nominal + layer genérico, nunca prompt sin canal.
+  // forced_content_type se resuelve pero NO se cablea (gancho ADS, fuera de alcance).
+  let canalLayer = `CANAL: ${canal.toUpperCase()}. Adapta longitud, tono y formato al canal.`;
+  if (bi) {
+    const { canal_block_id, source } = resolveCanalBlockId(platformCanalMapSlice as any[], bi.platform, 'organic');
+    if (source === 'none') {
+      console.warn(`[CopyLab] sin platform_canal_map para plataforma '${bi.platform}' (traffic_type=organic) — cae al layer de canal genérico`);
+    } else {
+      const block = (canalBlocksSlice as any[]).find((c: any) => c && c.id === canal_block_id && c.active !== false) ?? null;
+      if (block?.block_text && String(block.block_text).trim()) {
+        canalLayer = `## CANAL: ${canal_block_id}\n${block.block_text}`;
+      } else {
+        console.warn(`[CopyLab] canal_blocks '${canal_block_id}' ausente o sin block_text (plataforma '${bi.platform}') — cae al layer de canal genérico`);
+      }
+    }
+  }
+  layers.push(canalLayer);
 
   if (hum) {
     layers.push(`VOZ DE MARCA — BASE (L1):\nTono: ${hum.tone ?? ''}\nPersonalidad: ${hum.personality ?? ''}\nReglas de autenticidad: ${hum.authenticity_rules ?? ''}\nAnti-patterns: ${Array.isArray(hum.anti_patterns) ? (hum.anti_patterns as string[]).join(', ') : hum.anti_patterns ?? ''}`);
