@@ -1,7 +1,19 @@
 // ============================================================
 // UNRLVL CopyLab — api/claude.ts
-// Proxy serverless Vercel → Anthropic API
+// Proxy serverless Vercel → Anthropic API (prompt + system ARBITRARIOS)
 // Retry en 429, 503, 529 antes de devolver error al cliente
+//
+// ⚠️ NO ES UN CAMINO DE COPY DE MARCA. Este proxy pasa prompt/system tal cual al modelo,
+// sin contexto de marca, sin voice genome, sin compliance, sin registro. Su ÚNICO uso
+// legítimo son las herramientas genéricas de CopyToolsModule (analizar copy pegado,
+// generar CTAs desde un objetivo libre, adaptar texto a un canal) — transformaciones de
+// texto arbitrario, no generación con identidad de marca.
+//
+// NADA con brand_id debe pasar por acá. El copy de marca va por /api/execute (motor único:
+// registro + voice genome + compatibilidad + compliance). Si aparece la tentación de mandar
+// brand_id o armar un system con contexto de marca acá, es la señal de que ese caso pertenece
+// a /api/execute — así nació el motor paralelo que este refactor está retirando. (Verificado
+// 2026-08-04: las 3 sub-tools de CopyToolsModule son genéricas; ninguna usa el motor de marca.)
 // ============================================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'

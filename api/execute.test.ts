@@ -776,12 +776,12 @@ async function run() {
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
-  // INT-5 — el hueco: modo UI en CACHE MISS de compat → query directa. El filtro
-  // top-level sin voz debe ser `voice_id=is.null` (no la forma con punto, que es un
-  // filtro sobre columna inexistente → 400 → sbArray lanza). Los otros tests van por
-  // fixture (slice presente) y nunca ejercen esta rama. El mock devuelve 400 si el
-  // filtro NO es la forma correcta, reproduciendo el fallo real de PostgREST.
-  await test('INT-5·UI cache-miss: compat por query directa usa voice_id=is.null (no rompe con 400)', async () => {
+  // INT-5 — modo UI en CACHE MISS de compat → query directa. B·Fix 1: la query ya NO filtra
+  // por voz (la voz de UI sale del genoma, que se resuelve DESPUÉS del fetch) → trae TODAS las
+  // filas activas del content_type y selectCompatRule elige. Sin filtro de voz tampoco hay
+  // riesgo del 400 de PostgREST (la forma con punto que rompía). El mock devuelve 400 si
+  // apareciera cualquier filtro voice_id.* — no debe aparecer.
+  await test('INT-5·UI cache-miss: compat por query directa sin filtro de voz (no 400)', async () => {
     const realRandom = Math.random; Math.random = () => 0;
     const fx = installFetch({
       tables: {
@@ -789,16 +789,69 @@ async function run() {
         tension_architectures: [{ id: 'T', label: 'L', instruction: 'i', curve: 'c' }],
         aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
         creative_compatibility_rules: (u: string) =>
-          u.includes('voice_id=is.null')
-            ? res([{ content_type: 'social_post', voice_id: null, allowed_vectors: ['V'], excluded_vectors: [], allowed_tensions: ['T'], allowed_aggro: ['AGGRO_2'] }])
-            : res('column creative_compatibility_rules.voice_id.is does not exist', 400),
+          /voice_id[.=]/.test(u.split('creative_compatibility_rules?')[1] ?? '')
+            ? res('column creative_compatibility_rules.voice_id.is does not exist', 400)
+            : res([{ content_type: 'social_post', voice_id: null, allowed_vectors: ['V'], excluded_vectors: [], allowed_tensions: ['T'], allowed_aggro: ['AGGRO_2'] }]),
       },
     });
     try {
       // modo UI (sin builder_input), cache sin slice de creative_compatibility_rules → query directa
       const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }] } }));
-      assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('voice_id=is.null')), 'la query directa usa voice_id=is.null (forma top-level correcta)');
+      assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('content_type=eq.social_post') && !u.includes('voice_id')), 'la query directa NO lleva filtro de voz (trae todo el content_type)');
       eq(built.creative_seed.aggro_id, 'AGGRO_2', 'resuelve BASE por query directa sin romper (400)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // B·Fix 1 — UI SIN builder_input: la voz sale del genoma resuelto (no cae siempre en BASE).
+  // Con genoma lucien_editorial y una fila de compat de esa voz (allowed_aggro AGGRO_3),
+  // selectCompatRule devuelve source 'voice' y el aggro sale de AGGRO_3, no de la BASE.
+  await test('B·Fix1: UI usa la voz del genoma en compat → source voice, aggro_id AGGRO_3', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brand_voice_genome: [{ voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] }],
+        creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_1', level: 1, label: 'L', instruction: 'i', anti_hedging: 'h' }, { id: 'AGGRO_3', level: 3, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: [
+          { content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_1'] },
+          { content_type: 'social_post', voice_id: 'lucien_editorial', allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_3'] },
+        ],
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { brandId: 'LucienSael' })); // UI, sin builder_input
+      eq(built.creative_seed.aggro_id, 'AGGRO_3', 'la UI usa la voz del genoma (AGGRO_3), no la BASE (AGGRO_1)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // B·Fix 2 — eje de voz en content_type_registry: la fila de la voz gana a la BASE para
+  // output_template_id. UI con genoma lucien_editorial → template de la fila de voz (TVOICE),
+  // no el de la BASE (TBASE).
+  await test('B·Fix2: registro con eje de voz → output_template de la voz gana a la BASE', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brand_voice_genome: [{ voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] }],
+        creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
+        tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
+        aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+        content_type_registry: [
+          { content_type: 'social_post', voice_id: null, pipeline_family: 'post', output_template_id: 'TBASE', aggro_default: 2, active: true },
+          { content_type: 'social_post', voice_id: 'lucien_editorial', pipeline_family: 'post', output_template_id: 'TVOICE', aggro_default: 2, active: true },
+        ],
+        output_templates: [
+          { id: 'TBASE', name: 'BASE', category: 'social_post', template_text: 'base tmpl', active: true },
+          { id: 'TVOICE', name: 'VOICE', category: 'social_post', template_text: 'voice tmpl', active: true },
+        ],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { brandId: 'LucienSael' })); // UI
+      eq(built.output_template_id, 'TVOICE', 'gana el output_template de la fila de voz, no la BASE');
+      assert(built.system.includes('## TEMPLATE DE OUTPUT [VOICE]') && !built.system.includes('[BASE]'), 'el system lleva el template de la voz');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 

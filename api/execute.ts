@@ -135,6 +135,7 @@ interface CompatibilityRule {
 interface ContentTypeRegistry {
   content_type: string; pipeline_family: string; output_template_id: string | null;
   aggro_default: number; active?: boolean; notes?: string | null;
+  voice_id?: string | null;   // B·Fix 2 — eje de voz (precedencia voz→BASE como compat)
 }
 // A2·a — puente plataforma → bloque de canal. PK compuesta (platform, traffic_type).
 // canal_block_id → FK a canal_blocks; content_type → gancho de ADS (null en organic).
@@ -1007,18 +1008,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const eBrand = encodeURIComponent(brandId);
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
-  // Cambio 2 — la voz que decide la precedencia de compatibilidad. En modo carril
-  // viene YA RESUELTA en builder_input.voice_id; en modo UI no hay voz declarada →
-  // null → sólo la fila BASE (voice_id null) es candidata. La query directa trae voz
-  // + BASE de una vez (un viaje), y selectCompatRule elige.
-  const compatVoiceId = bi?.voice_id ?? null;
-  // Ojo PostgREST: la forma con punto (`voice_id.is.null`) SÓLO es válida DENTRO de
-  // `or=(...)`. Como parámetro top-level exige `voice_id=is.null` (columna=operador.valor);
-  // con punto apunta a una columna inexistente → 400 → sbArray lanza y rompe el modo UI
-  // en cache miss. Por eso las dos ramas usan sintaxis distinta.
-  const compatVoiceFilter = compatVoiceId
-    ? `or=(voice_id.eq.${encodeURIComponent(compatVoiceId)},voice_id.is.null)`
-    : 'voice_id=is.null';
+  // B·Fix 1 — la voz que decide la precedencia (compat + registro) se resuelve DESPUÉS del
+  // Promise.all (en carril = builder_input.voice_id; en UI = el genoma resuelto). La query trae
+  // TODAS las filas activas del content_type (sin filtro de voz, porque la voz de UI no se
+  // conoce hasta resolver el genoma) y selectCompatRule elige con effectiveVoiceId. Así la UI
+  // deja de caer SIEMPRE en BASE. (Sin filtro de voz tampoco hay riesgo del 400 de PostgREST.)
 
   const [
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
@@ -1048,7 +1042,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'creative_vectors') ?? sbArray<CreativeVector>('creative_vectors?active=eq.true&select=id,category,label,instruction,aggro_min,aggro_max'),
     sliceOf(bc, 'tension_architectures') ?? sbArray<TensionArchitecture>('tension_architectures?active=eq.true&select=id,label,instruction,curve'),
     sliceOf(bc, 'aggro_presets') ?? sbArray<AggroPreset>('aggro_presets?active=eq.true&select=id,level,label,instruction,anti_hedging&order=level'),
-    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&${compatVoiceFilter}&active=eq.true&select=*`),
+    sliceOf(bc, 'creative_compatibility_rules') ?? sbArray<CompatibilityRule>(`creative_compatibility_rules?content_type=eq.${encodeURIComponent(creativeContentType)}&active=eq.true&select=*`),
     sliceOf(bc, 'pipeline_skills'),
     sliceOf(bc, 'output_templates'),
     sliceOf(bc, 'content_type_registry') ?? sbArray<ContentTypeRegistry>(`content_type_registry?content_type=in.(${encodeURIComponent(creativeContentType)},${encodeURIComponent(pipelineContentType)})&active=eq.true&select=*`),
@@ -1086,9 +1080,21 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   //     del creativo (el template de la secuencia vive en la fila del pipeline).
   // Una sola query trajo ambas filas (in.(creative,pipeline)); si coinciden, PostgREST
   // devuelve una y la resolución es idéntica. Snapshot: trae TODAS → se busca por llave.
-  const registryRows = contentTypeRegistrySlice as ContentTypeRegistry[];
-  const registryFor = (ct: string) =>
-    registryRows.find((r: any) => r.content_type === ct && r.active !== false) ?? null;
+  // B·Fix 1 — genoma + voz efectiva ANTES de la precedencia (compat + registro). En UI la voz
+  // sale del genoma resuelto (antes la UI no alimentaba la voz y caía SIEMPRE en BASE).
+  const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
+  const voiceGenomeResult = genome
+    ? assembleVoiceGenomeLayer(genome, idioma)
+    : { layer: null, voice_id: null, voice_version: null };
+  const effectiveVoiceId = bi?.voice_id ?? genome?.voice_id ?? null;
+
+  // B·Fix 2 — el registro también resuelve por eje de voz (misma precedencia voz→BASE que la
+  // compatibilidad): reusa selectCompatRule sobre las filas del registro (content_type + voice_id).
+  // La fila con voice_id === effectiveVoiceId gana a la BASE (voice_id null). Si el registro aún no
+  // tiene columna/filas de voz, todas son BASE → comportamiento previo (goldens intactos).
+  const registryRows = (contentTypeRegistrySlice as ContentTypeRegistry[]).filter((r: any) => r.active !== false);
+  const registryFor = (ct: string): ContentTypeRegistry | null =>
+    (selectCompatRule(registryRows as any[], ct, effectiveVoiceId).rule as ContentTypeRegistry | null);
   const registryByCreative = registryFor(creativeContentType);
   const registryByPipeline = creativeContentType === pipelineContentType
     ? registryByCreative
@@ -1107,14 +1113,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // BASE habiendo voz declarada, es degradación (warn distinto); si no hay ninguna,
   // el motor cae a filtro por aggro (warn que nombra la voz, no sólo el tipo).
   const { rule: compatRule, source: compatSource } = selectCompatRule(
-    compatSliceRaw as any[], creativeContentType, compatVoiceId,
+    compatSliceRaw as any[], creativeContentType, effectiveVoiceId,
   );
   if (!(allVectors as CreativeVector[]).length) {
     console.warn(`[CopyLab] sin creative_vectors para ${brandId} (content_type=${creativeContentType}) — motor creativo degradado`);
   } else if (compatSource === 'none') {
-    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} voice=${compatVoiceId ?? '∅'} (ni fila de voz ni BASE) — selección degradada a filtro por aggro`);
-  } else if (compatSource === 'base' && compatVoiceId) {
-    console.warn(`[CopyLab] creative_compatibility_rules usando fila BASE — ${compatVoiceId} no tiene la suya (content_type=${creativeContentType})`);
+    console.warn(`[CopyLab] sin creative_compatibility_rules para ${brandId} content_type=${creativeContentType} voice=${effectiveVoiceId ?? '∅'} (ni fila de voz ni BASE) — selección degradada a filtro por aggro`);
+  } else if (compatSource === 'base' && effectiveVoiceId) {
+    console.warn(`[CopyLab] creative_compatibility_rules usando fila BASE — ${effectiveVoiceId} no tiene la suya (content_type=${creativeContentType})`);
   }
   const creativeCombo = applyCreativeLogic(
     creativeContentType, aggroLevel, previousVectorId,
@@ -1145,11 +1151,6 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
       ? (outputTemplatesSlice.find((t: any) => t.category === pipelineContentType && t.active !== false) ?? null)
       : await sb<OutputTemplate>(`output_templates?category=eq.${encodeURIComponent(pipelineContentType)}&active=eq.true&select=id,name,category,template_text&limit=1`);
   }
-
-  const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
-  const voiceGenomeResult = genome
-    ? assembleVoiceGenomeLayer(genome, idioma)
-    : { layer: null, voice_id: null, voice_version: null };
 
   const bcShape = bc?._shape ?? null;
 
