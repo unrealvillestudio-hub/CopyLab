@@ -1,5 +1,5 @@
-# CopyLab golden — system prompt del modo UI (gramática buildCopyPrompt · Fase A2·b)
-# origen: api/execute.ts @ feat/copylab-guardrails — A2·b (el resto del trasplante)
+# CopyLab golden — system prompt del modo UI (gramática buildCopyPrompt + genoma serializado · B0)
+# origen: api/execute.ts @ fix/voice-genome-injector — B0 (renderGenomeSection, genoma jsonb entero)
 # generado: 2026-08-04 · fixture: FULL_SNAPSHOT · Math.random=()=>0 · fetch mockeado sin tablas
 # NO editar a mano. Regenerar desde los fixtures del test (buildPrompt sobre el fixture).
 # ──────────────────────────────────────────────────────────────────────────
@@ -88,10 +88,37 @@ VOICE ID: v1 v1 (maturity: stable)
 
 IDIOMA DE GENERACIÓN: en-US. Reescribir desde origen en en-US aplicando el mismo genoma. NUNCA traducir.
 
-IDENTITY ANCHORS (autoridad que puede invocar):
-ia
+IDENTITY ANCHORS:
+TAGLINE: ia-tagline
+THEMATIC_GRAVITY: ia-gravity
+AUTHORITY_BASIS: ia-authority
 
-REGISTRO EMOCIONAL: seco
+LEXICÓN FIRMADO: firmada-1, firmada-2
+
+LÉXICO PROHIBIDO: prohibida-1
+
+FIRMAS SINTÁCTICAS:
+RHYTHM: syn-rhythm
+STRUCTURES: struct-1, struct-2
+
+ARQUITECTURA ARGUMENTATIVA:
+CORE_MOVE: arch-core
+ENDING_DISCIPLINE: arch-ending
+CLOSING_REPOSITIONS: arch-closing
+FINANCIAL_LENS: arch-financial
+
+POSICIÓN RELACIONAL:
+ADDRESS: stance-address
+THE_READERS_MOMENT: stance-moment
+
+REGISTRO EMOCIONAL:
+REGISTER: er-register
+RESTRAINT: er-restraint
+
+REGISTROS PROHIBIDOS: reg-prohibido
+
+APPLICATION CONSTRAINTS:
+NO_EMOJI: true
 
 REGLA CRÍTICA DE FIRMA:
 Los recursos firmados (trademark_word, emphatic_triplication, signature_phrases) son FIRMA, no FÓRMULA. Si se repiten en cada pieza, se vacían. Úsalos solo cuando el contenido los justifica naturalmente — si no encajan, omítelos. El voice genome modula el TONO del output; el vector creativo define el ÁNGULO de entrada. Cuando conflicten: el vector gana en arquitectura, el voice gana en superficie léxica.
