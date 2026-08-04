@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -152,11 +152,22 @@ function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any;
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
+// B0 — forma REAL del genoma: 9 de 10 voces vivas traen identity_anchors/emotional_register
+// como OBJETO, lexicon_signature como array, argumentative_architecture/relational_stance como
+// objetos con claves reconocibles. El fixture string anterior medía un caso que no existe (fue
+// lo que escondió el bug del [object Object]). Valores con prefijos distintivos para no chocar
+// con asserts de otros bloques.
 const GENOME_V1 = {
-  voice_id: 'v1', version: '1', maturity: 'stable', identity_anchors: 'ia',
-  lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {},
-  argumentative_architecture: {}, relational_stance: {}, emotional_register: 'seco',
-  prohibited_registers: [], application_constraints: {},
+  voice_id: 'v1', version: '1', maturity: 'stable',
+  identity_anchors: { tagline: 'ia-tagline', thematic_gravity: 'ia-gravity', authority_basis: 'ia-authority' },
+  lexicon_signature: ['firmada-1', 'firmada-2'],
+  lexicon_forbidden: ['prohibida-1'],
+  syntactic_signatures: { rhythm: 'syn-rhythm', structures: ['struct-1', 'struct-2'] },
+  argumentative_architecture: { core_move: 'arch-core', ending_discipline: 'arch-ending', closing_repositions: 'arch-closing', financial_lens: 'arch-financial' },
+  relational_stance: { address: 'stance-address', the_readers_moment: 'stance-moment' },
+  emotional_register: { register: 'er-register', restraint: 'er-restraint' },
+  prohibited_registers: ['reg-prohibido'],
+  application_constraints: { no_emoji: true },
 };
 const FULL_SNAPSHOT = {
   brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en-US' }],
@@ -194,7 +205,7 @@ const FULL_SNAPSHOT = {
 // Debe coincidir byte a byte con scratchpad/prod_snapshot.json usado para generar
 // api/__fixtures__/golden_ui_prod.txt.
 const PROD_SNAPSHOT = {
-  brand: { id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en/FL' },
+  brand: { id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en-FL' },
   humanize_profiles: [
     { id: 'd-copy',  brand_id: 'DEFAULT',    medium: 'copy',  tone: 'default-copy-tone', personality: 'def-persona', authenticity_rules: 'def-auth', anti_patterns: ['def-anti'] },
     { id: 'd-image', brand_id: 'DEFAULT',    medium: 'image', tone: 'img', personality: 'i', authenticity_rules: 'i', anti_patterns: ['i'] },
@@ -203,9 +214,24 @@ const PROD_SNAPSHOT = {
     { id: 'd-web',   brand_id: 'DEFAULT',    medium: 'web',   tone: 'web', personality: 'w', authenticity_rules: 'w', anti_patterns: ['w'] },
     { id: 'lucien',  brand_id: 'LucienSael', medium: 'text',  tone: 'marca-text-tone', personality: 'marca-persona', authenticity_rules: 'marca-auth', anti_patterns: ['marca-anti'] },
   ],
+  // B0 — genomas con la forma REAL de producción (objetos jsonb). El golden de PROD toma el
+  // primero (lucien_editorial) → es el primer golden donde el genoma de Lucien llega ENTERO.
   brand_voice_genome: [
-    { voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ANCHOR_ED', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
-    { voice_id: 'lucien_social', version: '1', maturity: 'stable', identity_anchors: 'ANCHOR_SO', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
+    { voice_id: 'lucien_editorial', version: '1', maturity: 'stable',
+      identity_anchors: { tagline: 'I build worlds. Some survive.', thematic_gravity: 'la critica psicologica del comportamiento', authority_basis: 'thirty years of watching people misname what they build' },
+      lexicon_signature: ['insumo', 'marioneta', 'criterio'],
+      lexicon_forbidden: ['revolucionario', 'innovador'],
+      syntactic_signatures: { rhythm: 'frases cortas, corte seco', structures: ['claim -> autoridad -> distincion'] },
+      argumentative_architecture: { core_move: 'observa el patron y lo NOMBRA con precision', ending_discipline: 'No call to action. No summary. No lesson.', closing_repositions: 'el cierre revela el LUGAR real del lector', financial_lens: 'la inteligencia financiera como criterio de lectura, no como tema' },
+      relational_stance: { address: 'habla al lector afin, no contra el mediocre', the_readers_moment: 'reconocerse y quedarse, o irse' },
+      emotional_register: { register: 'frio, preciso, sin disculpas', restraint: 'tiene la municion pesada y no la usa' },
+      prohibited_registers: ['motivacional', 'coach'],
+      application_constraints: { no_emoji: true } },
+    { voice_id: 'lucien_social', version: '1', maturity: 'stable',
+      identity_anchors: { tagline: 'social-tagline', thematic_gravity: 'social-gravity' },
+      lexicon_signature: ['social-firmada'], lexicon_forbidden: [], syntactic_signatures: {},
+      argumentative_architecture: { core_move: 'social-core' }, relational_stance: { address: 'social-address' },
+      emotional_register: { register: 'social-register' }, prohibited_registers: [], application_constraints: {} },
   ],
   brand_goals: [{ goal_text: 'g1', priority: 1 }],
   brand_personas: [{ label: 'P', pain_points: ['pp'], copy_hooks: ['ch'], tone_for_segment: 'ts', avoid: ['av'] }],
@@ -1006,6 +1032,65 @@ async function run() {
     assert(out.startsWith('## KEYWORDS') && out.includes('Principales: a, b') && out.includes('Grupo SEO (grupo_3): G'), 'bloque con top + grupo_3');
     eq(PURE.buildKeywordsBlock([{ keyword: 'x', prioridad: 9 }]), '', 'sin keywords prioridad≤3 → vacío (no bloque)');
     eq(PURE.buildKeywordsBlock([]), '', '[] → vacío');
+  });
+
+  // ── B0 · renderGenomeSection (pure) — los 4 tipos + vacío ───────────────────
+  await test('B0·pure renderGenomeSection — string, array, objeto plano, objeto anidado, vacío', () => {
+    eq(PURE.renderGenomeSection('REGISTRO EMOCIONAL', 'seco y preciso'), 'REGISTRO EMOCIONAL: seco y preciso', 'string → LABEL: value');
+    eq(PURE.renderGenomeSection('LÉXICO PROHIBIDO', ['a', 'b', 'c']), 'LÉXICO PROHIBIDO: a, b, c', 'array → LABEL: a, b, c');
+    // objeto plano → una línea por clave, CLAVE en mayúsculas
+    eq(
+      PURE.renderGenomeSection('IDENTITY ANCHORS', { tagline: 'I build worlds', thematic_gravity: 'la crítica psicológica' }),
+      'IDENTITY ANCHORS:\nTAGLINE: I build worlds\nTHEMATIC_GRAVITY: la crítica psicológica',
+      'objeto plano → una línea por clave (recursivo)',
+    );
+    // objeto anidado → un nivel: pares "clave: valor" en línea, sin [object Object]
+    const nested = PURE.renderGenomeSection('FIRMAS SINTÁCTICAS', { emphatic_triplication: { example: 'a, b, c' }, structures: ['x', 'y'] });
+    assert(nested.includes('EMPHATIC_TRIPLICATION: example: a, b, c'), 'objeto anidado → un nivel inline');
+    assert(nested.includes('STRUCTURES: x, y'), 'array dentro de objeto → joined');
+    assert(!nested.includes('[object Object]'), 'nunca [object Object]');
+    // vacío → cadena vacía (bloque omitido)
+    eq(PURE.renderGenomeSection('X', ''), '', 'string vacío → ""');
+    eq(PURE.renderGenomeSection('X', []), '', 'array vacío → ""');
+    eq(PURE.renderGenomeSection('X', {}), '', 'objeto vacío → ""');
+    eq(PURE.renderGenomeSection('X', null), '', 'null → ""');
+    eq(PURE.renderGenomeSection('X', { a: '', b: null }), '', 'objeto con sólo claves vacías → ""');
+  });
+
+  // B0·integración — un genoma con la forma REAL de lucien_editorial (identity_anchors y
+  // argumentative_architecture como objetos jsonb). El system debe expandir las claves reales
+  // (thematic_gravity, core_move, ending_discipline, financial_lens) y NO contener [object Object].
+  await test('B0-int: genoma forma-lucien → system expande claves reales, sin [object Object]', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const genomeLucien = {
+        voice_id: 'lucien_editorial', version: '1', maturity: 'stable',
+        identity_anchors: {
+          tagline: 'I build worlds. Some of them survive.',
+          thematic_gravity: 'la crítica psicológica del comportamiento humano',
+        },
+        argumentative_architecture: {
+          core_move: 'observa el patrón y lo NOMBRA con precisión',
+          financial_lens: 'la inteligencia financiera como criterio de lectura',
+          ending_discipline: 'No call to action. No summary. No lesson.',
+        },
+        lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {},
+        relational_stance: {}, emotional_register: {}, prohibited_registers: [], application_constraints: {},
+      };
+      const cache = {
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brand_voice_genome: [genomeLucien],
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+      };
+      const built = await buildPrompt(reqWith({ brandContext: cache }, { brandId: 'LucienSael' }));
+      const s = built.system.toLowerCase();
+      for (const key of ['thematic_gravity', 'core_move', 'ending_discipline', 'financial_lens']) {
+        assert(s.includes(key), `el system expande la clave real: ${key}`);
+      }
+      assert(built.system.includes('No call to action'), 'el VALOR de ending_discipline llega al prompt');
+      assert(!built.system.includes('[object Object]'), 'NUNCA [object Object] — el assert que impide la regresión');
+    } finally { fx.restore(); Math.random = realRandom; }
   });
 
   // ── A2·b · integración: NeuroneSCF (todo poblado) y LucienSael (0 en geomix/ctas/keywords) ──

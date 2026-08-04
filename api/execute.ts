@@ -144,9 +144,12 @@ interface PlatformCanalMap {
 }
 interface VoiceGenome {
   voice_id: string; version: string; maturity: string;
-  identity_anchors: string; lexicon_signature: any; lexicon_forbidden: string[];
+  // B0 — identity_anchors y emotional_register son OBJETO en 9 de 10 voces (el tipo `string`
+  // anterior era una mentira que dejó pasar el bug del [object Object] por tsc durante meses).
+  // Todos los campos jsonb del genoma se tipan `any`: la forma la decide la fila, no el código.
+  identity_anchors: any; lexicon_signature: any; lexicon_forbidden: any;
   syntactic_signatures: any; argumentative_architecture: any;
-  relational_stance: any; emotional_register: string; prohibited_registers: string[];
+  relational_stance: any; emotional_register: any; prohibited_registers: any;
   application_constraints: any;
 }
 interface OutputTemplate {
@@ -703,6 +706,54 @@ function buildCopyProfileLayer(profile: any): string {
   return lines.join('\n');
 }
 
+// ── B0 · el inyector del genoma ──────────────────────────────────────────────
+// Serializa un valor del genoma por las claves que la fila REALMENTE tiene — NO por nombres
+// de campo hardcodeados. El bug de origen: assembleVoiceGenomeLayer interpolaba objetos jsonb
+// en template literals (`${identity_anchors}` → "[object Object]") y buscaba claves internas
+// (default_pattern, phases, signature_words…) que casi ninguna voz tiene, omitiendo bloques en
+// silencio. Los genomas evolucionan; el serializador no debe conocer su forma.
+//   • string no vacío  → `LABEL: <value>`
+//   • array            → `LABEL: a, b, c`
+//   • objeto           → `LABEL:` + una línea por clave (`CLAVE: valor`), recursivo UN nivel,
+//                        omitiendo claves vacías
+//   • null / vacío     → '' (bloque omitido)
+function renderGenomeInline(value: any): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(renderGenomeInline).filter(Boolean).join(', ');
+  if (typeof value === 'object') {
+    // UN nivel más: pares "clave: valor" en línea. No se baja otro nivel (evita [object Object]).
+    return Object.entries(value)
+      .map(([k, v]) => {
+        const r = (v !== null && typeof v === 'object' && !Array.isArray(v)) ? '' : renderGenomeInline(v);
+        return r ? `${k}: ${r}` : '';
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }
+  return '';
+}
+
+function renderGenomeSection(label: string, value: any): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') { const s = value.trim(); return s ? `${label}: ${s}` : ''; }
+  if (typeof value === 'number' || typeof value === 'boolean') return `${label}: ${String(value)}`;
+  if (Array.isArray(value)) {
+    const items = value.map(renderGenomeInline).filter(Boolean);
+    return items.length ? `${label}: ${items.join(', ')}` : '';
+  }
+  if (typeof value === 'object') {
+    const lines: string[] = [];
+    for (const [k, v] of Object.entries(value)) {
+      const rendered = renderGenomeInline(v);
+      if (rendered) lines.push(`${k.toUpperCase()}: ${rendered}`);
+    }
+    return lines.length ? `${label}:\n${lines.join('\n')}` : '';
+  }
+  return '';
+}
+
 // ── COPYLAB_PURE:END ────────────────────────────────────────────────────────
 
 // ── SUPABASE FETCH ─────────────────────────────────────────────────────────
@@ -841,49 +892,29 @@ function applyCreativeLogic(
 // ── L1.5 VOICE GENOME INJECTION ───────────────────────────────────────────
 
 function assembleVoiceGenomeLayer(genome: VoiceGenome, idioma: string): { layer: string; voice_id: string; voice_version: string } {
-  const sig = genome.lexicon_signature ?? {};
-  const syn = genome.syntactic_signatures ?? {};
-  const arch = genome.argumentative_architecture ?? {};
-  const stance = genome.relational_stance ?? {};
-
   const parts: string[] = [];
   parts.push(`VOICE ID: ${genome.voice_id} v${genome.version} (maturity: ${genome.maturity})`);
   parts.push(`IDIOMA DE GENERACIÓN: ${idioma}. Reescribir desde origen en ${idioma} aplicando el mismo genoma. NUNCA traducir.`);
 
-  if (genome.identity_anchors) {
-    parts.push(`IDENTITY ANCHORS (autoridad que puede invocar):\n${genome.identity_anchors}`);
+  // B0 — se serializa por la forma REAL de cada campo (renderGenomeSection), SIN enumerar
+  // claves internas. Antes se interpolaban objetos crudos (→ [object Object]) y se buscaban
+  // claves que casi ninguna voz tiene. Ausencia → warn nominal (voz + campo), no silencio.
+  const sections: Array<[string, any]> = [
+    ['IDENTITY ANCHORS',           genome.identity_anchors],
+    ['LEXICÓN FIRMADO',            genome.lexicon_signature],
+    ['LÉXICO PROHIBIDO',           genome.lexicon_forbidden],
+    ['FIRMAS SINTÁCTICAS',         genome.syntactic_signatures],
+    ['ARQUITECTURA ARGUMENTATIVA', genome.argumentative_architecture],
+    ['POSICIÓN RELACIONAL',        genome.relational_stance],
+    ['REGISTRO EMOCIONAL',         genome.emotional_register],
+    ['REGISTROS PROHIBIDOS',       genome.prohibited_registers],
+    ['APPLICATION CONSTRAINTS',    genome.application_constraints],
+  ];
+  for (const [label, value] of sections) {
+    const rendered = renderGenomeSection(label, value);
+    if (rendered) parts.push(rendered);
+    else console.warn(`[CopyLab] voice genome '${genome.voice_id}': sección '${label}' vacía o ausente — omitida`);
   }
-
-  if (sig.signature_words?.length) {
-    parts.push(`LEXICÓN FIRMADO:\n- Palabras firmadas (1-3 por pieza MAX, donde encajen naturalmente): ${sig.signature_words.join(', ')}\n- Trademark word: "${sig.trademark_word ?? ''}" — MAX 1x por pieza, solo en contexto que lo justifique orgánicamente\n- Signature phrases (MAX 1 por pieza): ${(sig.signature_phrases ?? []).join(' | ')}`);
-  }
-
-  if (genome.lexicon_forbidden?.length) {
-    parts.push(`LÉXICO PROHIBIDO (nunca usar en ningún output):\n${genome.lexicon_forbidden.join(', ')}`);
-  }
-
-  if (syn.structures?.length || syn.emphatic_triplication) {
-    const synParts: string[] = [];
-    if (syn.emphatic_triplication) synParts.push(`Triplicación enfática: "${syn.emphatic_triplication.example ?? ''}" — MAX 1x por pieza`);
-    if (syn.structures?.length)    synParts.push(`Estructuras firmadas (MAX 1x cada una): ${syn.structures.join(' | ')}`);
-    if (syn.rhythm)                synParts.push(`Ritmo: ${syn.rhythm}`);
-    if (synParts.length) parts.push(`FIRMAS SINTÁCTICAS:\n${synParts.join('\n')}`);
-  }
-
-  if (arch.default_pattern) {
-    parts.push(`ARQUITECTURA ARGUMENTATIVA:\nPatrón: ${arch.default_pattern}\nFases: ${JSON.stringify(arch.phases ?? {})}`);
-  }
-
-  if (stance.person_reference || stance.opening_stance) {
-    const stanceParts: string[] = [];
-    if (stance.person_reference) stanceParts.push(`Referencia a cliente: "${stance.person_reference}"`);
-    if (stance.subject_priority) stanceParts.push(`Sujeto prioritario: ${stance.subject_priority}`);
-    if (stance.opening_stance)   stanceParts.push(`Apertura: ${stance.opening_stance}`);
-    parts.push(`POSICIÓN RELACIONAL:\n${stanceParts.join('\n')}`);
-  }
-
-  if (genome.emotional_register) parts.push(`REGISTRO EMOCIONAL: ${genome.emotional_register}`);
-  if (genome.prohibited_registers?.length) parts.push(`REGISTROS PROHIBIDOS: ${genome.prohibited_registers.join(', ')}`);
 
   parts.push(`REGLA CRÍTICA DE FIRMA:\nLos recursos firmados (trademark_word, emphatic_triplication, signature_phrases) son FIRMA, no FÓRMULA. Si se repiten en cada pieza, se vacían. Úsalos solo cuando el contenido los justifica naturalmente — si no encajan, omítelos. El voice genome modula el TONO del output; el vector creativo define el ÁNGULO de entrada. Cuando conflicten: el vector gana en arquitectura, el voice gana en superficie léxica.`);
 
