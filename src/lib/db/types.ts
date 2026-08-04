@@ -422,10 +422,10 @@ export interface CopyPromptResult {
   canalName: string
   brandName: string
   temperature: number
-  /** Opcionales: los consume buildSystemPrompt() en useCopyPrompt.ts.
-   *  Origen previsto: OutputTemplate.word_count_min / word_count_max.
-   *  OJO — buildCopyPrompt() todavía NO los reenvía, así que hoy llegan
-   *  siempre undefined y la instrucción de extensión nunca entra al prompt. */
+  /** Origen previsto: OutputTemplate.word_count_min / word_count_max.
+   *  NOTA (refactor B, 2026-08-04): CopyPromptResult quedó HUÉRFANO al borrarse el hook
+   *  muerto useCopyPrompt.ts (su único consumidor). Se conserva por ahora; se poda con la
+   *  consolidación del motor (copyEngine → /api/execute), fuera de alcance de este PR. */
   wordCountMin?: number
   wordCountMax?: number
   metadata: {
