@@ -8,8 +8,12 @@ export const maxDuration = 300;
  *   content_type y canal salen del mapa (no del pack ni del `?? 'instagram'` mudo del modo UI); plataforma
  *   desconocida → warn nominal + par de su destination. Además, builder_input.rules (que PR-1 manda SIN
  *   filtrar por kind) se filtra a las imperativas (prohibition|requirement|proof) antes de inyectarse.
- *   Modo UI (sin builder_input) intacto. Nota (§4, fuera de este PR): editorial_post/email_divulgacion aún
- *   no tienen fila en creative_compatibility_rules → el motor degrada con warn a filtro por aggro (?? 2).
+ *   Modo UI (sin builder_input) intacto.
+ *   Nota (§4) — ACTUALIZADA 2026-08-14: editorial_post y email_divulgacion YA tienen filas en
+ *   creative_compatibility_rules (sembradas 2026-08-08, con voice_id). Lo que NO tiene fila es
+ *   la voz fphs_conversion, en ningún content_type — y como editorial_post no tiene fila BASE,
+ *   selectCompatRule devuelve source='none' y el motor degrada a filtro por aggro para esa voz
+ *   (22 de 32 topics activos de ForumPHs). Pendiente en AGENDA P1.
  *
  * v9.7 (2026-05-28) — LITERAL mode for teasers/announcements:
  *   When params.mode === 'literal', the prompt's literal_text is treated as
@@ -391,6 +395,12 @@ function deriveSignature(
 // Plataforma desconocida → WARN NOMINAL que la nombra + caída al par de su destination
 // (nunca una coerción muda). Puro y self-contained: sólo built-ins + console.
 const CARRIL_SOCIAL_PLATFORMS = new Set(['x', 'meta_fb', 'meta_ig', 'tiktok', 'linkedin']);
+// ⚠️ DEUDA MULTIMARCA (registrada 2026-08-14, AGENDA P2). `blog_forumphs` es un LITERAL DE
+// MARCA en capa compartida: viola MULTIBRAND_RULE. Test N+1: hoy esta enumeración contiene
+// UNA marca. El eje correcto ya existe como dato — `platform_canal_map` es la tabla puente
+// (plataforma → canal_blocks.id) y `resolveCanalBlockId` ya la consume unas líneas más abajo.
+// La corrección es PR de código aparte (código primero, DDL después); el alias legacy se
+// conserva documentado y se retira en un tercer PR. NO se corrige en este commit.
 const CARRIL_EDITORIAL_CANAL: Record<string, string> = { blog: 'blog', blog_forumphs: 'blog', linkedin: 'linkedin' };
 
 function resolveCarrilContentType(destination: string, platform: string): { content_type: string; canal: string } {
