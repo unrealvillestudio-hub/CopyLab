@@ -22,7 +22,7 @@
  *
  *     GET brand_cache_snapshots?brand_id=eq.X&select=cache_data,stale_after
  *     si stale → POST a brand-snapshot-builder {brand_id:X} → releer
- *     verificar capas pobladas vs _meta.tables_included → gritar si degradado
+ *     verificar que ninguna capa GLOBAL venga vacía → gritar si degradado
  *
  *   Sin TABLES_INCLUDED, sin buildSnapshot, sin service_role. Un lab que necesita service_role
  *   para tener contexto está mal cableado.
@@ -43,15 +43,19 @@
  *       existieran, alguien las volvía a llamar.
  *     - CopyLab ya NO usa SUPABASE_SERVICE_ROLE_KEY. Delegar exige IID_CRON_SECRET (lo que la EF
  *       acepta), NO service_role. Nueva env var en Vercel.
- *     - Salvaguarda de degradación: se cuentan las capas pobladas contra _meta.tables_included.
- *       Un snapshot que llega con creative_vectors:[] hoy pasaba como éxito — y pasó: la primera
- *       corrida del builder devolvió 200 OK con 22 de 30 capas vacías por GRANT ausente a
- *       service_role. Esta comprobación es lo único que separa "el lab tiene contexto" de "el lab
- *       cree que tiene contexto". Umbral 50 %: algunas capas están legítimamente vacías por marca
- *       (una marca de servicios no tiene keywords ni ctas). No es un rechazo: es log ruidoso +
- *       header. El lab sirve igual — decidir sobre un snapshot degradado es de quien lo consume.
- *     - Headers de lectura: X-Snapshot-Layers siempre presente, se degrade o no; X-Snapshot-Age-Hours
- *       porque "STALE" sin la edad no distingue 5 horas de 3 semanas.
+ *     - Salvaguarda de degradación: se grita si alguna capa GLOBAL viene vacía. Un snapshot que
+ *       llega con creative_vectors:[] hoy pasaba como éxito — y pasó: la primera corrida del
+ *       builder devolvió 200 OK con 22 de 30 capas vacías por GRANT ausente a service_role. Esta
+ *       comprobación es lo único que separa "el lab tiene contexto" de "el lab cree que tiene
+ *       contexto". El criterio NO es un porcentaje: una capa global vacía es SIEMPRE un fallo del
+ *       sistema, mientras que una capa por marca puede estar vacía por dato ausente legítimo (una
+ *       marca de servicios legales no tiene keywords ni ctas). Un umbral porcentual se traga una
+ *       global vacía suelta —justo donde estuvo el bug— y grita por vacíos legítimos.
+ *       No es un rechazo: es log ruidoso + headers. El lab sirve igual — decidir sobre un snapshot
+ *       degradado es de quien lo consume.
+ *     - Headers de lectura, siempre presentes se degrade o no: X-Snapshot-Globals (el detector real)
+ *       y X-Snapshot-Layers (el panorama). Más X-Snapshot-Age-Hours, porque "STALE" sin la edad no
+ *       distingue 5 horas de 3 semanas.
  *
  *   Degradación con la EF caída (stale no es vacío — un snapshot de 5 h tiene el genoma, las reglas
  *   creativas y los vectores reales):
@@ -145,8 +149,32 @@ const CRON_SECRET  = () => process.env.IID_CRON_SECRET ?? '';
 // El constructor, a nivel ecosistema. NO vive en este repo y no debe volver a vivir acá.
 const BUILDER_FN = 'brand-snapshot-builder';
 
-// Por debajo de esta fracción de capas pobladas, el snapshot se declara DEGRADADO en el log.
-const DEGRADED_RATIO = 0.5;
+// Las capas GLOBALES: exactamente las que el builder consulta SIN predicado de marca alguno.
+// Son el detector de degradación, y el criterio es binario, no porcentual: una global vacía es
+// SIEMPRE un fallo del sistema (GRANT ausente, RLS, tabla despoblada), porque su contenido no
+// depende de qué marca se pida. Una capa por marca vacía puede ser dato ausente legítimo — una
+// marca de servicios legales no tiene keywords ni ctas. Un umbral por porcentaje confunde ambas
+// cosas: se traga una global vacía suelta (justo el modo de fallo que ya ocurrió: creative_vectors
+// presente y vacío durante semanas) y a la vez grita por marcas legítimamente flacas.
+//
+// PARIDAD CON EL BUILDER: si brand-snapshot-builder suma una tabla global, va también acá, o el
+// detector queda ciego en la capa nueva. Las tres claves que mezclan mitad global/DEFAULT con
+// mitad de marca (humanize_profiles, compliance_rules, imagelab_presets) quedan FUERA a propósito:
+// su vacío no es atribuible sin ambigüedad a un fallo del sistema.
+const GLOBAL_LAYERS = [
+  'psycho_presets',
+  'channel_prompt_rules',
+  'output_templates',
+  'canal_blocks',
+  'platform_canal_map',
+  'blueprint_schemas',
+  'creative_vectors',
+  'tension_architectures',
+  'aggro_presets',
+  'creative_compatibility_rules',
+  'pipeline_skills',
+  'content_type_registry',
+];
 
 // Sólo LECTURA. brand_cache_snapshots tiene RLS bcs_anon_read (SELECT/anon): alcanza y sobra.
 // Este endpoint ya no escribe en Supabase — el único que escribe es el builder.
@@ -207,15 +235,23 @@ async function invokeBuilder(brandId) {
 }
 
 // ── Salvaguarda de degradación ────────────────────────────────────────────
-// Cuenta capas pobladas y compara contra _meta.tables_included. Un snapshot que llega con
-// creative_vectors:[] pasaba como éxito — pasó: la primera corrida del builder devolvió 200 OK con
-// 22 de 30 capas vacías por GRANT ausente a service_role. Esta comprobación es lo único que separa
-// "el lab tiene contexto" de "el lab cree que tiene contexto".
-function countLayers(snap) {
-  const declared = snap?._meta?.tables_included?.length ?? 0;
+// Un snapshot que llega con creative_vectors:[] pasaba como éxito — pasó: la primera corrida del
+// builder devolvió 200 OK con 22 de 30 capas vacías por GRANT ausente a service_role. Esta
+// comprobación es lo único que separa "el lab tiene contexto" de "el lab cree que tiene contexto".
+// El veredicto lo dan las GLOBALES (ver GLOBAL_LAYERS); el conteo total va como panorama.
+const isEmptyLayer = (v) => v == null || (Array.isArray(v) && v.length === 0);
+
+function inspectSnapshot(snap) {
+  const declared  = snap?._meta?.tables_included?.length ?? 0;
   const populated = Object.entries(snap ?? {})
-    .filter(([k, v]) => k !== '_meta' && v != null && !(Array.isArray(v) && v.length === 0)).length;
-  return { declared, populated };
+    .filter(([k, v]) => k !== '_meta' && !isEmptyLayer(v)).length;
+  const globalsMissing = GLOBAL_LAYERS.filter((k) => isEmptyLayer(snap?.[k]));
+  return {
+    declared,
+    populated,
+    globalsMissing,
+    globalsOk: GLOBAL_LAYERS.length - globalsMissing.length,
+  };
 }
 
 // Sin la edad, "STALE" no distingue 5 horas de 3 semanas — y hubo snapshots de 288 h.
@@ -243,15 +279,20 @@ function json(data, status = 200, extra = {}) {
 // Cuerpo idéntico al de siempre (el cache_data crudo): el contrato de lectura no cambia.
 // Lo que se agrega es diagnóstico, y va en headers.
 function serveSnapshot(brandId, snapshot, cacheState, extra = {}) {
-  const { declared, populated } = countLayers(snapshot.data);
-  if (declared && populated < declared * DEGRADED_RATIO) {
-    console.error(`[brand-cache] snapshot DEGRADADO ${brandId}: ${populated}/${declared} capas`);
+  const { declared, populated, globalsOk, globalsMissing } = inspectSnapshot(snapshot.data);
+  if (globalsMissing.length) {
+    console.error(
+      `[brand-cache] snapshot DEGRADADO ${brandId}: ${globalsMissing.length} capa(s) GLOBAL(es) vacía(s) ` +
+      `[${globalsMissing.join(', ')}] — una global vacía es fallo del sistema, no dato ausente de la marca. ` +
+      `Globales ${globalsOk}/${GLOBAL_LAYERS.length}, capas pobladas ${populated}/${declared}.`
+    );
   }
   const age = ageHours(snapshot.builtAt);
   return json(snapshot.data, 200, {
     'X-Cache': cacheState,
     'X-Built-At': snapshot.builtAt ?? '',
     'X-Brand-Id': brandId,
+    'X-Snapshot-Globals': `${globalsOk}/${GLOBAL_LAYERS.length}`,
     'X-Snapshot-Layers': `${populated}/${declared}`,
     'X-Snapshot-Age-Hours': age === null ? 'unknown' : String(age),
     ...extra,
