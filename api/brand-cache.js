@@ -22,7 +22,8 @@
  *
  *     GET brand_cache_snapshots?brand_id=eq.X&select=cache_data,stale_after
  *     si stale → POST a brand-snapshot-builder {brand_id:X} → releer
- *     verificar que ninguna capa GLOBAL venga vacía → gritar si degradado
+ *     verificar que ninguna capa GLOBAL venga vacía y que estén los 3 CENTINELAS
+ *       → gritar si degradado
  *
  *   Sin TABLES_INCLUDED, sin buildSnapshot, sin service_role. Un lab que necesita service_role
  *   para tener contexto está mal cableado.
@@ -51,11 +52,16 @@
  *       sistema, mientras que una capa por marca puede estar vacía por dato ausente legítimo (una
  *       marca de servicios legales no tiene keywords ni ctas). Un umbral porcentual se traga una
  *       global vacía suelta —justo donde estuvo el bug— y grita por vacíos legítimos.
+ *       Segunda categoría, los CENTINELAS: tres claves mezclan mitad global/DEFAULT con mitad de
+ *       marca (humanize_profiles, compliance_rules, imagelab_presets). Ahí no se chequea la clave
+ *       entera —vendría poblada con puras filas de la marca y taparía el fallo— sino la presencia
+ *       de la fila que NO depende de la marca: brand_id='DEFAULT' en las dos primeras, brand_id=null
+ *       en la tercera.
  *       No es un rechazo: es log ruidoso + headers. El lab sirve igual — decidir sobre un snapshot
  *       degradado es de quien lo consume.
- *     - Headers de lectura, siempre presentes se degrade o no: X-Snapshot-Globals (el detector real)
- *       y X-Snapshot-Layers (el panorama). Más X-Snapshot-Age-Hours, porque "STALE" sin la edad no
- *       distingue 5 horas de 3 semanas.
+ *     - Headers de lectura, siempre presentes se degrade o no: X-Snapshot-Globals y
+ *       X-Snapshot-Sentinels (los dos detectores) más X-Snapshot-Layers (el panorama). Y
+ *       X-Snapshot-Age-Hours, porque "STALE" sin la edad no distingue 5 horas de 3 semanas.
  *
  *   Degradación con la EF caída (stale no es vacío — un snapshot de 5 h tiene el genoma, las reglas
  *   creativas y los vectores reales):
@@ -159,8 +165,7 @@ const BUILDER_FN = 'brand-snapshot-builder';
 //
 // PARIDAD CON EL BUILDER: si brand-snapshot-builder suma una tabla global, va también acá, o el
 // detector queda ciego en la capa nueva. Las tres claves que mezclan mitad global/DEFAULT con
-// mitad de marca (humanize_profiles, compliance_rules, imagelab_presets) quedan FUERA a propósito:
-// su vacío no es atribuible sin ambigüedad a un fallo del sistema.
+// mitad de marca quedan FUERA de esta lista y se cubren aparte, con SENTINELS.
 const GLOBAL_LAYERS = [
   'psycho_presets',
   'channel_prompt_rules',
@@ -174,6 +179,27 @@ const GLOBAL_LAYERS = [
   'creative_compatibility_rules',
   'pipeline_skills',
   'content_type_registry',
+];
+
+// Los CENTINELAS: la segunda categoría del detector, separada de GLOBAL_LAYERS a propósito.
+// Estas tres claves mezclan una mitad global/DEFAULT con una mitad de marca, así que su vacío
+// TOTAL no es diagnóstico —una marca sin presets propios se ve igual que un fallo del sistema— y
+// tampoco alcanza con que la clave venga poblada: puede traer sólo filas de la marca y ninguna de
+// la mitad global. Lo que sí es diagnóstico es la presencia de la fila centinela, la que NO
+// depende de la marca pedida. Si falta, la mitad global no llegó.
+//
+// NO se chequea la clave entera: se chequea la presencia del centinela.
+const SENTINELS = [
+  { layer: 'humanize_profiles', label: "humanize_profiles[brand_id='DEFAULT']", match: (r) => r?.brand_id === 'DEFAULT' },
+  { layer: 'compliance_rules',  label: "compliance_rules[brand_id='DEFAULT']",  match: (r) => r?.brand_id === 'DEFAULT' },
+  // OJO — falso positivo posible, único de los tres. Las otras dos claves son concatenación
+  // ([...DEFAULT, ...marca]): la fila DEFAULT siempre sobrevive si se leyó. imagelab_presets NO:
+  // el builder mergea global y marca en un Map keyed por (canal ?? preset_id) y la fila de marca
+  // PISA a la global con la misma clave. Una marca que defina un preset por cada canal global deja
+  // el array sin ninguna fila brand_id=null aunque la mitad global se haya leído perfecta.
+  // Se reporta igual: es un centinela ausente de verdad, y el log dice cuál. Si aparece ruido por
+  // esto, el arreglo es del lado del builder (emitir la mitad global sin pisar), no de acá.
+  { layer: 'imagelab_presets',  label: 'imagelab_presets[brand_id=null]',       match: (r) => r?.brand_id === null },
 ];
 
 // Sólo LECTURA. brand_cache_snapshots tiene RLS bcs_anon_read (SELECT/anon): alcanza y sobra.
@@ -246,11 +272,16 @@ function inspectSnapshot(snap) {
   const populated = Object.entries(snap ?? {})
     .filter(([k, v]) => k !== '_meta' && !isEmptyLayer(v)).length;
   const globalsMissing = GLOBAL_LAYERS.filter((k) => isEmptyLayer(snap?.[k]));
+  const sentinelsMissing = SENTINELS
+    .filter(({ layer, match }) => !(Array.isArray(snap?.[layer]) && snap[layer].some(match)))
+    .map(({ label }) => label);
   return {
     declared,
     populated,
     globalsMissing,
     globalsOk: GLOBAL_LAYERS.length - globalsMissing.length,
+    sentinelsMissing,
+    sentinelsOk: SENTINELS.length - sentinelsMissing.length,
   };
 }
 
@@ -279,12 +310,21 @@ function json(data, status = 200, extra = {}) {
 // Cuerpo idéntico al de siempre (el cache_data crudo): el contrato de lectura no cambia.
 // Lo que se agrega es diagnóstico, y va en headers.
 function serveSnapshot(brandId, snapshot, cacheState, extra = {}) {
-  const { declared, populated, globalsOk, globalsMissing } = inspectSnapshot(snapshot.data);
+  const {
+    declared, populated, globalsOk, globalsMissing, sentinelsOk, sentinelsMissing,
+  } = inspectSnapshot(snapshot.data);
   if (globalsMissing.length) {
     console.error(
       `[brand-cache] snapshot DEGRADADO ${brandId}: ${globalsMissing.length} capa(s) GLOBAL(es) vacía(s) ` +
       `[${globalsMissing.join(', ')}] — una global vacía es fallo del sistema, no dato ausente de la marca. ` +
       `Globales ${globalsOk}/${GLOBAL_LAYERS.length}, capas pobladas ${populated}/${declared}.`
+    );
+  }
+  if (sentinelsMissing.length) {
+    console.error(
+      `[brand-cache] snapshot DEGRADADO ${brandId}: falta(n) ${sentinelsMissing.length} centinela(s) ` +
+      `[${sentinelsMissing.join(', ')}] — la mitad global/DEFAULT de esas capas no llegó, ` +
+      `esté la clave poblada o no. Centinelas ${sentinelsOk}/${SENTINELS.length}.`
     );
   }
   const age = ageHours(snapshot.builtAt);
@@ -293,6 +333,7 @@ function serveSnapshot(brandId, snapshot, cacheState, extra = {}) {
     'X-Built-At': snapshot.builtAt ?? '',
     'X-Brand-Id': brandId,
     'X-Snapshot-Globals': `${globalsOk}/${GLOBAL_LAYERS.length}`,
+    'X-Snapshot-Sentinels': `${sentinelsOk}/${SENTINELS.length}`,
     'X-Snapshot-Layers': `${populated}/${declared}`,
     'X-Snapshot-Age-Hours': age === null ? 'unknown' : String(age),
     ...extra,
