@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -384,14 +384,14 @@ async function run() {
   });
 
   // ── A1 · CAMBIO 8 · las cifras y su procedencia ─────────────────────────────
-  const CLAIM_A = { claim: 'caída interanual del segmento', value: '12%', source_url: 'https://example.org/informe-2026' };
-  const CLAIM_B = { claim: 'tamaño de la muestra', value: '4.312 casos', source_url: 'https://data.example.net/serie/42' };
+  const CLAIM_A = { claim: 'caída interanual del segmento', value: '12%', source_url: 'https://example.org/informe-2026', source_name: 'Informe 2026' };
+  const CLAIM_B = { claim: 'tamaño de la muestra', value: '4.312 casos', source_url: 'https://data.example.net/serie/42', source_name: 'Serie 42' };
 
   await test('A1·pure buildClaimsBlock — la cifra viaja con su fuente y la instrucción cierra el grifo', () => {
     const block = PURE.buildClaimsBlock([CLAIM_A, CLAIM_B])!;
     assert(block !== null, 'con claims hay bloque');
     for (const c of [CLAIM_A, CLAIM_B])
-      assertOrdered(block, [c.claim, c.value, c.source_url]);
+      assertOrdered(block, [c.claim, c.value, c.source_name, c.source_url]);
     assert(/s[oó]lo de esta lista/i.test(block), 'la instrucción dice que las cifras salen sólo de la lista');
     assert(/NO se escribe/.test(block), 'la instrucción dice que una cifra sin claim no se escribe');
     // El orden de la lista es el que mandó el carril: la fila decide, no un re-ordenamiento de acá.
@@ -430,6 +430,55 @@ async function run() {
     assert(/function buildClaimsBlock\(/.test(body), 'claims nombra la función');
     assert(!/\bnew Set\(|\[['\"][^'\"]+['\"]\s*,/.test(body), 'sin enumeración de valores permitidos');
     assert(!/example\.org|nuevamarca|lucien|forumphs|neurone|unrealville/i.test(body), 'sin literal de marca en el cuerpo');
+  });
+
+  // ── C1 · la cifra se escribe con su fuente NOMBRADA, nunca con la URL ───────
+  await test('C1·pure buildClaimsBlock — con source_name la instrucción exige atribución nominal en el texto', () => {
+    const block = PURE.buildClaimsBlock([CLAIM_A])!;
+    assert(/fuente citable/.test(block), 'el nombre citable se lista aparte de la URL');
+    assert(/nombrada en el texto|seg[úu]n <fuente citable>/i.test(block), 'la instrucción pide la atribución nominal');
+    assert(/[Nn]unca pegues la URL/.test(block), 'y prohíbe explícitamente pegar la URL en el copy');
+  });
+  await test('C1·pure buildClaimsBlock — claim anterior a C1 (sin source_name) sigue viajando, sin inventarle nombre', () => {
+    const viejo = { claim: 'dato heredado', value: '7%', source_url: 'https://example.org/viejo' };
+    const block = PURE.buildClaimsBlock([viejo])!;
+    assertOrdered(block, [viejo.claim, viejo.value, viejo.source_url]);
+    assert(!/fuente citable/.test(block), 'sin nombre no se inventa uno ni se pide atribuir lo inatribuible');
+  });
+
+  // ── C1 · el material de escritura: mecanismo y caso ─────────────────────────
+  const MECH = 'cuando el inventario baja, el precio sube porque la oferta se contrae antes que la demanda';
+  const CASO = { case: 'una plataforma rehízo su checkout y midió el efecto a 90 días', source_url: 'https://example.org/caso', source_name: 'Informe 2026' };
+
+  await test('C1·pure buildWritingMaterialBlock — mecanismo y caso entran con instrucción CONSTRUCTIVA', () => {
+    const block = PURE.buildWritingMaterialBlock(MECH, CASO)!;
+    assertOrdered(block, ['MECANISMO', MECH, 'CASO PARA ILUSTRAR', CASO.source_name, CASO.case]);
+    assert(/[Dd]esarrolla/.test(block) && /[Ii]lustr/.test(block), 'se pide construir, no sólo no-hacer');
+    assert(/DISTINTO del caso con el que abr/.test(block), 'el caso tiene que ser distinto del de apertura');
+  });
+  await test('C1·pure buildWritingMaterialBlock — cada pieza entra sola; sin ninguna, sin bloque', () => {
+    assert(/MECANISMO/.test(PURE.buildWritingMaterialBlock(MECH, null)!), 'sólo mecanismo');
+    assert(!/CASO PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(MECH, null)!), 'sin caso no se anuncia uno');
+    assert(/CASO PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(null, CASO)!), 'sólo caso');
+    for (const [m, c] of [[null, null], [undefined, undefined], ['', {}], ['   ', { case: '  ' }]] as any[])
+      eq(PURE.buildWritingMaterialBlock(m, c), null, `${JSON.stringify(m ?? null)} / ${JSON.stringify(c ?? null)}`);
+  });
+  await test('C1·pure buildWritingMaterialBlock — un caso sin fuente o sin nombre NO se emite', () => {
+    for (const c of [
+      { case: 'x', source_url: 'https://example.org/a' },
+      { case: 'x', source_name: 'N' },
+      { case: '', source_url: 'https://example.org/a', source_name: 'N' },
+    ]) eq(PURE.buildWritingMaterialBlock(null, c as any), null, JSON.stringify(c));
+    assert(/MECANISMO/.test(PURE.buildWritingMaterialBlock(MECH, { case: 'x' } as any)!), 'y no arrastra al mecanismo consigo');
+  });
+  await test('C1·pure la marca N+1: el material entra por el DATO, sin enumeración ni literal de marca', () => {
+    const nuevo = { case: 'un caso de un rubro que el código nunca nombró', source_url: 'https://nuevamarca.example/e', source_name: 'Entidad N+1' };
+    assertOrdered(PURE.buildWritingMaterialBlock('otra mecánica', nuevo)!, [nuevo.source_name, nuevo.case]);
+    const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function buildWritingMaterialBlock('));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 2);
+    assert(!/\bnew Set\(|\[['\"][^'\"]+['\"]\s*,/.test(body), 'sin enumeración de valores permitidos');
+    assert(!/lucien|forumphs|neurone|unrealville|nuevamarca/i.test(body), 'sin literal de marca en el cuerpo');
   });
 
   // Cambio 2 (pure) — precedencia por voz: voz > BASE > none, orden-independiente
@@ -870,6 +919,35 @@ async function run() {
       eq(vacio.system, sin.system, 'claims: [] ≡ sin la clave — byte a byte');
       assert(con.system.length > sin.system.length, 'el prompt con cifras es el de hoy MÁS el bloque');
       eq(sin.system, con.system.split('\n\n---\n\n').filter((b: string) => !b.startsWith('CIFRAS CITABLES')).join('\n\n---\n\n'), 'quitando el bloque se recupera el prompt de hoy, byte a byte');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // INT-C1 — el material de escritura dentro del prompt real. Mismo contrato de aditividad que el
+  // bloque de cifras: presente cuando el carril lo manda, ausente y byte-idéntico cuando no.
+  await test('INT-C1·material: mecanismo y caso entran al system; sin ellos el prompt no cambia un byte', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+      };
+      const bi = { voice_id: 'lucien_social', destination: 'social', platform: 'x' };
+      const mechanism = 'cuando el inventario baja, el precio sube porque la oferta se contrae';
+      const case_example = { case: 'una plataforma rehízo su checkout', source_url: 'https://example.org/caso', source_name: 'Informe 2026' };
+
+      const con = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_example }) }));
+      assertOrdered(con.system, ['MECANISMO', mechanism, 'CASO PARA ILUSTRAR', case_example.source_name, case_example.case]);
+
+      const sin = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI(bi) }));
+      assert(!sin.system.includes('MECANISMO') && !sin.system.includes('CASO PARA ILUSTRAR'), 'sin las claves no hay bloque');
+      eq(sin.system, con.system.split('\n\n---\n\n').filter((b: string) => !b.startsWith('MECANISMO')).join('\n\n---\n\n'), 'quitando el bloque se recupera el prompt de hoy, byte a byte');
+
+      // Un caso a medias (sin fuente) no arrastra al mecanismo: entra lo que esté completo.
+      const parcial = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_example: { case: 'sin fuente' } }) }));
+      assert(parcial.system.includes('MECANISMO'), 'el mecanismo entra igual');
+      assert(!parcial.system.includes('CASO PARA ILUSTRAR'), 'el caso incompleto no');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 

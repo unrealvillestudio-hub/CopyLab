@@ -3,6 +3,17 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * C1 (2026-08-18) — el carril manda un BRIEF DE ESCRITURA, no un resumen:
+ *   `builder_input` gana `mechanism` y `case_example`, y `claims` gana `source_name`. Las reglas
+ *   del Watcher ya se inyectaban —HR-UNRLVL-01 y HR-GEN-08 entre ellas— y se violaban igual:
+ *   decirle a un generador "no enuncies sin ilustrar" no le da CON QUÉ ilustrar. Tres piezas:
+ *     · `source_name` cambia la instrucción de las cifras: además de salir sólo de la lista, cada
+ *       una se escribe con su fuente NOMBRADA en el texto ("según Convert"), nunca con la URL.
+ *       Eso es la "procedencia declarada" que pide HR-UNRLVL-01 (kind proof).
+ *     · `buildWritingMaterialBlock` (puro) inyecta mecanismo y caso concreto entre las
+ *       restricciones, con instrucción CONSTRUCTIVA — desarrollá, ilustrá — no una prohibición más.
+ *     · cualquier campo ausente ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy. Modo UI intacto.
+ *
  * A1 · CAMBIO 8 (2026-08-18) — las CIFRAS dejan de ser palabra del modelo:
  *   `builder_input.claims` (12ª clave del contrato) llega del carril con {claim, value, source_url}
  *   —el finding que originó la pieza, misma fila de la que ya salían las source_urls— y se inyecta
@@ -127,7 +138,12 @@ interface BuilderInput {
   // intel.iid_findings.claims. Cada entrada ata un dato numérico a la URL que lo sostiene. Opcional
   // a propósito: un emisor que no la manda (UI, carril viejo, fila sin claims) deja el prompt
   // byte-idéntico al de hoy.
-  claims?: Array<{ claim: string; value: string; source_url: string }>;
+  claims?: Array<{ claim: string; value: string; source_url: string; source_name?: string }>;
+  // C1 (2026-08-18) — las otras dos piezas del BRIEF DE ESCRITURA. Lo que el carril mandaba era un
+  // resumen de investigación; un brief tiene que traer con qué CONSTRUIR. Opcionales: emisor que no
+  // las manda ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy.
+  mechanism?: string | null;
+  case_example?: { case: string; source_url: string; source_name: string } | null;
 }
 
 interface ExecuteRequest {
@@ -502,18 +518,72 @@ function filterCarrilImperativeRules(
 // dato, sin valor o sin fuente) NO viaja: un número sin procedencia es justo lo que este bloque
 // viene a impedir. La función se llama como el dato que consume y no conoce plataformas ni marcas:
 // lo que decide es la fila, no una enumeración escrita acá.
+//
+// C1 (2026-08-18) — el claim gana `source_name`: el NOMBRE citable de la entidad ("Convert",
+// "Adobe", "Ley 284"), no el dominio de la URL. Con él la instrucción deja de ser sólo prohibitiva
+// y pasa a decir CÓMO se escribe la cifra: con su fuente nominal dentro de la frase, nunca con la
+// URL. Eso es exactamente lo que HR-UNRLVL-01 (kind proof) llama "cifra con procedencia declarada"
+// — el juez ve la lista de fuentes y puede cotejar el nombre. Un claim sin `source_name` (fila
+// anterior a C1) sigue viajando y se lista igual: lo que pierde es la atribución nominal, que es
+// justamente lo que no se puede inventar acá.
 function buildClaimsBlock(
-  claims: Array<{ claim: string; value: string; source_url: string }> | null | undefined,
+  claims: Array<{ claim: string; value: string; source_url: string; source_name?: string }> | null | undefined,
 ): string | null {
-  const lines = (Array.isArray(claims) ? claims : [])
-    .filter(c => c && String(c.claim ?? '').trim() && String(c.value ?? '').trim() && String(c.source_url ?? '').trim())
-    .map(c => `- ${String(c.claim).trim()}: ${String(c.value).trim()} — fuente: ${String(c.source_url).trim()}`);
-  if (!lines.length) return null;
+  const usable = (Array.isArray(claims) ? claims : [])
+    .filter(c => c && String(c.claim ?? '').trim() && String(c.value ?? '').trim() && String(c.source_url ?? '').trim());
+  if (!usable.length) return null;
+  const lines = usable.map(c => {
+    const name = String(c.source_name ?? '').trim();
+    return `- ${String(c.claim).trim()}: ${String(c.value).trim()}`
+      + (name ? ` — fuente citable: ${name}` : '')
+      + ` (${String(c.source_url).trim()})`;
+  });
+  const anyName = usable.some(c => String(c.source_name ?? '').trim());
   return 'CIFRAS CITABLES (lista cerrada — cada una atada a la fuente que la sostiene):\n'
     + lines.join('\n')
     + '\n\nToda cifra que escribas sale SÓLO de esta lista, con el valor tal como figura acá y sin'
     + ' redondearlo. Una cifra que no esté en la lista NO se escribe: ni estimada, ni inferida del'
-    + ' brief, ni deducida de otra. Si la frase la necesita y no está, la frase va sin cifra.';
+    + ' brief, ni deducida de otra. Si la frase la necesita y no está, la frase va sin cifra.'
+    + (anyName
+      ? '\n\nCada cifra que uses se escribe CON su fuente citable nombrada en el texto — "según'
+        + ' <fuente citable>", "de acuerdo con <fuente citable>" — dentro de la misma frase o la'
+        + ' inmediata. Nunca pegues la URL en el copy: la URL está acá para que el dato sea'
+        + ' verificable, el nombre es lo que se publica. Una cifra sin su fuente nombrada es una'
+        + ' cifra sin procedencia declarada, y así no se puede escribir.'
+      : '');
+}
+
+// ── C1 · el MATERIAL con el que se cumple, no la orden de cumplir ────────────────────────────
+// Las reglas del Watcher ya se inyectan —HR-UNRLVL-01 y HR-GEN-08 entre ellas— y se violan igual,
+// porque decirle a un generador "no enuncies sin ilustrar" no le da CON QUÉ ilustrar. Este bloque
+// es lo otro: el mecanismo (cómo funciona el asunto por dentro) y un caso concreto del memo, con
+// su fuente. Instrucción CONSTRUCTIVA a propósito — desarrollá, ilustrá — y no una prohibición más.
+//
+// Cualquiera de los dos puede faltar: se emite lo que haya. Sin ninguno ⇒ null ⇒ sin bloque, y el
+// prompt queda exactamente como hoy. El caso se exige DISTINTO del que abre la pieza: repetir el
+// de apertura no ilustra, y es la falla que HR-GEN-08 marca.
+function buildWritingMaterialBlock(
+  mechanism: string | null | undefined,
+  caseExample: { case?: string; source_url?: string; source_name?: string } | null | undefined,
+): string | null {
+  const parts: string[] = [];
+  const mech = String(mechanism ?? '').trim();
+  if (mech) {
+    parts.push(`MECANISMO (cómo funciona el asunto por dentro):\n${mech}\n`
+      + 'Desarrollalo en la pieza: los pasos, o la relación causal — qué provoca qué y por qué. Es'
+      + ' lo que separa una afirmación de una explicación, y es lo que la pieza tiene que dejar'
+      + ' entendido.');
+  }
+  const caseText = String(caseExample?.case ?? '').trim();
+  const caseName = String(caseExample?.source_name ?? '').trim();
+  const caseUrl  = String(caseExample?.source_url ?? '').trim();
+  if (caseText && caseName && caseUrl) {
+    parts.push(`CASO PARA ILUSTRAR — fuente citable: ${caseName} (${caseUrl}):\n${caseText}\n`
+      + 'Usalo para ilustrar lo que la pieza afirma, con su especificidad y nombrando la fuente'
+      + ' citable en el texto. Tiene que ser DISTINTO del caso con el que abrís: si ilustrás con el'
+      + ' mismo con el que empezaste, no ilustraste — repetiste.');
+  }
+  return parts.length ? parts.join('\n\n') : null;
 }
 
 // ── Cambio 2 · precedencia por voz en la compatibilidad ─────────────────────
@@ -1322,6 +1392,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // claims → bloque citable de CIFRAS (A1·CAMBIO 8). Ausente / vacío → null → sin bloque.
   const claimsBlock = buildClaimsBlock(bi?.claims);
 
+  // C1 — mecanismo + caso concreto: el material de escritura. Ausentes → null → sin bloque.
+  const writingMaterialBlock = buildWritingMaterialBlock(bi?.mechanism, bi?.case_example);
+
   // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
   const AUDIENCE_CTA: Record<string, string> = {
     jd: 'CTA orientado a la decisión de compra directa (quien decide). Claro y sin rodeos.',
@@ -1408,6 +1481,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
+  if (writingMaterialBlock) layers.push(writingMaterialBlock);   // y con qué desarrollarlas
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
   const extra = req.params.extra_instructions ?? '';
