@@ -3,17 +3,36 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * A2 (2026-08-18) — el canal editorial deja de salir de un literal de marca:
+ *   `CARRIL_EDITORIAL_CANAL = { blog, blog_forumphs, linkedin }` se RETIRA. `blog_forumphs` era el
+ *   nombre de la plataforma de UNA marca escrito como clave en capa compartida (viola
+ *   MULTIBRAND_RULE; la deuda estaba registrada en este archivo desde el 14-ago). El eje correcto ya
+ *   existía como dato: `platform_canal_map` (plataforma + traffic_type → canal_blocks.id), que
+ *   `resolveCanalBlockId` ya consumía para el bloque ## CANAL. Ahora el canal editorial sale de esa
+ *   misma vía — una sola fuente, no dos que puedan divergir — y `resolveCarrilContentType` recibe el
+ *   mapa COMO DATO (sigue siendo pura). Plataforma sin fila → warn nominal que la nombra + par de su
+ *   destination ('blog'), sin default silencioso. `platform_canal_map` se resuelve ahora ANTES del
+ *   Promise.all porque el content_type del carril es llave de dos de sus queries.
+ *   Deuda REMANENTE anotada, fuera de este PR: `email_propietarios` también es plataforma de una
+ *   marca; lo que decide ahí es el CONTENT_TYPE, y el puente que lo resolvería por dato
+ *   (platform_canal_map.content_type) hoy está en NULL en las 9 filas.
+ *
  * B2 (2026-08-02) — el mapa del carril (bloque PURO COPYLAB_PURE, testeable):
- *   resolveCarrilContentType(destination, platform) → { content_type, canal }. En modo carril,
- *   content_type y canal salen del mapa (no del pack ni del `?? 'instagram'` mudo del modo UI); plataforma
- *   desconocida → warn nominal + par de su destination. Además, builder_input.rules (que PR-1 manda SIN
- *   filtrar por kind) se filtra a las imperativas (prohibition|requirement|proof) antes de inyectarse.
- *   Modo UI (sin builder_input) intacto.
- *   Nota (§4) — ACTUALIZADA 2026-08-14: editorial_post y email_divulgacion YA tienen filas en
- *   creative_compatibility_rules (sembradas 2026-08-08, con voice_id). Lo que NO tiene fila es
- *   la voz fphs_conversion, en ningún content_type — y como editorial_post no tiene fila BASE,
- *   selectCompatRule devuelve source='none' y el motor degrada a filtro por aggro para esa voz
- *   (22 de 32 topics activos de ForumPHs). Pendiente en AGENDA P1.
+ *   resolveCarrilContentType(destination, platform, canalMap) → { content_type, canal }. En modo
+ *   carril, content_type y canal salen del mapa (no del pack ni del `?? 'instagram'` mudo del modo
+ *   UI); plataforma desconocida → warn nominal + par de su destination. Además, builder_input.rules
+ *   (que PR-1 manda SIN filtrar por kind) se filtra a las imperativas (prohibition|requirement|proof)
+ *   antes de inyectarse. Modo UI (sin builder_input) intacto.
+ *   Nota (§4) — CORREGIDA 2026-08-18. La versión del 14-ago afirmaba: "Lo que NO tiene fila es la voz
+ *   fphs_conversion, en ningún content_type". Es FALSO: consulta a public.creative_compatibility_rules
+ *   al 2026-08-18 devuelve `fphs_conversion × editorial_post` (9 vectores permitidos) y
+ *   `fphs_conversion × social_post` (7). La siembra se hizo. Lo que SIGUE siendo cierto de aquella
+ *   nota es que editorial_post NO tiene fila BASE (voice_id NULL): una voz sin su propia fila en ese
+ *   content_type cae a source='none' y el motor degrada a filtro por aggro.
+ *   Lo que HOY falta, verificado el 2026-08-18: `email_divulgacion` sólo tiene `fphs_educativa`
+ *   (6 vectores); `fphs_conversion × email_divulgacion` y `fphs_editorial × email_divulgacion` no
+ *   existen. Con email_propietarios en la cadencia de ForumPHs, esas dos voces caen a source='none'.
+ *   Es siembra (SQL bajo HRD), no código: no entra en este PR.
  *
  * v9.7 (2026-05-28) — LITERAL mode for teasers/announcements:
  *   When params.mode === 'literal', the prompt's literal_text is treated as
@@ -386,28 +405,51 @@ function deriveSignature(
 }
 
 // ── B2 · el mapa del carril ─────────────────────────────────────────────────
-// resolveCarrilContentType(destination, platform) → { content_type, canal }. En
+// resolveCarrilContentType(destination, platform, canalMap) → { content_type, canal }. En
 // modo carril, content_type y canal salen de ACÁ (no del pack ni del `?? 'instagram'`
 // mudo del modo UI). El destino manda; la plataforma afina el canal:
 //   social (x/meta_fb/meta_ig/tiktok/linkedin)      → social_post,     canal = la plataforma
-//   editorial (blog/blog_forumphs→blog; linkedin)   → editorial_post,  canal = blog | linkedin
+//   editorial (canal por platform_canal_map)        → editorial_post,  canal = canal_blocks.id
 //   email_propietarios (cualquier destino)          → email_divulgacion, canal = email
 // Plataforma desconocida → WARN NOMINAL que la nombra + caída al par de su destination
 // (nunca una coerción muda). Puro y self-contained: sólo built-ins + console.
 const CARRIL_SOCIAL_PLATFORMS = new Set(['x', 'meta_fb', 'meta_ig', 'tiktok', 'linkedin']);
-// ⚠️ DEUDA MULTIMARCA (registrada 2026-08-14, AGENDA P2). `blog_forumphs` es un LITERAL DE
-// MARCA en capa compartida: viola MULTIBRAND_RULE. Test N+1: hoy esta enumeración contiene
-// UNA marca. El eje correcto ya existe como dato — `platform_canal_map` es la tabla puente
-// (plataforma → canal_blocks.id) y `resolveCanalBlockId` ya la consume unas líneas más abajo.
-// La corrección es PR de código aparte (código primero, DDL después); el alias legacy se
-// conserva documentado y se retira en un tercer PR. NO se corrige en este commit.
-const CARRIL_EDITORIAL_CANAL: Record<string, string> = { blog: 'blog', blog_forumphs: 'blog', linkedin: 'linkedin' };
 
-function resolveCarrilContentType(destination: string, platform: string): { content_type: string; canal: string } {
+// A2 (2026-08-18) — SE RETIRA el literal de marca. Hasta hoy el canal editorial salía de
+//
+//   const CARRIL_EDITORIAL_CANAL = { blog: 'blog', blog_forumphs: 'blog', linkedin: 'linkedin' };
+//
+// `blog_forumphs` es el nombre de la plataforma de UNA marca (ForumPHs, 32 filas de
+// brand_topics) escrito como clave en capa compartida: viola MULTIBRAND_RULE, y la deuda estaba
+// registrada en este mismo archivo desde el 14-ago. Con ForumPHs entrando al scheduler el 22, sale.
+//
+// El eje correcto YA EXISTÍA COMO DATO: `platform_canal_map` es la tabla puente
+// (plataforma + traffic_type → canal_blocks.id), y `resolveCanalBlockId` —unas líneas más abajo,
+// en este mismo bloque puro— ya la consumía para el bloque ## CANAL. El canal editorial se
+// resuelve ahora por esa MISMA vía: una sola fuente para el canal, no dos que puedan divergir.
+// Alta de plataforma nueva = fila en la tabla, no deploy.
+//
+// El caso legacy queda documentado, no cableado: `blog_forumphs` tiene su fila
+// (traffic_type=organic → canal_block BLOG, el mismo que `blog` genérico) y su retiro como alias
+// es un PR posterior, según MULTIBRAND_RULE.
+//
+// El mapa llega COMO DATO (parámetro), no se consulta acá: la función sigue siendo PURA y
+// testeable. Plataforma sin fila → warn nominal que la nombra + par de su destination ('blog'),
+// exactamente el mismo comportamiento observable que hoy. Sin default silencioso.
+function resolveCarrilContentType(
+  destination: string,
+  platform: string,
+  canalMap?: any[] | null,
+): { content_type: string; canal: string } {
   const d = String(destination ?? '').trim().toLowerCase();
   const p = String(platform ?? '').trim().toLowerCase();
 
   // El email de divulgación se ancla en la PLATAFORMA, no en el destino.
+  // ⚠️ DEUDA MULTIMARCA REMANENTE (no es el alcance de este PR): `email_propietarios` también es
+  // el nombre de la plataforma de UNA marca. A diferencia del canal editorial, acá lo que se
+  // decide es el CONTENT_TYPE, y el puente que lo resolvería por dato —platform_canal_map.
+  // content_type— hoy está en NULL en las 9 filas (es el gancho de ADS, sin cablear). Queda
+  // anotado y se retira cuando esa columna sea la fuente.
   if (p === 'email_propietarios') return { content_type: 'email_divulgacion', canal: 'email' };
 
   if (d === 'social') {
@@ -417,9 +459,9 @@ function resolveCarrilContentType(destination: string, platform: string): { cont
   }
 
   if (d === 'editorial') {
-    const canal = CARRIL_EDITORIAL_CANAL[p];
-    if (canal) return { content_type: 'editorial_post', canal };
-    console.warn(`[CopyLab][carril] plataforma editorial desconocida '${p}' → editorial_post, canal='blog' (par de su destination)`);
+    const { canal_block_id, source } = resolveCanalBlockId(canalMap, p, 'organic');
+    if (source === 'map' && canal_block_id) return { content_type: 'editorial_post', canal: canal_block_id };
+    console.warn(`[CopyLab][carril] plataforma editorial '${p}' sin fila en platform_canal_map (traffic_type=organic) → editorial_post, canal='blog' (par de su destination)`);
     return { content_type: 'editorial_post', canal: 'blog' };
   }
 
@@ -1007,29 +1049,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
   }
 
-  // B2 — en modo carril, content_type y canal salen del MAPA (destino + plataforma). En modo UI
-  // `carril` es null y todo sigue saliendo del pack / `req.params.canal ?? 'instagram'` (byte-idéntico).
-  const carril = bi ? resolveCarrilContentType(bi.destination, bi.platform) : null;
-  const canal  = carril ? carril.canal : (req.params.canal ?? 'instagram');
-
   const isEmailSeq       = pack.startsWith('email_sequence');
   const isProductB2C     = pack === 'product_description_pack';
   const sequenceSubType  = meta.sequence_type ?? 'generic';
   const position         = meta.position ?? 1;
-
-  const creativeContentType = carril
-    ? carril.content_type
-    : isEmailSeq
-    ? `${sequenceSubType}_${position}`
-    : isProductB2C ? 'product_description_b2c'
-    : pack.replace('_pack', '');
-
-  const pipelineContentType = carril
-    ? carril.content_type
-    : isEmailSeq
-    ? 'email_sequence'
-    : isProductB2C ? 'product_description_b2c'
-    : pack.replace('_pack', '');
 
   // Cambio 1 — aggroLevel, pipeline_family y output_template_id salen del registro
   // (content_type_registry), resuelto tras el Promise.all. El objeto literal
@@ -1046,6 +1069,34 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     console.warn(`[CopyLab] cache de marca con forma desconocida para ${brandId} — keys=[${cacheKeys.join(', ')}]; se ignora el cache y se consultan las fuentes directas`);
   }
 
+  // A2 (2026-08-18) — `platform_canal_map` sale del Promise.all y se resuelve ACÁ, porque ahora es
+  // la fuente del canal editorial y `resolveCarrilContentType` corre ANTES del Promise.all (su
+  // content_type es la llave de dos de sus queries: creative_compatibility_rules y
+  // content_type_registry). Con el snapshot presente es lectura de memoria y no cuesta un viaje;
+  // sin snapshot es UNA query de 9 filas, serializada. El precio de tener una sola fuente de canal.
+  const platformCanalMapSlice: any[] = (sliceOf(bc, 'platform_canal_map')
+    ?? await sbArray<PlatformCanalMap>(`platform_canal_map?active=eq.true&select=*`)) as any[];
+
+  // B2 — en modo carril, content_type y canal salen del MAPA (destino + plataforma + el puente
+  // platform_canal_map). En modo UI `carril` es null y todo sigue saliendo del pack /
+  // `req.params.canal ?? 'instagram'` (byte-idéntico).
+  const carril = bi ? resolveCarrilContentType(bi.destination, bi.platform, platformCanalMapSlice) : null;
+  const canal  = carril ? carril.canal : (req.params.canal ?? 'instagram');
+
+  const creativeContentType = carril
+    ? carril.content_type
+    : isEmailSeq
+    ? `${sequenceSubType}_${position}`
+    : isProductB2C ? 'product_description_b2c'
+    : pack.replace('_pack', '');
+
+  const pipelineContentType = carril
+    ? carril.content_type
+    : isEmailSeq
+    ? 'email_sequence'
+    : isProductB2C ? 'product_description_b2c'
+    : pack.replace('_pack', '');
+
   const eBrand = encodeURIComponent(brandId);
   const previousVectorId = (req.previousOutputs as any)?.last_creative_vector;
 
@@ -1059,7 +1110,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice,
-    canalBlocksSlice, platformCanalMapSlice, geomixSlice, seqContext,
+    canalBlocksSlice, geomixSlice, seqContext,
   ] = await Promise.all([
     // select=* (A1): las variables de template necesitan cta_base, diferenciador_base,
     // disclaimer_base, url_base, cta_url_base, geo_principal, tono_base, canales_activos,
@@ -1087,10 +1138,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'pipeline_skills'),
     sliceOf(bc, 'output_templates'),
     sliceOf(bc, 'content_type_registry') ?? sbArray<ContentTypeRegistry>(`content_type_registry?content_type=in.(${encodeURIComponent(creativeContentType)},${encodeURIComponent(pipelineContentType)})&active=eq.true&select=*`),
-    // A2·a — canal_blocks (block_text por id) + platform_canal_map (8 filas, sin filtro: la
-    // función pura resuelve sin segundo viaje). Sólo se leen en modo carril.
+    // A2·a — canal_blocks (block_text por id). `platform_canal_map` ya NO está acá: A2 (2026-08-18)
+    // lo subió antes del Promise.all porque el canal editorial se resuelve con él y esa resolución
+    // corre antes (ver el bloque `carril`). Sólo se leen en modo carril.
     sliceOf(bc, 'canal_blocks') ?? sbArray<any>(`canal_blocks?active=eq.true&select=*`),
-    sliceOf(bc, 'platform_canal_map') ?? sbArray<PlatformCanalMap>(`platform_canal_map?active=eq.true&select=*`),
     // A2·b — geomix por marca (buildGeomixBlock). Se omite el bloque si la marca no tiene fila.
     sliceOf(bc, 'geomix') ?? sbArray<any>(`geomix?brand_id=eq.${eBrand}&active=eq.true&select=*`),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
