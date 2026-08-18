@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -381,6 +381,55 @@ async function run() {
     ];
     eq(JSON.stringify(PURE.filterCarrilImperativeRules(rules).map((r: any) => r.code).sort()), JSON.stringify(['HR-1', 'HR-2', 'HR-3']), 'similitud/duplicación fuera');
     eq(JSON.stringify(PURE.filterCarrilImperativeRules(null)), JSON.stringify([]), 'null → []');
+  });
+
+  // ── A1 · CAMBIO 8 · las cifras y su procedencia ─────────────────────────────
+  const CLAIM_A = { claim: 'caída interanual del segmento', value: '12%', source_url: 'https://example.org/informe-2026' };
+  const CLAIM_B = { claim: 'tamaño de la muestra', value: '4.312 casos', source_url: 'https://data.example.net/serie/42' };
+
+  await test('A1·pure buildClaimsBlock — la cifra viaja con su fuente y la instrucción cierra el grifo', () => {
+    const block = PURE.buildClaimsBlock([CLAIM_A, CLAIM_B])!;
+    assert(block !== null, 'con claims hay bloque');
+    for (const c of [CLAIM_A, CLAIM_B])
+      assertOrdered(block, [c.claim, c.value, c.source_url]);
+    assert(/s[oó]lo de esta lista/i.test(block), 'la instrucción dice que las cifras salen sólo de la lista');
+    assert(/NO se escribe/.test(block), 'la instrucción dice que una cifra sin claim no se escribe');
+    // El orden de la lista es el que mandó el carril: la fila decide, no un re-ordenamiento de acá.
+    assertOrdered(block, [CLAIM_A.claim, CLAIM_B.claim]);
+  });
+
+  await test('A1·pure buildClaimsBlock — sin claims no hay bloque (aditivo: el prompt de hoy intacto)', () => {
+    for (const v of [null, undefined, [], {}, 'x', 0])
+      eq(PURE.buildClaimsBlock(v as any), null, `entrada=${JSON.stringify(v ?? null)}`);
+  });
+
+  await test('A1·pure buildClaimsBlock — una entrada sin las tres piezas no viaja: cifra sin procedencia no es claim', () => {
+    const rotos = [
+      { claim: '', value: '12%', source_url: 'https://example.org/a' },
+      { claim: 'c', value: '   ', source_url: 'https://example.org/a' },
+      { claim: 'c', value: '12%', source_url: '' },
+      { claim: 'c', value: '12%' },
+      null,
+    ];
+    eq(PURE.buildClaimsBlock(rotos as any), null, 'todas incompletas → sin bloque');
+    const mixto = PURE.buildClaimsBlock([...rotos, CLAIM_A] as any)!;
+    eq(mixto.split('\n').filter((l: string) => l.startsWith('- ')).length, 1, 'sólo la entrada completa se lista');
+    assert(mixto.includes(CLAIM_A.source_url), 'y es la que trae fuente');
+  });
+
+  // El test de la marca N+1 para este bloque: el dato entra por la FILA y el código no lo conoce.
+  await test('A1·pure buildClaimsBlock — la marca N+1: ni enumeración ni literal de marca; la fila manda', () => {
+    const nueva = { claim: 'métrica que el código nunca nombró', value: '3,4×', source_url: 'https://nuevamarca.example/estudio' };
+    const block = PURE.buildClaimsBlock([nueva])!;
+    assertOrdered(block, [nueva.claim, nueva.value, nueva.source_url]);
+    // La función se llama como el DATO (claims), no como quien lo emite, y no hay lista blanca de
+    // claims, dominios ni plataformas: lo único que la fuente aporta es la gramática del bloque.
+    const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function buildClaimsBlock('));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 2);
+    assert(/function buildClaimsBlock\(/.test(body), 'claims nombra la función');
+    assert(!/\bnew Set\(|\[['\"][^'\"]+['\"]\s*,/.test(body), 'sin enumeración de valores permitidos');
+    assert(!/example\.org|nuevamarca|lucien|forumphs|neurone|unrealville/i.test(body), 'sin literal de marca en el cuerpo');
   });
 
   // Cambio 2 (pure) — precedencia por voz: voz > BASE > none, orden-independiente
@@ -796,6 +845,32 @@ async function run() {
       eq(built.creative_seed.aggro_id, 'AGGRO_2', 'degrada: aggro ?? 2 → BASE permite AGGRO_2');
       assert(built.system.length > 0, 'no rompe: sigue armando el prompt');
     } finally { fx.restore(); Math.random = realRandom; console.warn = realWarn; }
+  });
+
+  // INT-A1 — el bloque de cifras dentro del prompt real: presente cuando el carril manda claims,
+  // AUSENTE (y prompt byte-idéntico) cuando no. Es el contrato de aditividad del CAMBIO 8.
+  await test('INT-A1·claims: el bloque citable entra al system; sin claims el prompt no cambia un byte', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+      };
+      const claim = { claim: 'caída interanual del segmento', value: '12%', source_url: 'https://example.org/informe-2026' };
+      const bi = { voice_id: 'lucien_social', destination: 'social', platform: 'x' };
+
+      const con = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, claims: [claim] }) }));
+      assertOrdered(con.system, ['CIFRAS CITABLES', claim.claim, claim.value, claim.source_url]);
+
+      const sin   = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI(bi) }));
+      const vacio = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, claims: [] }) }));
+      assert(!sin.system.includes('CIFRAS CITABLES'), 'sin la clave no hay bloque');
+      eq(vacio.system, sin.system, 'claims: [] ≡ sin la clave — byte a byte');
+      assert(con.system.length > sin.system.length, 'el prompt con cifras es el de hoy MÁS el bloque');
+      eq(sin.system, con.system.split('\n\n---\n\n').filter((b: string) => !b.startsWith('CIFRAS CITABLES')).join('\n\n---\n\n'), 'quitando el bloque se recupera el prompt de hoy, byte a byte');
+    } finally { fx.restore(); Math.random = realRandom; }
   });
 
   // INT-4 — la DOBLE lectura del registro (corrección de Sam al brief). Un email_sequence
