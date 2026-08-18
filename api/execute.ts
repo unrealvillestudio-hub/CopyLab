@@ -3,6 +3,12 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * D1 (2026-08-18) — el caso pasa a ser LISTA: `case_examples`. `HR-GEN-08` pide "al menos un caso
+ *   concreto DISTINTO del que abre" —son dos— y con `case_example` singular la regla era incumplible
+ *   por construcción. El bloque cambia de instrucción según cuántos haya: con dos o más, el primero
+ *   abre y el segundo confirma que el patrón se repite; con uno solo no se promete ilustración doble.
+ *   El singular se sigue aceptando y se lee como lista de uno.
+ *
  * C1 (2026-08-18) — el carril manda un BRIEF DE ESCRITURA, no un resumen:
  *   `builder_input` gana `mechanism` y `case_example`, y `claims` gana `source_name`. Las reglas
  *   del Watcher ya se inyectaban —HR-UNRLVL-01 y HR-GEN-08 entre ellas— y se violaban igual:
@@ -143,6 +149,9 @@ interface BuilderInput {
   // resumen de investigación; un brief tiene que traer con qué CONSTRUIR. Opcionales: emisor que no
   // las manda ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy.
   mechanism?: string | null;
+  // D1 (2026-08-18) — LISTA. HR-GEN-08 pide "al menos un caso concreto DISTINTO del que abre": son
+  // DOS. El singular de C1 se sigue aceptando (emisor anterior a D1) y se lee como lista de uno.
+  case_examples?: Array<{ case: string; source_url: string; source_name: string }> | null;
   case_example?: { case: string; source_url: string; source_name: string } | null;
 }
 
@@ -562,9 +571,17 @@ function buildClaimsBlock(
 // Cualquiera de los dos puede faltar: se emite lo que haya. Sin ninguno ⇒ null ⇒ sin bloque, y el
 // prompt queda exactamente como hoy. El caso se exige DISTINTO del que abre la pieza: repetir el
 // de apertura no ilustra, y es la falla que HR-GEN-08 marca.
+//
+// D1 (2026-08-18) — el caso pasa a ser una LISTA, porque la regla pedía dos y el contrato daba uno.
+// `HR-GEN-08` exige "al menos un caso concreto DISTINTO del que abre": el que abre y uno más. Con un
+// solo caso era incumplible por construcción — o se abría con él y no quedaba segundo, o se
+// ilustraba con él y se abría con algo sin respaldo. La instrucción cambia en consecuencia: con dos
+// o más, el primero ABRE y el segundo CONFIRMA que el patrón se repite; con uno solo NO se promete
+// ilustración doble, porque prometerla es empujar al generador a inventar el segundo.
 function buildWritingMaterialBlock(
   mechanism: string | null | undefined,
-  caseExample: { case?: string; source_url?: string; source_name?: string } | null | undefined,
+  caseExamples: Array<{ case?: string; source_url?: string; source_name?: string }>
+    | { case?: string; source_url?: string; source_name?: string } | null | undefined,
 ): string | null {
   const parts: string[] = [];
   const mech = String(mechanism ?? '').trim();
@@ -574,14 +591,26 @@ function buildWritingMaterialBlock(
       + ' lo que separa una afirmación de una explicación, y es lo que la pieza tiene que dejar'
       + ' entendido.');
   }
-  const caseText = String(caseExample?.case ?? '').trim();
-  const caseName = String(caseExample?.source_name ?? '').trim();
-  const caseUrl  = String(caseExample?.source_url ?? '').trim();
-  if (caseText && caseName && caseUrl) {
-    parts.push(`CASO PARA ILUSTRAR — fuente citable: ${caseName} (${caseUrl}):\n${caseText}\n`
-      + 'Usalo para ilustrar lo que la pieza afirma, con su especificidad y nombrando la fuente'
-      + ' citable en el texto. Tiene que ser DISTINTO del caso con el que abrís: si ilustrás con el'
-      + ' mismo con el que empezaste, no ilustraste — repetiste.');
+  // Retrocompat: un objeto suelto (contrato C1) se lee como lista de uno.
+  const raw = Array.isArray(caseExamples) ? caseExamples
+    : (caseExamples && typeof caseExamples === 'object' ? [caseExamples] : []);
+  const casos = raw
+    .filter(c => c && String(c.case ?? '').trim() && String(c.source_name ?? '').trim() && String(c.source_url ?? '').trim())
+    .map(c => ({ case: String(c.case).trim(), source_name: String(c.source_name).trim(), source_url: String(c.source_url).trim() }));
+
+  if (casos.length) {
+    const lista = casos
+      .map((c, i) => `${i + 1}. [${c.source_name}] ${c.case} (${c.source_url})`)
+      .join('\n');
+    const comoUsarlos = casos.length >= 2
+      ? 'Usá el PRIMERO para abrir: es el caso con el que entrás. Usá el SEGUNDO más adelante, para'
+        + ' mostrar que el patrón se repite — no basta con que algo haya pasado una vez. Cada uno con'
+        + ' su especificidad y nombrando su fuente citable en el texto. No ilustres con el mismo caso'
+        + ' con el que abriste: eso no ilustra, repite.'
+      : 'Es UN solo caso: usalo donde más pese, con su especificidad y nombrando su fuente citable en'
+        + ' el texto. No lo repitas como si fueran dos, y no inventes un segundo caso para acompañarlo'
+        + ' — si el patrón necesita un segundo ejemplo y no lo tenés, no lo afirmes como patrón.';
+    parts.push(`CASOS PARA ILUSTRAR (${casos.length}):\n${lista}\n\n${comoUsarlos}`);
   }
   return parts.length ? parts.join('\n\n') : null;
 }
@@ -1393,7 +1422,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const claimsBlock = buildClaimsBlock(bi?.claims);
 
   // C1 — mecanismo + caso concreto: el material de escritura. Ausentes → null → sin bloque.
-  const writingMaterialBlock = buildWritingMaterialBlock(bi?.mechanism, bi?.case_example);
+  const writingMaterialBlock = buildWritingMaterialBlock(bi?.mechanism, bi?.case_examples ?? bi?.case_example);
 
   // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
   const AUDIENCE_CTA: Record<string, string> = {

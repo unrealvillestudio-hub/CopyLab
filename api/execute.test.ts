@@ -449,18 +449,35 @@ async function run() {
   // ── C1 · el material de escritura: mecanismo y caso ─────────────────────────
   const MECH = 'cuando el inventario baja, el precio sube porque la oferta se contrae antes que la demanda';
   const CASO = { case: 'una plataforma rehízo su checkout y midió el efecto a 90 días', source_url: 'https://example.org/caso', source_name: 'Informe 2026' };
+  const CASO_2 = { case: 'un marketplace movió el paso de pago al primer tramo', source_url: 'https://data.example.net/serie/42', source_name: 'Serie 42' };
 
   await test('C1·pure buildWritingMaterialBlock — mecanismo y caso entran con instrucción CONSTRUCTIVA', () => {
-    const block = PURE.buildWritingMaterialBlock(MECH, CASO)!;
-    assertOrdered(block, ['MECANISMO', MECH, 'CASO PARA ILUSTRAR', CASO.source_name, CASO.case]);
-    assert(/[Dd]esarrolla/.test(block) && /[Ii]lustr/.test(block), 'se pide construir, no sólo no-hacer');
-    assert(/DISTINTO del caso con el que abr/.test(block), 'el caso tiene que ser distinto del de apertura');
+    const block = PURE.buildWritingMaterialBlock(MECH, [CASO])!;
+    assertOrdered(block, ['MECANISMO', MECH, 'CASOS PARA ILUSTRAR', CASO.source_name, CASO.case]);
+    assert(/[Dd]esarrolla/.test(block) && /ILUSTRAR|[Ii]lustr/.test(block), 'se pide construir, no sólo no-hacer');
+  });
+  await test('D1·pure con DOS casos: el primero abre, el segundo confirma que el patrón se repite', () => {
+    const block = PURE.buildWritingMaterialBlock(MECH, [CASO, CASO_2])!;
+    assertOrdered(block, ['CASOS PARA ILUSTRAR (2)', CASO.case, CASO_2.case]);
+    assert(/PRIMERO para abrir/.test(block), 'dice cuál abre');
+    assert(/SEGUNDO/.test(block) && /patrón se repite/.test(block), 'y para qué sirve el segundo');
+    assert(/no ilustra, repite/.test(block), 'y por qué no vale reusar el de apertura');
+  });
+  await test('D1·pure con UN caso NO se promete ilustración doble ni se pide inventar el segundo', () => {
+    const block = PURE.buildWritingMaterialBlock(MECH, [CASO])!;
+    assert(/UN solo caso/.test(block), 'lo dice explícito');
+    assert(!/PRIMERO para abrir/.test(block), 'no habla de un segundo que no existe');
+    assert(/no inventes un segundo caso/.test(block), 'y lo prohíbe: prometer dos empuja a fabricarlo');
+  });
+  await test('D1·pure retrocompat: el objeto suelto de C1 se lee como lista de uno', () => {
+    const block = PURE.buildWritingMaterialBlock(null, CASO)!;
+    assertOrdered(block, ['CASOS PARA ILUSTRAR (1)', CASO.case]);
   });
   await test('C1·pure buildWritingMaterialBlock — cada pieza entra sola; sin ninguna, sin bloque', () => {
     assert(/MECANISMO/.test(PURE.buildWritingMaterialBlock(MECH, null)!), 'sólo mecanismo');
-    assert(!/CASO PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(MECH, null)!), 'sin caso no se anuncia uno');
-    assert(/CASO PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(null, CASO)!), 'sólo caso');
-    for (const [m, c] of [[null, null], [undefined, undefined], ['', {}], ['   ', { case: '  ' }]] as any[])
+    assert(!/CASOS PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(MECH, null)!), 'sin caso no se anuncia uno');
+    assert(/CASOS PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(null, [CASO])!), 'sólo caso');
+    for (const [m, c] of [[null, null], [undefined, undefined], ['', []], ['   ', [{ case: '  ' }]], ['', 'nada'], ['', 7]] as any[])
       eq(PURE.buildWritingMaterialBlock(m, c), null, `${JSON.stringify(m ?? null)} / ${JSON.stringify(c ?? null)}`);
   });
   await test('C1·pure buildWritingMaterialBlock — un caso sin fuente o sin nombre NO se emite', () => {
@@ -468,12 +485,15 @@ async function run() {
       { case: 'x', source_url: 'https://example.org/a' },
       { case: 'x', source_name: 'N' },
       { case: '', source_url: 'https://example.org/a', source_name: 'N' },
-    ]) eq(PURE.buildWritingMaterialBlock(null, c as any), null, JSON.stringify(c));
-    assert(/MECANISMO/.test(PURE.buildWritingMaterialBlock(MECH, { case: 'x' } as any)!), 'y no arrastra al mecanismo consigo');
+    ]) eq(PURE.buildWritingMaterialBlock(null, [c] as any), null, JSON.stringify(c));
+    assert(/MECANISMO/.test(PURE.buildWritingMaterialBlock(MECH, [{ case: 'x' }] as any)!), 'y no arrastra al mecanismo consigo');
+    // Y la entrada mala no se lleva puesta a la buena.
+    const mixto = PURE.buildWritingMaterialBlock(null, [{ case: 'sin fuente' }, CASO] as any)!;
+    assertOrdered(mixto, ['CASOS PARA ILUSTRAR (1)', CASO.case]);
   });
   await test('C1·pure la marca N+1: el material entra por el DATO, sin enumeración ni literal de marca', () => {
     const nuevo = { case: 'un caso de un rubro que el código nunca nombró', source_url: 'https://nuevamarca.example/e', source_name: 'Entidad N+1' };
-    assertOrdered(PURE.buildWritingMaterialBlock('otra mecánica', nuevo)!, [nuevo.source_name, nuevo.case]);
+    assertOrdered(PURE.buildWritingMaterialBlock('otra mecánica', [nuevo])!, [nuevo.source_name, nuevo.case]);
     const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
     const fn = src.slice(src.indexOf('function buildWritingMaterialBlock('));
     const body = fn.slice(0, fn.indexOf('\n}\n') + 2);
@@ -935,19 +955,22 @@ async function run() {
       };
       const bi = { voice_id: 'lucien_social', destination: 'social', platform: 'x' };
       const mechanism = 'cuando el inventario baja, el precio sube porque la oferta se contrae';
-      const case_example = { case: 'una plataforma rehízo su checkout', source_url: 'https://example.org/caso', source_name: 'Informe 2026' };
+      const case_examples = [
+        { case: 'una plataforma rehízo su checkout', source_url: 'https://example.org/caso', source_name: 'Informe 2026' },
+        { case: 'un marketplace movió el paso de pago', source_url: 'https://data.example.net/serie/42', source_name: 'Serie 42' },
+      ];
 
-      const con = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_example }) }));
-      assertOrdered(con.system, ['MECANISMO', mechanism, 'CASO PARA ILUSTRAR', case_example.source_name, case_example.case]);
+      const con = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_examples }) }));
+      assertOrdered(con.system, ['MECANISMO', mechanism, 'CASOS PARA ILUSTRAR (2)', case_examples[0].case, case_examples[1].case]);
 
       const sin = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI(bi) }));
-      assert(!sin.system.includes('MECANISMO') && !sin.system.includes('CASO PARA ILUSTRAR'), 'sin las claves no hay bloque');
+      assert(!sin.system.includes('MECANISMO') && !sin.system.includes('CASOS PARA ILUSTRAR'), 'sin las claves no hay bloque');
       eq(sin.system, con.system.split('\n\n---\n\n').filter((b: string) => !b.startsWith('MECANISMO')).join('\n\n---\n\n'), 'quitando el bloque se recupera el prompt de hoy, byte a byte');
 
       // Un caso a medias (sin fuente) no arrastra al mecanismo: entra lo que esté completo.
-      const parcial = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_example: { case: 'sin fuente' } }) }));
+      const parcial = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, mechanism, case_examples: [{ case: 'sin fuente' }] }) }));
       assert(parcial.system.includes('MECANISMO'), 'el mecanismo entra igual');
-      assert(!parcial.system.includes('CASO PARA ILUSTRAR'), 'el caso incompleto no');
+      assert(!parcial.system.includes('CASOS PARA ILUSTRAR'), 'el caso incompleto no');
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
