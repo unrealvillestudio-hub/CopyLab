@@ -318,24 +318,59 @@ async function run() {
   });
 
   // B2 (pure) — el mapa del carril: destino + plataforma → content_type + canal
+  // A2 (2026-08-18) — `platform_canal_map` tal cual las 9 filas de producción, leídas en vivo.
+  // El canal editorial sale de ACÁ, no de un objeto literal con el nombre de una marca dentro.
+  const CANAL_MAP = [
+    { platform: 'blog',               traffic_type: 'organic', canal_block_id: 'BLOG',               content_type: null, active: true },
+    { platform: 'blog_forumphs',      traffic_type: 'organic', canal_block_id: 'BLOG',               content_type: null, active: true },
+    { platform: 'email',              traffic_type: 'organic', canal_block_id: 'EMAIL',              content_type: null, active: true },
+    { platform: 'email_propietarios', traffic_type: 'organic', canal_block_id: 'EMAIL',              content_type: null, active: true },
+    { platform: 'linkedin',           traffic_type: 'organic', canal_block_id: 'WEB',                content_type: null, active: true },
+    { platform: 'meta_fb',            traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true },
+    { platform: 'meta_ig',            traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true },
+    { platform: 'tiktok',             traffic_type: 'organic', canal_block_id: 'TIKTOK_ORGANICO',    content_type: null, active: true },
+    { platform: 'x',                  traffic_type: 'organic', canal_block_id: 'INSTAGRAM_ORGANICO', content_type: null, active: true },
+  ];
+
   await test('B2·pure resolveCarrilContentType — el mapa (las 5 filas)', () => {
     for (const p of ['x', 'meta_fb', 'meta_ig', 'tiktok'])
-      eq(JSON.stringify(PURE.resolveCarrilContentType('social', p)), JSON.stringify({ content_type: 'social_post', canal: p }), `social/${p}`);
-    eq(JSON.stringify(PURE.resolveCarrilContentType('social', 'linkedin')), JSON.stringify({ content_type: 'social_post', canal: 'linkedin' }), 'social/linkedin');
-    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'blog')), JSON.stringify({ content_type: 'editorial_post', canal: 'blog' }), 'editorial/blog');
-    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'blog_forumphs')), JSON.stringify({ content_type: 'editorial_post', canal: 'blog' }), 'editorial/blog_forumphs');
-    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'linkedin')), JSON.stringify({ content_type: 'editorial_post', canal: 'linkedin' }), 'editorial/linkedin');
+      eq(JSON.stringify(PURE.resolveCarrilContentType('social', p, CANAL_MAP)), JSON.stringify({ content_type: 'social_post', canal: p }), `social/${p}`);
+    eq(JSON.stringify(PURE.resolveCarrilContentType('social', 'linkedin', CANAL_MAP)), JSON.stringify({ content_type: 'social_post', canal: 'linkedin' }), 'social/linkedin');
+    // A2 — el canal editorial es ahora el canal_blocks.id del puente, no un valor cableado.
+    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'blog', CANAL_MAP)), JSON.stringify({ content_type: 'editorial_post', canal: 'BLOG' }), 'editorial/blog');
+    eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'linkedin', CANAL_MAP)), JSON.stringify({ content_type: 'editorial_post', canal: 'WEB' }), 'editorial/linkedin');
     for (const d of ['social', 'editorial'])
-      eq(JSON.stringify(PURE.resolveCarrilContentType(d, 'email_propietarios')), JSON.stringify({ content_type: 'email_divulgacion', canal: 'email' }), `${d}/email_propietarios`);
+      eq(JSON.stringify(PURE.resolveCarrilContentType(d, 'email_propietarios', CANAL_MAP)), JSON.stringify({ content_type: 'email_divulgacion', canal: 'email' }), `${d}/email_propietarios`);
   });
+
+  // ── A2 · el test de la marca N+1, ejecutable ────────────────────────────────
+  await test('A2·pure el canal editorial NO conoce ninguna marca: blog_forumphs entra por FILA, no por literal', () => {
+    // Antes: CARRIL_EDITORIAL_CANAL = { blog, blog_forumphs, linkedin } — una marca dentro de una
+    // enumeración de capa compartida. Ahora la fila manda y el código no sabe de quién es.
+    eq(PURE.resolveCarrilContentType('editorial', 'blog_forumphs', CANAL_MAP).canal, 'BLOG', 'blog_forumphs sale del puente');
+    // La marca N+1: una plataforma que NUNCA se nombró en el código entra sin tocar el código.
+    const conNueva = [...CANAL_MAP, { platform: 'blog_nuevamarca', traffic_type: 'organic', canal_block_id: 'BLOG', active: true }];
+    eq(PURE.resolveCarrilContentType('editorial', 'blog_nuevamarca', conNueva).canal, 'BLOG', 'alta de plataforma = fila, no deploy');
+    // Y sin su fila, la MISMA plataforma cae al par de su destination, nombrada en el warn.
+    eq(PURE.resolveCarrilContentType('editorial', 'blog_nuevamarca', CANAL_MAP).canal, 'blog', 'sin fila → par de su destination');
+  });
+  await test('A2·pure una fila inactiva no resuelve canal (active=false ≠ existe)', () => {
+    const off = CANAL_MAP.map((r) => (r.platform === 'blog' ? { ...r, active: false } : r));
+    eq(PURE.resolveCarrilContentType('editorial', 'blog', off).canal, 'blog', 'fila inactiva → fallback, no el canal_block');
+  });
+  await test('A2·pure sin mapa (null/undefined/[]) el editorial cae al par de su destination, sin romper', () => {
+    for (const m of [null, undefined, []])
+      eq(PURE.resolveCarrilContentType('editorial', 'blog', m as any).canal, 'blog', `mapa=${JSON.stringify(m ?? null)}`);
+  });
+
   await test('B2·pure resolveCarrilContentType — plataforma desconocida: nombra + par de destination, nunca instagram mudo', () => {
-    const s = PURE.resolveCarrilContentType('social', 'threads');
+    const s = PURE.resolveCarrilContentType('social', 'threads', CANAL_MAP);
     eq(s.content_type, 'social_post', 'social desconocida → social_post'); eq(s.canal, 'threads', 'canal = la plataforma nombrada');
-    const e = PURE.resolveCarrilContentType('editorial', 'substack');
+    const e = PURE.resolveCarrilContentType('editorial', 'substack', CANAL_MAP);
     eq(e.content_type, 'editorial_post', 'editorial desconocida → editorial_post'); eq(e.canal, 'blog', 'canal = par de su destination (blog)');
     for (const [d, p] of [['social', 'bluesky'], ['editorial', 'medium']] as const)
-      assert(PURE.resolveCarrilContentType(d, p).canal !== 'instagram', `nunca el ?? instagram mudo (${d}/${p})`);
-    eq(PURE.resolveCarrilContentType('  SOCIAL ', ' Meta_IG ').canal, 'meta_ig', 'normaliza trim + lowercase');
+      assert(PURE.resolveCarrilContentType(d, p, CANAL_MAP).canal !== 'instagram', `nunca el ?? instagram mudo (${d}/${p})`);
+    eq(PURE.resolveCarrilContentType('  SOCIAL ', ' Meta_IG ', CANAL_MAP).canal, 'meta_ig', 'normaliza trim + lowercase');
   });
   await test('B2·pure filterCarrilImperativeRules — sólo prohibition|requirement|proof se prescriben', () => {
     eq(JSON.stringify([...PURE.CARRIL_IMPERATIVE_KINDS].sort()), JSON.stringify(['prohibition', 'proof', 'requirement']), 'kinds imperativos');
