@@ -3,6 +3,13 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * A1 · CAMBIO 8 (2026-08-18) — las CIFRAS dejan de ser palabra del modelo:
+ *   `builder_input.claims` (12ª clave del contrato) llega del carril con {claim, value, source_url}
+ *   —el finding que originó la pieza, misma fila de la que ya salían las source_urls— y se inyecta
+ *   como BLOQUE CITABLE (`buildClaimsBlock`, puro) entre las restricciones, junto a las reglas del
+ *   Watcher: las cifras salen sólo de esa lista y una cifra sin claim no se escribe. Sin claims (o
+ *   con la lista vacía) no hay bloque y el prompt queda byte-idéntico al de hoy.
+ *
  * A2 (2026-08-18) — el canal editorial deja de salir de un literal de marca:
  *   `CARRIL_EDITORIAL_CANAL = { blog, blog_forumphs, linkedin }` se RETIRA. `blog_forumphs` era el
  *   nombre de la plataforma de UNA marca escrito como clave en capa compartida (viola
@@ -116,6 +123,11 @@ interface BuilderInput {
   iid_brief: string;
   angle: string | null;
   audience_frame: 'jd' | 'doliente' | 'general' | null;
+  // A1 · CAMBIO 8 — la 12ª clave del contrato: las CIFRAS con procedencia, tal cual viajan desde
+  // intel.iid_findings.claims. Cada entrada ata un dato numérico a la URL que lo sostiene. Opcional
+  // a propósito: un emisor que no la manda (UI, carril viejo, fila sin claims) deja el prompt
+  // byte-idéntico al de hoy.
+  claims?: Array<{ claim: string; value: string; source_url: string }>;
 }
 
 interface ExecuteRequest {
@@ -479,6 +491,29 @@ function filterCarrilImperativeRules(
   rules: Array<{ code: string; kind: string; statement: string }> | null | undefined,
 ): Array<{ code: string; kind: string; statement: string }> {
   return (rules ?? []).filter(r => CARRIL_IMPERATIVE_KINDS.has(String(r?.kind)));
+}
+
+// ── claims · las cifras y su procedencia (contraparte de A1·CAMBIO 8) ────────────────────────
+// `builder_input.claims` llega del carril con la forma {claim, value, source_url}: cada cifra ATADA
+// a la URL de la lista cerrada del memo que la sostiene. Acá se vuelve BLOQUE CITABLE, con la misma
+// gramática que las reglas del Watcher (lista + instrucción que la hace exigible), y la instrucción
+// cierra el grifo: las cifras salen SÓLO de esta lista, y una cifra sin claim no se escribe.
+// Sin claims → null → sin bloque: el prompt queda exactamente como hoy. La entrada incompleta (sin
+// dato, sin valor o sin fuente) NO viaja: un número sin procedencia es justo lo que este bloque
+// viene a impedir. La función se llama como el dato que consume y no conoce plataformas ni marcas:
+// lo que decide es la fila, no una enumeración escrita acá.
+function buildClaimsBlock(
+  claims: Array<{ claim: string; value: string; source_url: string }> | null | undefined,
+): string | null {
+  const lines = (Array.isArray(claims) ? claims : [])
+    .filter(c => c && String(c.claim ?? '').trim() && String(c.value ?? '').trim() && String(c.source_url ?? '').trim())
+    .map(c => `- ${String(c.claim).trim()}: ${String(c.value).trim()} — fuente: ${String(c.source_url).trim()}`);
+  if (!lines.length) return null;
+  return 'CIFRAS CITABLES (lista cerrada — cada una atada a la fuente que la sostiene):\n'
+    + lines.join('\n')
+    + '\n\nToda cifra que escribas sale SÓLO de esta lista, con el valor tal como figura acá y sin'
+    + ' redondearlo. Una cifra que no esté en la lista NO se escribe: ni estimada, ni inferida del'
+    + ' brief, ni deducida de otra. Si la frase la necesita y no está, la frase va sin cifra.';
 }
 
 // ── Cambio 2 · precedencia por voz en la compatibilidad ─────────────────────
@@ -1284,6 +1319,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
   }
 
+  // claims → bloque citable de CIFRAS (A1·CAMBIO 8). Ausente / vacío → null → sin bloque.
+  const claimsBlock = buildClaimsBlock(bi?.claims);
+
   // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
   const AUDIENCE_CTA: Record<string, string> = {
     jd: 'CTA orientado a la decisión de compra directa (quien decide). Claro y sin rodeos.',
@@ -1369,6 +1407,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (voiceLayer) layers.push(voiceLayer);                           // L1.5 genoma — override de ADN, DESPUÉS del copy profile
 
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
+  if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
   const extra = req.params.extra_instructions ?? '';
