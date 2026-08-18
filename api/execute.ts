@@ -3,6 +3,12 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * D2 (2026-08-18) — la regla que se le da al ESCRITOR deja de ser la del JUEZ:
+ *   `builder_input.rules[].instruction` es la misma regla en modo escritura, y el bloque de reglas
+ *   usa `instruction ?? statement`. El fallback es lo que permite desplegarlo hoy: 58 de 62 reglas
+ *   siguen llegando como hoy. `builder_meta` gana `rules_by_instruction` y sus conteos — sin esa
+ *   marca no se puede saber si una mejora del ratio vino de la redacción o del azar de generación.
+ *
  * D1 (2026-08-18) — el caso pasa a ser LISTA: `case_examples`. `HR-GEN-08` pide "al menos un caso
  *   concreto DISTINTO del que abre" —son dos— y con `case_example` singular la regla era incumplible
  *   por construcción. El bloque cambia de instrucción según cuántos haya: con dos o más, el primero
@@ -136,7 +142,11 @@ interface BuilderInput {
   platform: string;                                 // x | meta_fb | meta_ig | linkedin | blog | tiktok | email_propietarios
   language: string | null;                          // eje M-12·B
   psycho_preset: string | null;
-  rules: Array<{ code: string; kind: string; statement: string }>;
+  // D2 (2026-08-18) — `instruction` es la MISMA regla en modo ESCRITURA. `statement` está redactado
+  // para el JUEZ ("Mira el FINAL de la pieza. CUMPLE si…") y pedirle eso a quien todavía está
+  // escribiendo la pieza es criterio de auditoría sobre un objeto ausente. Opcional: 58 de 62 reglas
+  // todavía no tienen redacción propia y caen a `statement`, exactamente como hoy.
+  rules: Array<{ code: string; kind: string; statement: string; instruction?: string | null }>;
   iid_brief: string;
   angle: string | null;
   audience_frame: 'jd' | 'doliente' | 'general' | null;
@@ -513,8 +523,8 @@ function resolveCarrilContentType(
 // del Watcher), no se prescriben: meterlas al prompt es pedirle al modelo que cumpla algo que no es orden.
 const CARRIL_IMPERATIVE_KINDS = new Set(['prohibition', 'requirement', 'proof']);
 function filterCarrilImperativeRules(
-  rules: Array<{ code: string; kind: string; statement: string }> | null | undefined,
-): Array<{ code: string; kind: string; statement: string }> {
+  rules: Array<{ code: string; kind: string; statement: string; instruction?: string | null }> | null | undefined,
+): Array<{ code: string; kind: string; statement: string; instruction?: string | null }> {
   return (rules ?? []).filter(r => CARRIL_IMPERATIVE_KINDS.has(String(r?.kind)));
 }
 
@@ -1163,6 +1173,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   template_vars_unresolved_compliance: string[];
   rules_injected: string[];
   rules_skipped: string[];
+  rules_by_instruction: string[];
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -1400,15 +1411,27 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // B2 — PR-1 manda TODAS las reglas del Watcher (sin filtrar por kind); acá se filtran a las IMPERATIVAS
   // (prohibition|requirement|proof) antes de inyectar: las órdenes. Las de similitud/duplicación se
   // verifican aguas abajo, no se prescriben — no se inyectan ni cuentan como skipped.
+  //
+  // D2 (2026-08-18) — se prefiere `instruction` y se cae a `statement`. El fallback es lo que hace
+  // que esto se pueda desplegar hoy: 58 de las 62 reglas todavía no tienen redacción propia y siguen
+  // llegando exactamente como hoy, así que el ratio mejora regla por regla en vez de en un salto.
+  // `rules_by_instruction` / `rules_by_statement` cuentan de dónde vino cada una: sin esa marca no se
+  // puede saber si una mejora del ratio vino de la redacción o del azar de generación, que es
+  // justamente lo que la medición tiene que distinguir.
   const rulesInjected: string[] = [];
   const rulesSkipped: string[] = [];
+  const rulesByInstruction: string[] = [];
   let watcherRulesBlock: string | null = null;
   if (bi) {
     const lines: string[] = [];
     for (const r of filterCarrilImperativeRules(bi.rules)) {
-      if (r && r.statement && String(r.statement).trim()) {
+      const instruction = String(r?.instruction ?? '').trim();
+      const statement   = String(r?.statement ?? '').trim();
+      const text = instruction || statement;
+      if (r && text) {
         rulesInjected.push(r.code);
-        lines.push(`- [${r.code}${r.kind ? ' · ' + r.kind : ''}] ${String(r.statement).trim()}`);
+        if (instruction) rulesByInstruction.push(r.code);
+        lines.push(`- [${r.code}${r.kind ? ' · ' + r.kind : ''}] ${text}`);
       } else if (r) {
         rulesSkipped.push(r.code ?? '∅');
       }
@@ -1638,6 +1661,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     template_vars_unresolved_compliance: templateVarsUnresolvedCompliance,
     rules_injected: rulesInjected,
     rules_skipped: rulesSkipped,
+    rules_by_instruction: rulesByInstruction,
   };
 }
 
@@ -1927,6 +1951,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           rules_injected: built.rules_injected,
           rules_skipped: built.rules_skipped,
           rules_count: built.rules_injected.length,
+          // D2 — cuántas llegaron con su redacción de escritura y cuántas por fallback a statement.
+          rules_by_instruction: built.rules_by_instruction,
+          rules_by_instruction_count: built.rules_by_instruction.length,
+          rules_by_statement_count: built.rules_injected.length - built.rules_by_instruction.length,
           creative_seed: built.creative_seed,
           cache_mode: built.cache_mode,
           layers_applied: built.layers_applied,

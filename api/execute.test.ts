@@ -942,6 +942,49 @@ async function run() {
     } finally { fx.restore(); Math.random = realRandom; }
   });
 
+  // ── D2 · la regla del ESCRITOR no es la del JUEZ ───────────────────────────
+  // `statement` está redactado para juzgar ("Mira el FINAL de la pieza. CUMPLE si…"); pedirle eso a
+  // quien todavía está escribiendo la pieza es criterio de auditoría sobre un objeto ausente.
+  const R_JUEZ = { code: 'HR-GEN-01', kind: 'requirement',
+    statement: 'Mira el FINAL de la pieza. CUMPLE si la última frase termina en signo de cierre.' };
+  const R_ESCRITOR = { ...R_JUEZ,
+    instruction: 'Cerrá la pieza. Si el espacio se agota, acortá el desarrollo — nunca el cierre.' };
+
+  await test('D2·int el bloque de reglas usa instruction cuando existe, y NO el statement del juez', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const cache = {
+        ...REG_BASE,
+        content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
+        creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
+      };
+      const bi = { voice_id: 'lucien_social', destination: 'social', platform: 'x' };
+
+      const conInstr = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, rules: [R_ESCRITOR] }) }));
+      assert(conInstr.system.includes(R_ESCRITOR.instruction), 'la instruction entra al prompt');
+      assert(!conInstr.system.includes('Mira el FINAL'), 'el statement del juez NO entra cuando hay instruction');
+      eq(JSON.stringify(conInstr.rules_by_instruction), JSON.stringify(['HR-GEN-01']), 'y queda marcada como tal');
+
+      // Fallback: las 58 reglas sin redactar llegan exactamente como hoy.
+      const sinInstr = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, rules: [R_JUEZ] }) }));
+      assert(sinInstr.system.includes('Mira el FINAL'), 'sin instruction cae a statement, como hoy');
+      eq(JSON.stringify(sinInstr.rules_by_instruction), JSON.stringify([]), 'y NO se cuenta como redactada');
+      eq(JSON.stringify(sinInstr.rules_injected), JSON.stringify(['HR-GEN-01']), 'pero se inyecta igual');
+
+      // instruction vacía o en blanco ≡ ausente: no deja la regla muda.
+      for (const v of ['', '   ', null, undefined]) {
+        const r = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, rules: [{ ...R_JUEZ, instruction: v }] }) }));
+        assert(r.system.includes('Mira el FINAL'), `instruction=${JSON.stringify(v ?? null)} cae a statement`);
+        eq(JSON.stringify(r.rules_by_instruction), JSON.stringify([]), 'y no se cuenta');
+      }
+
+      // Una regla sin NINGUNO de los dos textos se salta, no se inyecta muda.
+      const muda = await buildPrompt(reqWith({ brandContext: cache }, { builder_input: carrilBI({ ...bi, rules: [{ code: 'HR-MUDA', kind: 'requirement', statement: '  ' }] }) }));
+      eq(JSON.stringify(muda.rules_skipped), JSON.stringify(['HR-MUDA']), 'muda ⇒ skipped, no inyectada');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
   // INT-C1 — el material de escritura dentro del prompt real. Mismo contrato de aditividad que el
   // bloque de cifras: presente cuando el carril lo manda, ausente y byte-idéntico cuando no.
   await test('INT-C1·material: mecanismo y caso entran al system; sin ellos el prompt no cambia un byte', async () => {
