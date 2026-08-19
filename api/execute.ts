@@ -142,6 +142,12 @@ interface BuilderInput {
   platform: string;                                 // x | meta_fb | meta_ig | linkedin | blog | tiktok | email_propietarios
   language: string | null;                          // eje M-12·B
   psycho_preset: string | null;
+  // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
+  // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
+  // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
+  // antes de G1-C. Opcionales: un emisor anterior a F1 que no los mande no cambia de comportamiento.
+  max_tokens?: number | null;
+  max_tokens_source?: string | null;
   // D2 (2026-08-18) — `instruction` es la MISMA regla en modo ESCRITURA. `statement` está redactado
   // para el JUEZ ("Mira el FINAL de la pieza. CUMPLE si…") y pedirle eso a quien todavía está
   // escribiendo la pieza es criterio de auditoría sobre un objeto ausente. Opcional: 58 de 62 reglas
@@ -417,13 +423,53 @@ function selectHumanize(rows: any[] | null | undefined, brandId: string): any | 
   })[0] ?? null;
 }
 
-// Token ceiling by destination (§3.5). The flat 1600 served neither destino:
-// editorial 4000 · social 640 en modo carril; el modo UI mantiene 1600.
-function maxTokensFor(builderInput: { destination?: string } | null | undefined): number {
-  if (!builderInput) return 1600;
-  if (builderInput.destination === 'editorial') return 4000;
-  if (builderInput.destination === 'social') return 640;
-  return 1600;
+// Token ceiling (§3.5 + G1-C). El carril YA TRANSPORTA el techo en
+// `builder_input.max_tokens`, resuelto contra `public.content_type_registry` por la
+// cascada (voz+plataforma) > (voz) > (BASE+plataforma) > (BASE); `max_tokens_source`
+// dice qué nivel lo resolvió. CopyLab lo recibía y NO lo aplicaba: escribía contra el
+// default por destino de abajo, y el adaptador recortaba después.
+//
+// EL HALLAZGO, medido. Sembrar los techos por plataforma no movió una sola pieza —
+// 1.685→1.732 (linkedin), 1.780→1.839 (meta_fb), 1.766→1.825 (meta_ig) caracteres,
+// antes y después. Lo que SÍ cambió fue el recorte aguas abajo: de lo que CopyLab
+// escribe, SocialLab entrega 809 de 1.839 en meta_fb (56% menos), 1.242 de 1.825 en
+// meta_ig (32%), 1.555 de 1.732 en linkedin (10%). Y el juez castiga esa mutilación:
+// entre las dos corridas HR-GEN-01 (cierre completo) subió de 14% a 19% y
+// HR-UNRLVL-03 de 16% a 25%. Comprimir a la mitad deja frases suspendidas y cierres
+// rotos — una pieza ESCRITA corta cierra bien; una pieza larga RECORTADA al 56%, no.
+//
+// El techo declarado gana. `null` —nadie lo declaró— deja el default por destino
+// EXACTAMENTE como estaba: retrocompatibilidad byte a byte, y el modo UI (sin
+// builder_input) ni se entera. Un valor ilegible (no finito, ≤ 0, no numérico) NO es
+// una declaración: cae al default y se avisa, porque un techo roto que silenciosamente
+// alarga o acorta la pieza es el fallo que este cambio viene a cerrar.
+//
+// Acá NO se decide CUÁNTO: el número es dato de tabla, resuelto por el carril. Lo que
+// vive acá es que el techo declarado se aplique — eje, no instancia.
+const CARRIL_DESTINATION_MAX_TOKENS: Record<string, number> = { editorial: 4000, social: 640 };
+const MAX_TOKENS_UI_DEFAULT = 1600;
+function maxTokensFor(
+  // `max_tokens` entra como `unknown` a propósito: el CONTRATO lo declara `number | null`
+  // (interface BuilderInput) pero lo que llega es JSON de la red, y esta función es justamente la
+  // que decide si ese valor es una declaración. Tiparlo `number` acá sería asumir lo que se valida.
+  builderInput: { destination?: string; max_tokens?: unknown; max_tokens_source?: string | null } | null | undefined,
+): number {
+  if (!builderInput) return MAX_TOKENS_UI_DEFAULT;
+  const declared = builderInput.max_tokens;
+  if (declared !== null && declared !== undefined) {
+    // `Number()` a secas convierte `true` en 1 y `[7]` en 7: un techo de UN token, aplicado en
+    // silencio, por un valor que nunca fue un número. Sólo un number, o un string que ES un número
+    // (el transporte es JSON y un emisor puede serializar de más), cuenta como declaración.
+    const n = typeof declared === 'number'
+      ? declared
+      : (typeof declared === 'string' && declared.trim() !== '' ? Number(declared) : NaN);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    console.warn(
+      `[CopyLab] builder_input.max_tokens ilegible (${JSON.stringify(declared)}, source=${JSON.stringify(builderInput.max_tokens_source ?? null)}) ` +
+      `— se aplica el default por destino. Una declaración rota NO es una declaración.`,
+    );
+  }
+  return CARRIL_DESTINATION_MAX_TOKENS[String(builderInput.destination ?? '')] ?? MAX_TOKENS_UI_DEFAULT;
 }
 
 // Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
@@ -1163,6 +1209,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   creative_seed: { vector_id: string | null; tension_id: string | null; aggro_id: string | null; };
   cache_mode: string;
   max_tokens: number;
+  max_tokens_source: string | null;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
   platform_key: string | null;
@@ -1651,6 +1698,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     },
     cache_mode: cacheMode,
     max_tokens: maxTokensFor(bi),
+    // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
+    // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
+    max_tokens_source: bi?.max_tokens_source ?? null,
     signature,
     psycho_preset: bi?.psycho_preset ?? null,
     platform_key: bi?.platform ?? null,
@@ -1946,6 +1996,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           language: built.language,
           psycho_preset: built.psycho_preset,
           platform_key: built.platform_key,
+          // G1-C — el techo que CopyLab APLICÓ de verdad, y el nivel que lo declaró. El carril ya
+          // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
+          // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar
+          // el techo sin aplicar durante toda una corrida.
+          max_tokens_applied: built.max_tokens,
+          max_tokens_source: built.max_tokens_source,
           copy_profile_id: built.copy_profile_id,
           humanize_profile_id: built.humanize_profile_id,
           rules_injected: built.rules_injected,

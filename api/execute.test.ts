@@ -279,11 +279,47 @@ async function run() {
 
   console.log('\n[pure · bloque desplegado]');
 
-  // Case 9 (pure) — techo de tokens
-  await test('9·pure maxTokensFor: editorial 4000 · social 640 · UI 1600', () => {
+  // Case 9 (pure) — techo de tokens. Sin `max_tokens` declarado el default por destino manda:
+  // ESTA es la retrocompatibilidad de G1-C, y es lo que corría antes de que el carril transportara
+  // el techo. Un emisor anterior a F1 no cambia de comportamiento.
+  await test('9·pure maxTokensFor: sin declaración, editorial 4000 · social 640 · UI 1600', () => {
     eq(PURE.maxTokensFor({ destination: 'editorial' }), 4000, 'editorial');
     eq(PURE.maxTokensFor({ destination: 'social' }), 640, 'social');
     eq(PURE.maxTokensFor(null), 1600, 'UI');
+    eq(PURE.maxTokensFor(undefined), 1600, 'UI/undefined');
+    eq(PURE.maxTokensFor({ destination: 'social', max_tokens: null }), 640, 'null explícito = nadie lo declaró');
+    eq(PURE.maxTokensFor({ destination: 'editorial', max_tokens: undefined }), 4000, 'undefined = nadie lo declaró');
+  });
+
+  // G1-C — el techo DECLARADO gana. El carril lo resuelve contra content_type_registry y lo manda en
+  // builder_input.max_tokens; CopyLab lo recibía y no lo aplicaba, y el adaptador recortaba después
+  // (medido: SocialLab entregó 809 de los 1.839 caracteres que CopyLab escribió en meta_fb, −56%).
+  await test('G1-C·pure maxTokensFor: builder_input.max_tokens declarado GANA al default por destino', () => {
+    eq(PURE.maxTokensFor({ destination: 'social', max_tokens: 1400 }), 1400, 'social con techo declarado');
+    eq(PURE.maxTokensFor({ destination: 'editorial', max_tokens: 900 }), 900, 'declarado por DEBAJO del default también gana');
+    eq(PURE.maxTokensFor({ destination: 'social', max_tokens: 4096 }), 4096, 'declarado por ENCIMA del default también gana');
+    // El techo es dato de tabla: el valor no vive en el código y el test no lo fija. Lo que se fija
+    // es que el declarado se APLIQUE — eje, no instancia.
+    for (const n of [1, 250, 640, 3000, 8192]) {
+      eq(PURE.maxTokensFor({ destination: 'social', max_tokens: n }), n, `techo ${n}`);
+    }
+  });
+
+  await test('G1-C·pure maxTokensFor: una declaración ROTA no es una declaración', () => {
+    // Un techo ilegible que se aplicara tal cual rompería la generación en silencio — el modo de
+    // fallo que este cambio viene a cerrar. Cae al default por destino y avisa.
+    for (const bad of [0, -1, NaN, Infinity, -Infinity, 'mil', '', {}, [], true, false]) {
+      eq(PURE.maxTokensFor({ destination: 'social', max_tokens: bad as any }), 640, `basura: ${JSON.stringify(bad)}`);
+    }
+    // Un string numérico SÍ es un número declarado: la columna es integer, pero el transporte es JSON
+    // y un emisor que serialice de más no merece perder el techo.
+    eq(PURE.maxTokensFor({ destination: 'social', max_tokens: '1400' as any }), 1400, 'string numérico');
+    eq(PURE.maxTokensFor({ destination: 'social', max_tokens: 1400.7 as any }), 1400, 'fraccional se trunca: max_tokens es entero');
+  });
+
+  await test('G1-C·pure maxTokensFor: el modo UI no ve el techo del carril', () => {
+    // Sin builder_input no hay carril y no hay techo declarado que aplicar: el 1600 histórico intacto.
+    eq(PURE.maxTokensFor(null), 1600, 'UI/null');
     eq(PURE.maxTokensFor(undefined), 1600, 'UI/undefined');
   });
 
@@ -829,6 +865,32 @@ async function run() {
       const so = await buildPrompt(reqWith(bctx, { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'x', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } }));
       const ui = await buildPrompt(reqWith(bctx));
       eq(ed.max_tokens, 4000, 'editorial'); eq(so.max_tokens, 640, 'social'); eq(ui.max_tokens, 1600, 'UI');
+    } finally { fx.restore(); }
+  });
+
+  // G1-C · CABLEADO. Un bloque puro impecable que nadie llama no gobierna nada (la lección de M-9 y
+  // de C1): esto verifica que el techo declarado llegue a `built.max_tokens` —el número con el que se
+  // llama a Claude— y que `max_tokens_source` viaje al meta que lee el carril.
+  await test('G1-C·techo: buildPrompt aplica builder_input.max_tokens y reporta su procedencia', async () => {
+    const fx = installFetch({});
+    try {
+      const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
+      const bi = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+
+      const declarado = await buildPrompt(reqWith(bctx, { builder_input: bi({ max_tokens: 1400, max_tokens_source: 'base_platform' }) }));
+      eq(declarado.max_tokens, 1400, 'el techo declarado llega al número con el que se llama a Claude');
+      eq(declarado.max_tokens_source, 'base_platform', 'la procedencia viaja al meta');
+
+      // `internal_default` con techo null es la forma HONESTA de "nadie lo declaró": el default por
+      // destino sigue mandando y la ausencia queda DICHA, que es lo único que la vuelve legible.
+      const sinDeclarar = await buildPrompt(reqWith(bctx, { builder_input: bi({ max_tokens: null, max_tokens_source: 'internal_default' }) }));
+      eq(sinDeclarar.max_tokens, 640, 'sin techo declarado manda el default por destino');
+      eq(sinDeclarar.max_tokens_source, 'internal_default', 'la ausencia se declara, no se calla');
+
+      // Emisor anterior a F1: no manda ninguna de las dos claves. Comportamiento intacto.
+      const preF1 = await buildPrompt(reqWith(bctx, { builder_input: bi({}) }));
+      eq(preF1.max_tokens, 640, 'emisor sin las claves ⇒ comportamiento de antes de G1-C');
+      eq(preF1.max_tokens_source, null, 'sin procedencia declarada, null — no se inventa un nivel');
     } finally { fx.restore(); }
   });
 
