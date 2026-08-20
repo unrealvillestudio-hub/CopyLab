@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -892,6 +892,112 @@ async function run() {
       eq(preF1.max_tokens, 640, 'emisor sin las claves ⇒ comportamiento de antes de G1-C');
       eq(preF1.max_tokens_source, null, 'sin procedencia declarada, null — no se inventa un nivel');
     } finally { fx.restore(); }
+  });
+
+  // ── G2-C · la política de CTA por frente, con claves canónicas ─────────────
+  // El defecto que reparan: `intel.brand_topics.audience_frame` migró al eje canónico
+  // (decide/influye) y el mapa de CopyLab se quedó en el legacy (jd/doliente) resolviendo con
+  // `?? ''`. Cada pieza con frente declarado recibía "POLÍTICA DE CTA [audiencia: influye]:" y
+  // NADA debajo, mientras gate7 la juzgaba contra la regla completa. Estos tests fijan las dos
+  // mitades: que la política tenga CUERPO, y que un frente que el mapa no cubre no vuelva a
+  // pasar en silencio.
+  const AF_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
+  const afBI = (frame: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: frame });
+  // Devuelve el cuerpo de la política emitida (lo que va DEBAJO del encabezado), o null si no
+  // se emitió bloque. Es la aserción que el `?? ''` de main no pasa: el encabezado existía.
+  function ctaBody(system: string): string | null {
+    const at = system.indexOf('POLÍTICA DE CTA [audiencia: ');
+    if (at === -1) return null;
+    const nl = system.indexOf('\n', at);
+    const end = system.indexOf('\n\n---\n\n', nl);
+    return system.slice(nl + 1, end === -1 ? undefined : end).trim();
+  }
+
+  await test('G2-C·canónicos: decide/influye/general emiten el bloque CON política debajo', async () => {
+    const fx = installFetch({});
+    try {
+      for (const frame of ['decide', 'influye', 'general']) {
+        const built = await buildPrompt(reqWith(AF_BCTX, { builder_input: afBI(frame) }));
+        assert(built.system.includes(`POLÍTICA DE CTA [audiencia: ${frame}]:`), `${frame}: falta el encabezado`);
+        const body = ctaBody(built.system);
+        assert(!!body && body.length > 40, `${frame}: encabezado SIN política debajo (el defecto de main) — obtenido ${JSON.stringify(body)}`);
+        eq(built.audience_cta_applied, frame, `${frame}: builder_meta.audience_cta_applied`);
+      }
+    } finally { fx.restore(); }
+  });
+
+  // La semántica NUEVA, no la legacy: 'influye' prohíbe el CTA de contratación (el legado
+  // 'doliente' lo PEDÍA, en versión empática). Si alguien repone el alias, esto cae.
+  await test('G2-C·semántica: influye PROHÍBE el CTA de contratación; decide lo permite', async () => {
+    const fx = installFetch({});
+    try {
+      const inf = ctaBody((await buildPrompt(reqWith(AF_BCTX, { builder_input: afBI('influye') }))).system) ?? '';
+      assert(/PROHIBIDO/.test(inf), 'influye: la política tiene que prohibir, no matizar');
+      assert(/EXIGIR|exigencia/.test(inf), 'influye: el cierre válido es una exigencia donde el lector sí tiene poder');
+      assert(!/momento sensible|empátic/i.test(inf), 'influye NO puede traer el texto emocional del eje legacy (doliente)');
+      const dec = ctaBody((await buildPrompt(reqWith(AF_BCTX, { builder_input: afBI('decide') }))).system) ?? '';
+      assert(/PUEDE/.test(dec) && /contrat/i.test(dec), 'decide: el cierre puede pedir que contrate');
+    } finally { fx.restore(); }
+  });
+
+  await test('G2-C·null: sin frente declarado NO se emite bloque (ausencia declarada)', async () => {
+    const fx = installFetch({});
+    try {
+      const built = await buildPrompt(reqWith(AF_BCTX, { builder_input: afBI(null) }));
+      assert(!built.system.includes('POLÍTICA DE CTA'), 'sin frente no se emite el encabezado');
+      eq(built.audience_cta_applied, 'none', "el 'none' se DICE: una ausencia muda no se puede leer");
+    } finally { fx.restore(); }
+  });
+
+  await test('G2-C·desconocido: frente no nulo que no resuelve → AUDIENCE_FRAME_UNKNOWN, no bloque vacío', async () => {
+    const fx = installFetch({});
+    try {
+      await assertThrows(
+        () => buildPrompt(reqWith(AF_BCTX, { builder_input: afBI('propietario') })),
+        'AUDIENCE_FRAME_UNKNOWN: propietario',
+      );
+    } finally { fx.restore(); }
+  });
+
+  await test('G2-C·legacy: jd y doliente LANZAN — no hay alias que los resuelva en silencio', async () => {
+    const fx = installFetch({});
+    try {
+      await assertThrows(() => buildPrompt(reqWith(AF_BCTX, { builder_input: afBI('jd') })), 'AUDIENCE_FRAME_UNKNOWN: jd');
+      await assertThrows(() => buildPrompt(reqWith(AF_BCTX, { builder_input: afBI('doliente') })), 'AUDIENCE_FRAME_UNKNOWN: doliente');
+    } finally { fx.restore(); }
+  });
+
+  // El eco tiene que LLEGAR al meta que el carril escribe en builder_meta — un campo impecable
+  // en buildPrompt que la respuesta no lleva no registra nada (la lección de max_tokens_applied).
+  await test('G2-C·cableado: meta.audience_cta_applied viaja en la respuesta del carril', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      for (const [frame, esperado] of [['influye', 'influye'], [null, 'none']] as Array<[any, string]>) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(AF_BCTX, { builder_input: afBI(frame) }) } as any, r as any);
+        eq(r._out._status, 200, `${esperado}: HTTP 200`);
+        eq(r._out._json.meta.audience_cta_applied, esperado, `${esperado}: meta.audience_cta_applied`);
+      }
+    } finally { fx.restore(); }
+  });
+
+  await test('G2-C·pure resolveAudienceCta — 3 frentes + none, y el throw nominal', () => {
+    eq(PURE.resolveAudienceCta(null).key, 'none', 'null → none');
+    eq(PURE.resolveAudienceCta(null).block, null, 'null → sin bloque');
+    eq(PURE.resolveAudienceCta('   ').key, 'none', 'vacío → none');
+    for (const frame of ['decide', 'influye', 'general']) {
+      const r = PURE.resolveAudienceCta(frame);
+      eq(r.key, frame, `${frame}: key`);
+      assert(String(r.block).startsWith(`POLÍTICA DE CTA [audiencia: ${frame}]:\n`), `${frame}: encabezado`);
+      assert(String(r.block).split('\n').slice(1).join('\n').trim().length > 40, `${frame}: política con cuerpo`);
+    }
+    // Normaliza como gate7 (trim + lowercase): la frontera no inventa un desconocido por mayúsculas.
+    eq(PURE.resolveAudienceCta('  Decide ').key, 'decide', 'trim + lowercase');
+    // Y no hay alias legacy: el mapa tiene exactamente los tres frentes canónicos.
+    assert(Object.keys(PURE.AUDIENCE_CTA).sort().join(',') === 'decide,general,influye', 'el mapa son los 3 canónicos, sin jd/doliente');
+    let lanzo = '';
+    try { PURE.resolveAudienceCta('doliente'); } catch (e) { lanzo = e instanceof Error ? e.message : String(e); }
+    eq(lanzo, 'AUDIENCE_FRAME_UNKNOWN: doliente', 'error nominal con el valor recibido');
   });
 
   // ── Cambio 1 + 2 · integración del registro y la precedencia por voz ────────

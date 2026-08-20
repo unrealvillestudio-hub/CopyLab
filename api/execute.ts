@@ -3,6 +3,16 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * G2-C (2026-08-20) — la política de CTA por frente vuelve a tener texto: `AUDIENCE_CTA` pasa a las
+ *   claves canónicas (`decide` | `influye` | `general`), redactadas desde la semántica NUEVA —poder
+ *   del lector sobre la contratación, no estado emocional— como espejo en modo escritura de la regla
+ *   con la que gate7 juzga el cierre. Los topics habían migrado al eje canónico y el mapa se quedó en
+ *   el legacy resolviendo con `?? ''`: cada pieza con frente declarado recibía el encabezado
+ *   "POLÍTICA DE CTA [audiencia: …]:" y NADA debajo. Sin alias `jd`/`doliente` a propósito (reponerlos
+ *   pediría el CTA que el juez rechaza). Un frente no nulo que no resuelve ahora corta el request con
+ *   `AUDIENCE_FRAME_UNKNOWN: <valor>`; `null` sigue siendo ausencia legítima, sin bloque. `builder_meta`
+ *   gana `audience_cta_applied` — sin el eco, la próxima migración del eje vuelve a ser invisible.
+ *
  * D2 (2026-08-18) — la regla que se le da al ESCRITOR deja de ser la del JUEZ:
  *   `builder_input.rules[].instruction` es la misma regla en modo escritura, y el bloque de reglas
  *   usa `instruction ?? statement`. El fallback es lo que permite desplegarlo hoy: 58 de 62 reglas
@@ -155,7 +165,11 @@ interface BuilderInput {
   rules: Array<{ code: string; kind: string; statement: string; instruction?: string | null }>;
   iid_brief: string;
   angle: string | null;
-  audience_frame: 'jd' | 'doliente' | 'general' | null;
+  // G2-C (2026-08-20) — el eje CANÓNICO del frente de audiencia: cuánto PODER tiene el lector
+  // sobre la contratación. Reemplaza a 'jd' | 'doliente', que leían el frente como estado
+  // emocional y que la DB ya no manda (los topics migraron al eje nuevo). Sin alias legacy a
+  // propósito — ver AUDIENCE_CTA. `null` = frente no declarado: legítimo, no emite bloque.
+  audience_frame: AudienceFrame | null;
   // A1 · CAMBIO 8 — la 12ª clave del contrato: las CIFRAS con procedencia, tal cual viajan desde
   // intel.iid_findings.claims. Cada entrada ata un dato numérico a la URL que lo sostiene. Opcional
   // a propósito: un emisor que no la manda (UI, carril viejo, fila sin claims) deja el prompt
@@ -669,6 +683,69 @@ function buildWritingMaterialBlock(
     parts.push(`CASOS PARA ILUSTRAR (${casos.length}):\n${lista}\n\n${comoUsarlos}`);
   }
   return parts.length ? parts.join('\n\n') : null;
+}
+
+// ── G2-C · la política de CTA según el frente de audiencia ──────────────────
+// `audience_frame` declara cuánto PODER tiene el lector sobre la contratación — no en qué estado
+// de ánimo está. Estas tres políticas son el espejo en modo ESCRITURA de la regla con la que el
+// juez evalúa el cierre (gate7 / AUDIENCE_FRAME_RULES de content-watcher): el patrón que D2 ya
+// estableció —una redacción para quien JUZGA, otra para quien ESCRIBE, la misma regla—, aplicado
+// a un mapa que todavía es código y no tabla.
+//
+// NO hay alias del eje legacy (`jd`→`decide`, `doliente`→`influye`), y su ausencia es la decisión,
+// no un olvido: la semántica cambió de raíz. `doliente` le pedía al escritor un "CTA empático, la
+// audiencia está en un momento sensible"; `influye` prohíbe TODO CTA de contratación. Reponer el
+// alias restauraría el texto que le pide al escritor exactamente el cierre que el juez rechaza —
+// peor que el bloque vacío que este cambio repara.
+//
+// Ningún nombre de marca ni vocabulario de una jurisdicción: el eje es funcional (poder de decisión
+// del lector) y describe a cualquier marca de servicios. La instancia —qué frente tiene cada topic—
+// vive en el dato (`intel.brand_topics.audience_frame`), no acá.
+type AudienceFrame = 'decide' | 'influye' | 'general';
+// Lo que se REPORTA: los tres frentes más 'none' (frente no declarado). No hay cuarto valor:
+// un frente que no resuelve no llega a reportarse, corta el request.
+type AudienceCtaApplied = AudienceFrame | 'none';
+const AUDIENCE_CTA: Record<AudienceFrame, string> = {
+  decide:
+    'El lector DECIDE y FIRMA: puede contratar o comprar y responde por esa decisión. El cierre PUEDE'
+    + ' pedirle que contrate —contactar, agendar, pedir una propuesta— en el registro de la voz y sin'
+    + ' fórmula publicitaria. No es obligatorio: si la pieza cierra mejor sin pedido, cerrá sin pedido.'
+    + ' Su ausencia no es fallo; lo que sí es fallo es un pedido pegado que la pieza no se ganó.',
+  influye:
+    'El lector NO FIRMA ni contrata: no toma la decisión de compra — la padece o la condiciona.'
+    + ' PROHIBIDO todo CTA de contratación, en cualquier formulación, incluida la indirecta o sugerida'
+    + ' (contactar, agendar, cotizar, contratar, "nuestros servicios", "estamos para ayudarte").'
+    + ' Ofrecerle comprar a quien no puede comprar es fallo del frente. El único cierre válido es lo'
+    + ' que ese lector debe EXIGIR o recomendar donde sí tiene poder: ante quien decide, en la'
+    + ' instancia que decide, con su voto o dentro de su ámbito. Cerrá dándole esa exigencia formulada,'
+    + ' no una invitación a comprar.',
+  general:
+    'Audiencia MIXTA: entre tus lectores hay quien firma y quien no, y la pieza no sabe cuál la está'
+    + ' leyendo. Sin CTA de contratación directo — no le pidas al lector un paso que la mitad no puede'
+    + ' dar. El cierre convierte ENTREGANDO: la respuesta completa a lo que la pieza abrió, clara y'
+    + ' orientada al resultado. La conversión está en la respuesta, no en el pedido.',
+};
+
+// Resuelve el frente a su política. Tres salidas, ninguna muda:
+//   • frente vacío / null → { key: 'none', block: null } — ausencia DECLARADA: sin frente no hay
+//     política, y sin política no se emite el encabezado.
+//   • frente conocido     → { key, block } — encabezado + política, siempre CON cuerpo debajo.
+//   • frente desconocido  → throw `AUDIENCE_FRAME_UNKNOWN: <valor>`. Lo que había antes era un
+//     `?? ''`: emitía "POLÍTICA DE CTA [audiencia: influye]:" y nada debajo — una sección que
+//     anuncia contenido y no lo entrega, mientras el juez evalúa contra la regla completa. Un
+//     frente que el mapa no cubre es un error de contrato entre el carril y CopyLab, y tiene que
+//     doler acá, no aguas abajo en el veredicto.
+// Normaliza igual que gate7 (trim + lowercase) para que la frontera no invente un desconocido por
+// diferencia de capitalización; el valor que reporta el error es el que llegó.
+function resolveAudienceCta(frame: string | null | undefined): { key: AudienceCtaApplied; block: string | null } {
+  const raw = String(frame ?? '').trim();
+  if (!raw) return { key: 'none', block: null };
+  const norm = raw.toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(AUDIENCE_CTA, norm)) {
+    throw new Error(`AUDIENCE_FRAME_UNKNOWN: ${raw}`);
+  }
+  const key = norm as AudienceFrame;
+  return { key, block: `POLÍTICA DE CTA [audiencia: ${key}]:\n${AUDIENCE_CTA[key]}` };
 }
 
 // ── Cambio 2 · precedencia por voz en la compatibilidad ─────────────────────
@@ -1210,6 +1287,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   cache_mode: string;
   max_tokens: number;
   max_tokens_source: string | null;
+  audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
   platform_key: string | null;
@@ -1494,15 +1572,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // C1 — mecanismo + caso concreto: el material de escritura. Ausentes → null → sin bloque.
   const writingMaterialBlock = buildWritingMaterialBlock(bi?.mechanism, bi?.case_examples ?? bi?.case_example);
 
-  // audience_frame → política de CTA (C.3). Ausente → bloque vacío (legítimo).
-  const AUDIENCE_CTA: Record<string, string> = {
-    jd: 'CTA orientado a la decisión de compra directa (quien decide). Claro y sin rodeos.',
-    doliente: 'CTA empático, de acompañamiento — la audiencia está en un momento sensible; invita sin presionar ni urgir.',
-    general: 'CTA de conversión estándar, claro y orientado al resultado.',
-  };
-  const audienceCtaBlock = bi?.audience_frame
-    ? `POLÍTICA DE CTA [audiencia: ${bi.audience_frame}]:\n${AUDIENCE_CTA[bi.audience_frame] ?? ''}`
-    : null;
+  // audience_frame → política de CTA (C.3 · G2-C). Sin frente declarado no hay bloque; un frente
+  // que el mapa no cubre corta el request con nombre propio (AUDIENCE_FRAME_UNKNOWN) en vez de
+  // emitir el encabezado con la política vacía debajo.
+  const { key: audienceCtaApplied, block: audienceCtaBlock } = resolveAudienceCta(bi?.audience_frame);
 
   // signature — surfaced, NUNCA estampada (§4.3). Se estampa en el carril
   // (finalizePiece) DESPUÉS del PASS del Watcher.
@@ -1701,6 +1774,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
+    // G2-C — QUÉ política de CTA se aplicó de verdad ('none' = frente no declarado). Misma lección
+    // que max_tokens_applied: sin el eco, la próxima migración del eje vuelve a ser invisible.
+    audience_cta_applied: audienceCtaApplied,
     signature,
     psycho_preset: bi?.psycho_preset ?? null,
     platform_key: bi?.platform ?? null,
@@ -2002,6 +2078,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // el techo sin aplicar durante toda una corrida.
           max_tokens_applied: built.max_tokens,
           max_tokens_source: built.max_tokens_source,
+          // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
+          // 'decide' | 'influye' | 'general' | 'none'.
+          audience_cta_applied: built.audience_cta_applied,
           copy_profile_id: built.copy_profile_id,
           humanize_profile_id: built.humanize_profile_id,
           rules_injected: built.rules_injected,
