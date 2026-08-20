@@ -3,6 +3,18 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * G1-D (2026-08-20) — el presupuesto de longitud se le dice al ESCRITOR, no sólo a la API. G1-C
+ *   hizo que el techo declarado se aplicara y destapó la mitad que faltaba: medido sobre 48 piezas,
+ *   meta_fb cayó de 1.839 a 953 caracteres promedio (los 320 tokens exactos) y las truncadas a media
+ *   frase SUBIERON de 26/48 a 34/48, con HR-GEN-01 de 19% a 40%. El escritor no conocía su
+ *   presupuesto: planificaba su largo natural y la API lo cortaba donde cayera el token. Tres piezas:
+ *   `buildLengthBudgetBlock` (puro) inyecta el presupuesto en CARACTERES (techo × 3, ratio empírico
+ *   de esa corrida, redondeado a la centena) con instrucción constructiva —si no entra se achica el
+ *   ALCANCE, nunca el cierre—; el max_tokens de la API pasa a `ceil(declarado × 1,2)` sólo cuando hay
+ *   techo declarado, para ser red de seguridad y no guillotina; y `builder_meta` gana
+ *   `length_budget_chars` junto al `max_tokens_applied` existente. Sin techo declarado no hay bloque
+ *   ni margen: modo UI y emisores anteriores a F1 quedan byte-idénticos.
+ *
  * G2-C (2026-08-20) — la política de CTA por frente vuelve a tener texto: `AUDIENCE_CTA` pasa a las
  *   claves canónicas (`decide` | `influye` | `general`), redactadas desde la semántica NUEVA —poder
  *   del lector sobre la contratación, no estado emocional— como espejo en modo escritura de la regla
@@ -462,28 +474,108 @@ function selectHumanize(rows: any[] | null | undefined, brandId: string): any | 
 // vive acá es que el techo declarado se aplique — eje, no instancia.
 const CARRIL_DESTINATION_MAX_TOKENS: Record<string, number> = { editorial: 4000, social: 640 };
 const MAX_TOKENS_UI_DEFAULT = 1600;
+// G1-D — el lector del techo declarado, SILENCIOSO y en un solo lugar. Tres cifras salen del
+// mismo valor (el techo con el que se planifica, el presupuesto que se le dice al escritor y el
+// max_tokens que se le manda a la API) y derivarlo tres veces es como se desincronizan. El aviso
+// de una declaración rota lo emite `maxTokensFor`, que es quien decide el techo: avisar tres
+// veces del mismo valor roto es ruido, no observabilidad.
+// `max_tokens` entra como `unknown` a propósito: el CONTRATO lo declara `number | null`
+// (interface BuilderInput) pero lo que llega es JSON de la red, y esta función es justamente la
+// que decide si ese valor es una declaración. Tiparlo `number` acá sería asumir lo que se valida.
+function readDeclaredMaxTokens(declared: unknown): number | null {
+  if (declared === null || declared === undefined) return null;
+  // `Number()` a secas convierte `true` en 1 y `[7]` en 7: un techo de UN token, aplicado en
+  // silencio, por un valor que nunca fue un número. Sólo un number, o un string que ES un número
+  // (el transporte es JSON y un emisor puede serializar de más), cuenta como declaración.
+  const n = typeof declared === 'number'
+    ? declared
+    : (typeof declared === 'string' && declared.trim() !== '' ? Number(declared) : NaN);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+// El techo con el que se PLANIFICA la pieza: el declarado si lo hay, el default por destino si no.
+// Contrato intacto desde G1-C — G1-D no cambia ni un número acá.
 function maxTokensFor(
-  // `max_tokens` entra como `unknown` a propósito: el CONTRATO lo declara `number | null`
-  // (interface BuilderInput) pero lo que llega es JSON de la red, y esta función es justamente la
-  // que decide si ese valor es una declaración. Tiparlo `number` acá sería asumir lo que se valida.
   builderInput: { destination?: string; max_tokens?: unknown; max_tokens_source?: string | null } | null | undefined,
 ): number {
   if (!builderInput) return MAX_TOKENS_UI_DEFAULT;
   const declared = builderInput.max_tokens;
   if (declared !== null && declared !== undefined) {
-    // `Number()` a secas convierte `true` en 1 y `[7]` en 7: un techo de UN token, aplicado en
-    // silencio, por un valor que nunca fue un número. Sólo un number, o un string que ES un número
-    // (el transporte es JSON y un emisor puede serializar de más), cuenta como declaración.
-    const n = typeof declared === 'number'
-      ? declared
-      : (typeof declared === 'string' && declared.trim() !== '' ? Number(declared) : NaN);
-    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    const n = readDeclaredMaxTokens(declared);
+    if (n !== null) return n;
     console.warn(
       `[CopyLab] builder_input.max_tokens ilegible (${JSON.stringify(declared)}, source=${JSON.stringify(builderInput.max_tokens_source ?? null)}) ` +
       `— se aplica el default por destino. Una declaración rota NO es una declaración.`,
     );
   }
   return CARRIL_DESTINATION_MAX_TOKENS[String(builderInput.destination ?? '')] ?? MAX_TOKENS_UI_DEFAULT;
+}
+
+// ── G1-D · el presupuesto de longitud se le DICE al escritor ─────────────────
+// EL HALLAZGO, medido en la corrida de 48 piezas del 20-ago (post G1-B/G1-C, mismos briefs que
+// la línea base del 19). G1-C hizo su trabajo y destapó la mitad que faltaba:
+//   · meta_fb pasó de 1.839/2.068 caracteres (promedio/máx) a 953/1.045 — los 320 tokens exactos.
+//   · truncadas a media frase: 26/48 → 34/48 (meta_ig 16/16, meta_fb 15/16).
+//   · HR-GEN-01 (cierre completo, la regla del cierre): 19% → 40% de fallo.
+//   · piezas limpias de toda regla: 18/48 → 2/48.
+// El techo declarado ahora se aplica — como GUILLOTINA. El escritor no conoce su presupuesto:
+// planifica su largo natural (~1.800 chars para este prompt) y la API lo corta donde caiga el
+// token 320. La tesis de G1-C era "una pieza ESCRITA corta cierra bien; una pieza larga RECORTADA
+// no", y G1-C implementó el corte sin implementar lo que hace que la pieza se escriba corta. Es
+// el patrón que este archivo ya documenta en A1 y C1: darle al modelo la orden sin darle el
+// material — acá, darle el corte sin darle el número. LinkedIn lo confirma por contraste: su
+// largo natural cabe en 700 tokens y truncó sólo 3/16.
+//
+// El ratio es EMPÍRICO, no teórico: 320 tokens rindieron 1.045 caracteres medidos (≈3,27) en
+// español con este modelo. Se usa 3 —por debajo de lo medido— para que el presupuesto entre
+// holgado en el techo. Es propiedad del modelo del ecosistema, no de una marca.
+const LENGTH_BUDGET_CHARS_PER_TOKEN = 3;
+// Redondeo a la centena: un "1.045 caracteres" invita a perseguir un número falso-preciso; un
+// "1.000 caracteres" se lee como lo que es, un presupuesto.
+const LENGTH_BUDGET_ROUND_TO = 100;
+// Piso: un techo diminuto no puede producir un presupuesto de 0 caracteres, que sería una orden
+// imposible en vez de un presupuesto.
+const LENGTH_BUDGET_MIN_CHARS = 100;
+// Margen de la API sobre el techo declarado. Con el escritor auto-limitándose por el bloque, la
+// API deja de ser el mecanismo de corte y pasa a ser RED DE SEGURIDAD: el 20% absorbe la varianza
+// del tokenizador para que una pieza bien planificada no muera a dos palabras del final. La pieza
+// corta la garantiza el prompt, no la tijera.
+const LENGTH_BUDGET_API_MARGIN = 1.2;
+
+// El presupuesto en caracteres que se le DICE al escritor. `null` (nadie declaró techo) → null:
+// sin número no hay presupuesto que comunicar, y el prompt queda byte-idéntico al de hoy.
+function lengthBudgetCharsFor(declaredMaxTokens: number | null | undefined): number | null {
+  if (declaredMaxTokens === null || declaredMaxTokens === undefined) return null;
+  const raw = declaredMaxTokens * LENGTH_BUDGET_CHARS_PER_TOKEN;
+  return Math.max(LENGTH_BUDGET_MIN_CHARS, Math.round(raw / LENGTH_BUDGET_ROUND_TO) * LENGTH_BUDGET_ROUND_TO);
+}
+
+// El bloque para el prompt. Instrucción CONSTRUCTIVA, no una prohibición más: dice cuánto espacio
+// hay y qué sacrificar cuando no alcanza (el ALCANCE, nunca el cierre). Sin nombrar plataformas ni
+// marcas — el número llega como dato, el bloque es motor.
+function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): string | null {
+  const chars = lengthBudgetCharsFor(declaredMaxTokens);
+  if (chars === null) return null;
+  return `## PRESUPUESTO DE LONGITUD\n`
+    + `Escribí la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
+    + ' alcanzar ni un límite del que convenga quedarse lejos: es el espacio TOTAL que tenés,'
+    + ' cierre incluido.\n\n'
+    + 'Planificá antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
+    + ' Si el material no entra, achicá el ALCANCE —un caso en vez de dos, un ángulo en vez de'
+    + ' tres, una idea desarrollada en vez de tres enunciadas—, nunca el cierre ni la última'
+    + ' frase. Una pieza que termina a media frase es el fallo que este presupuesto existe para'
+    + ' impedir: vale más decir menos y cerrarlo, que decirlo todo y quedar cortado.';
+}
+
+// El max_tokens que se le manda a la API. Con techo declarado, el declarado + margen (red de
+// seguridad, no guillotina). Sin techo declarado —default por destino o modo UI— el número exacto
+// de siempre: el margen sólo tiene sentido cuando el escritor recibió un presupuesto que respetar.
+function apiMaxTokensFor(
+  builderInput: { destination?: string; max_tokens?: unknown; max_tokens_source?: string | null } | null | undefined,
+): number {
+  const declared = readDeclaredMaxTokens(builderInput?.max_tokens);
+  if (declared === null) return maxTokensFor(builderInput);
+  return Math.ceil(declared * LENGTH_BUDGET_API_MARGIN);
 }
 
 // Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
@@ -1287,6 +1379,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   cache_mode: string;
   max_tokens: number;
   max_tokens_source: string | null;
+  length_budget_chars: number | null;
   audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
@@ -1693,6 +1786,15 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
   // ── FORMA DE SALIDA (último bloque antes de la instrucción) ────────────────
+  // G1-D — cuánto ESPACIO tiene la pieza es forma de salida, igual que el template: va en esta
+  // banda, no entre las restricciones. Antes del template a propósito — el template cierra las
+  // capas, como dice la línea de abajo. Sin techo declarado no hay bloque y el prompt queda
+  // byte-idéntico al de hoy (modo UI y emisores anteriores a F1, intactos).
+  const declaredCeiling = readDeclaredMaxTokens(bi?.max_tokens);
+  const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling);
+  const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
+  if (lengthBudgetBlock) layers.push(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
+
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
   let templateVarsUnresolved: string[] = [];
@@ -1770,10 +1872,17 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
       aggro_id: aggro?.id ?? null,
     },
     cache_mode: cacheMode,
-    max_tokens: maxTokensFor(bi),
+    // G1-D — lo que se le manda a la API: el techo declarado CON margen (red de seguridad), o el
+    // default por destino exacto si nadie declaró. La pieza corta la garantiza el PRESUPUESTO del
+    // prompt; esto es lo que evita que una pieza bien planificada muera a dos palabras del final.
+    max_tokens: apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
+    // G1-D — el presupuesto que se le DIJO al escritor, en caracteres. `null` = no se le dijo nada.
+    // Sin los DOS números (este y max_tokens_applied) la próxima medición no puede distinguir "el
+    // escritor ignoró el presupuesto" de "la API lo cortó igual" — la lección de esta corrida.
+    length_budget_chars: lengthBudgetChars,
     // G2-C — QUÉ política de CTA se aplicó de verdad ('none' = frente no declarado). Misma lección
     // que max_tokens_applied: sin el eco, la próxima migración del eje vuelve a ser invisible.
     audience_cta_applied: audienceCtaApplied,
@@ -2053,7 +2162,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
@@ -2076,8 +2185,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
           // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar
           // el techo sin aplicar durante toda una corrida.
+          // G1-D — desde ahora este número es el que se le mandó a la API: el declarado CON margen
+          // (ceil × 1,2) cuando hay techo declarado, el default por destino exacto cuando no.
           max_tokens_applied: built.max_tokens,
           max_tokens_source: built.max_tokens_source,
+          // G1-D — el presupuesto en caracteres que recibió el escritor, al lado del techo que se
+          // le mandó a la API. Los dos juntos, o la próxima corrida no se puede leer.
+          length_budget_chars: built.length_budget_chars,
           // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
           // 'decide' | 'influye' | 'general' | 'none'.
           audience_cta_applied: built.audience_cta_applied,
