@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -877,8 +877,11 @@ async function run() {
       const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
       const bi = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
 
+      // G1-D — el techo declarado sigue mandando, pero a la API va CON margen: ceil(1400 × 1,2).
+      // La pieza corta la garantiza el PRESUPUESTO del prompt; la API es red de seguridad, no
+      // guillotina. Lo que se fija acá es que el declarado gobierne el número, no el default (640).
       const declarado = await buildPrompt(reqWith(bctx, { builder_input: bi({ max_tokens: 1400, max_tokens_source: 'base_platform' }) }));
-      eq(declarado.max_tokens, 1400, 'el techo declarado llega al número con el que se llama a Claude');
+      eq(declarado.max_tokens, 1680, 'el techo declarado gobierna el número con el que se llama a Claude (con margen G1-D)');
       eq(declarado.max_tokens_source, 'base_platform', 'la procedencia viaja al meta');
 
       // `internal_default` con techo null es la forma HONESTA de "nadie lo declaró": el default por
@@ -891,6 +894,97 @@ async function run() {
       const preF1 = await buildPrompt(reqWith(bctx, { builder_input: bi({}) }));
       eq(preF1.max_tokens, 640, 'emisor sin las claves ⇒ comportamiento de antes de G1-C');
       eq(preF1.max_tokens_source, null, 'sin procedencia declarada, null — no se inventa un nivel');
+    } finally { fx.restore(); }
+  });
+
+  // ── G1-D · el presupuesto de longitud se le DICE al escritor ───────────────
+  // El defecto que reparan: G1-C hizo que el techo declarado se aplicara y el escritor siguió sin
+  // conocerlo. Medido sobre 48 piezas — meta_fb de 1.839 a 953 caracteres promedio (los 320 tokens
+  // exactos) y las truncadas a media frase SUBIENDO de 26/48 a 34/48. El techo actuaba de
+  // guillotina. Estos tests fijan las tres mitades: que el presupuesto EXISTA en el prompt, que la
+  // API deje de ser el mecanismo de corte, y que los dos números queden registrados.
+  const LB_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
+  const lbBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+
+  await test('G1-D·pure lengthBudgetCharsFor: techo × 3, redondeado a la centena; null → null', () => {
+    // El ratio es dato del MODELO (≈3,27 medidos: 320 tokens → 1.045 chars), no de una marca, y se
+    // usa 3 —por debajo de lo medido— para que el presupuesto entre holgado en el techo.
+    eq(PURE.lengthBudgetCharsFor(320), 1000, '320 × 3 = 960 → 1.000');
+    eq(PURE.lengthBudgetCharsFor(500), 1500, '500 × 3 = 1.500');
+    eq(PURE.lengthBudgetCharsFor(700), 2100, '700 × 3 = 2.100');
+    eq(PURE.lengthBudgetCharsFor(4000), 12000, 'editorial');
+    eq(PURE.lengthBudgetCharsFor(null), null, 'sin techo declarado no hay presupuesto que comunicar');
+    eq(PURE.lengthBudgetCharsFor(undefined), null, 'undefined idem');
+    // Un techo diminuto no puede producir una orden imposible (0 caracteres).
+    eq(PURE.lengthBudgetCharsFor(1), 100, 'piso de 100 chars');
+  });
+
+  await test('G1-D·pure buildLengthBudgetBlock: con techo el bloque trae el número y qué sacrificar; sin techo, null', () => {
+    eq(PURE.buildLengthBudgetBlock(null), null, 'sin techo declarado → sin bloque (prompt byte-idéntico)');
+    eq(PURE.buildLengthBudgetBlock(undefined), null, 'undefined idem');
+    const b = String(PURE.buildLengthBudgetBlock(320));
+    assert(b.includes('## PRESUPUESTO DE LONGITUD'), 'encabezado');
+    assert(b.includes('1000 caracteres'), 'el número del presupuesto, no el de tokens');
+    assert(!b.includes('320'), 'al escritor no se le habla en tokens');
+    assert(/CIERRE|cierre/.test(b), 'el cierre entra en el presupuesto');
+    assert(/ALCANCE/.test(b), 'lo que se achica es el alcance, no el cierre');
+    assert(/media frase/.test(b), 'nombra el fallo que viene a impedir');
+    // Motor, no caso: ninguna plataforma ni marca en el bloque.
+    for (const nombre of ['meta_fb', 'meta_ig', 'linkedin', 'ForumPHs', 'NeuroneSCF', 'LucienSael']) {
+      assert(!b.includes(nombre), `el bloque no nombra ${nombre}`);
+    }
+  });
+
+  await test('G1-D·pure apiMaxTokensFor: con techo declarado, margen; sin techo, el default exacto', () => {
+    eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 320 }), 384, 'ceil(320 × 1,2)');
+    eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 500 }), 600, 'ceil(500 × 1,2)');
+    eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 700 }), 840, 'ceil(700 × 1,2)');
+    eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 1001 }), 1202, 'ceil, no round: 1201,2 → 1202');
+    // Sin techo declarado el margen NO aplica: el default por destino y el modo UI, exactos.
+    eq(PURE.apiMaxTokensFor({ destination: 'social' }), 640, 'default social exacto');
+    eq(PURE.apiMaxTokensFor({ destination: 'editorial', max_tokens: null }), 4000, 'default editorial exacto');
+    eq(PURE.apiMaxTokensFor(null), 1600, 'modo UI exacto');
+    // Una declaración ROTA tampoco gana margen: cae al default, como en G1-C.
+    const realWarn = console.warn; console.warn = () => {};
+    try { eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 'mil' }), 640, 'declaración rota → default exacto'); }
+    finally { console.warn = realWarn; }
+  });
+
+  // CABLEADO. Un bloque puro impecable que nadie llama no gobierna nada: esto verifica que el
+  // presupuesto llegue al PROMPT y que los dos números lleguen al meta que lee el carril.
+  await test('G1-D·cableado: el prompt trae el presupuesto y el meta trae los dos números', async () => {
+    const fx = installFetch({});
+    try {
+      const conTecho = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: 320, max_tokens_source: 'base_platform' }) }));
+      assert(conTecho.system.includes('## PRESUPUESTO DE LONGITUD'), 'el bloque llega al prompt');
+      assert(conTecho.system.includes('1000 caracteres'), 'con el número derivado del techo');
+      eq(conTecho.length_budget_chars, 1000, 'el eco del presupuesto');
+      eq(conTecho.max_tokens, 384, 'a la API va el techo con margen');
+
+      // Sin techo declarado: ni bloque ni margen. Prompt y número byte-idénticos a antes de G1-D.
+      const sinTecho = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: null, max_tokens_source: 'internal_default' }) }));
+      assert(!sinTecho.system.includes('PRESUPUESTO DE LONGITUD'), 'sin techo no se emite bloque');
+      eq(sinTecho.length_budget_chars, null, 'sin presupuesto que comunicar, null');
+      eq(sinTecho.max_tokens, 640, 'el default por destino, exacto — el margen no aplica');
+
+      // Modo UI: ni se entera.
+      const ui = await buildPrompt(reqWith(LB_BCTX));
+      assert(!ui.system.includes('PRESUPUESTO DE LONGITUD'), 'el modo UI no ve el presupuesto del carril');
+      eq(ui.length_budget_chars, null, 'UI sin presupuesto');
+      eq(ui.max_tokens, 1600, 'UI 1600 exacto');
+    } finally { fx.restore(); }
+  });
+
+  await test('G1-D·cableado: max_tokens de la API y length_budget_chars viajan en el meta del carril', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: 320, max_tokens_source: 'base_platform' }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.meta.length_budget_chars, 1000, 'meta.length_budget_chars — lo que se le DIJO al escritor');
+      eq(r._out._json.meta.max_tokens_applied, 384, 'meta.max_tokens_applied — lo que se le mandó a la API');
+      // Y el número que se le mandó a la API es el que la API RECIBIÓ: sin esto, el eco miente.
+      eq(fx.claudeBodies[0]?.max_tokens, 384, 'el body de la llamada a Claude lleva el techo con margen');
     } finally { fx.restore(); }
   });
 
