@@ -3,6 +3,18 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * G2-F (2026-08-21) — una pieza con 1–2 fallos se REPARA, no se tira. Corrida G2-E del 21-ago con
+ *   el juez v84 y su filtro de aplicabilidad vivo: muerto el ruido condicional, lo que queda es
+ *   cola larga — 10 reglas distintas, 1–3 disparos cada una, y la mayoría de los REJECT con UNA o
+ *   DOS violaciones sobre ~19 reglas evaluadas. Pedir 90% de PASS en una sola pasada exige ~99,5%
+ *   de cumplimiento POR REGLA: inalcanzable por redacción. `builder_input.repair`
+ *   ({ piece_text, violations[] }) activa la SEGUNDA PASADA DIRIGIDA: mismo system —voz, genoma,
+ *   reglas del Watcher, PRESUPUESTO DE LONGITUD— y otra TAREA, la de corregir lo listado cambiando
+ *   lo mínimo. La respuesta conserva el contrato y gana `meta.repair` + `meta.repair_codes`; el
+ *   título se conserva del original salvo que la pieza corregida traiga uno nuevo. Un encargo
+ *   presente pero incompleto CORTA (COPYLAB_REPAIR_*) en vez de degenerar en pieza nueva. Sin la
+ *   clave, prompt y respuesta byte-idénticos a hoy.
+ *
  * G1-D (2026-08-20) — el presupuesto de longitud se le dice al ESCRITOR, no sólo a la API. G1-C
  *   hizo que el techo declarado se aplicara y destapó la mitad que faltaba: medido sobre 48 piezas,
  *   meta_fb cayó de 1.839 a 953 caracteres promedio (los 320 tokens exactos) y las truncadas a media
@@ -195,6 +207,11 @@ interface BuilderInput {
   // DOS. El singular de C1 se sigue aceptando (emisor anterior a D1) y se lee como lista de uno.
   case_examples?: Array<{ case: string; source_url: string; source_name: string }> | null;
   case_example?: { case: string; source_url: string; source_name: string } | null;
+  // G2-F (2026-08-21) — el ENCARGO DE REPARACIÓN. Su PRESENCIA cambia la TAREA del prompt (la
+  // pieza ya escrita vuelve con las instrucciones que violó, para una segunda pasada dirigida);
+  // su AUSENCIA deja el carril de generación byte-idéntico. Opcional a propósito: un emisor que
+  // no la manda no cambia de comportamiento. Ver la sección G2-F del bloque puro.
+  repair?: { piece_text: string; violations: Array<{ code: string; instruction: string }> } | null;
 }
 
 interface ExecuteRequest {
@@ -601,6 +618,100 @@ function deriveSignature(
   if (!Array.isArray(rules)) return null;
   const sig = rules.find(r => r && typeof r.kind === 'string' && /firma|signature/i.test(r.kind) && r.statement);
   return sig ? { text: String(sig.statement).trim(), rule: sig.code } : null;
+}
+
+// ── G2-F · el bucle de reparación acotado ───────────────────────────────────
+// EL HALLAZGO, medido en la corrida G2-E del 21-ago (ForumPHs, juez v84 con el filtro de
+// aplicabilidad vivo). Muerto el ruido condicional, lo que queda es COLA LARGA: 10 reglas
+// distintas, 1–3 disparos cada una, y la mayoría de los REJECT con UNA o DOS violaciones sobre
+// ~19 reglas evaluadas. La aritmética cierra el caso: pedir 90% de PASS en una sola pasada exige
+// ~99,5% de cumplimiento POR REGLA, y eso no se consigue redactando mejor la orden. Se consigue
+// no tirando una pieza que ya cumple 17 de 19.
+//
+// El mecanismo es la SEGUNDA PASADA DIRIGIDA: la pieza rechazada vuelve al generador con SÓLO las
+// instrucciones que violó, un único reintento, y se re-juzga con el mismo gate. No afloja ningún
+// gate —el juez sigue decidiendo con las mismas reglas— y convierte la cola larga en PASS.
+//
+// Lo que cambia acá es la TAREA, no la VOZ. El system queda EXACTAMENTE como el de generación
+// —voz, genoma, reglas del Watcher, presupuesto de longitud— porque la pieza reparada tiene que
+// seguir cumpliendo todo lo que ya cumplía: quitarle las 17 reglas que sí cumple para dejarle sólo
+// las 2 violadas es invitarla a romper las otras 17. Lo que se reemplaza es la INSTRUCCIÓN DE
+// USUARIO: donde iba la materia prima del brief va la pieza escrita y la lista de violaciones.
+//
+// Sin `builder_input.repair` no corre nada de esto y el prompt queda byte-idéntico al de hoy (modo
+// UI y carril de generación intactos) — el mismo contrato de aditividad de A1 / C1 / G1-D.
+//
+// Cero marcas y cero plataformas acá: las violaciones son DATO del payload (código + instruction,
+// las mismas que el juez usó para rechazar), no una enumeración escrita en el motor.
+interface RepairViolation { code: string; instruction: string }
+interface RepairInput { piece_text: string; violations: RepairViolation[] }
+
+// El lector del encargo. Devuelve `null` SÓLO cuando la clave está ausente —ése es el modo
+// generación de siempre—; un encargo PRESENTE pero incompleto CORTA con nombre propio en vez de
+// caer a generación en silencio. La caída silenciosa sería el peor fallo posible de este cambio:
+// el contrato de respuesta es el mismo, así que aguas abajo una "reparación" que en realidad
+// escribió una pieza nueva es indistinguible de una que corrigió la que había.
+function normalizeRepair(repair: unknown): RepairInput | null {
+  if (repair === null || repair === undefined) return null;
+  if (typeof repair !== 'object' || Array.isArray(repair)) {
+    throw new Error(`COPYLAB_REPAIR_MALFORMED: builder_input.repair debe ser un objeto { piece_text, violations } (recibido: ${JSON.stringify(repair)})`);
+  }
+  const r = repair as { piece_text?: unknown; violations?: unknown };
+  const piece_text = String(r.piece_text ?? '').trim();
+  if (!piece_text) {
+    throw new Error('COPYLAB_REPAIR_PIECE_REQUIRED: builder_input.repair.piece_text es obligatorio — sin la pieza escrita no hay nada que reparar');
+  }
+  // Una violación sin `instruction` no se puede reparar: el código NOMBRA la regla, pero la
+  // instrucción es lo único que le dice al escritor QUÉ cambiar. Se descartan, y si no queda
+  // ninguna se corta: mandar la pieza de vuelta sin decirle qué falló es pedirle que reescriba.
+  const violations = (Array.isArray(r.violations) ? r.violations : [])
+    .filter((v: any) => v && String(v.instruction ?? '').trim())
+    .map((v: any) => ({ code: String(v.code ?? '').trim() || '∅', instruction: String(v.instruction).trim() }));
+  if (!violations.length) {
+    throw new Error('COPYLAB_REPAIR_VIOLATIONS_REQUIRED: builder_input.repair.violations necesita al menos una violación con instruction — reparar sin saber qué falló es reescribir');
+  }
+  return { piece_text, violations };
+}
+
+// La instrucción de usuario del modo reparación. Conserva el BLOQUE DE FORMATO de la generación
+// —la pieza tiene que volver con la misma forma con la que salió— y reemplaza la materia prima por
+// la pieza escrita más las violaciones, una por bloque (código + instrucción).
+//
+// Tres cuidados, cada uno por un fallo que este bloque tiene que impedir:
+//   · MÍNIMO NECESARIO — sin esto el modelo reescribe la pieza entera y rompe las reglas que ya
+//     cumplía, que es exactamente lo que la segunda pasada viene a evitar.
+//   · PRESUPUESTO — el techo de G1-D sigue vigente: reparar no puede ser agregar. El número se
+//     repite acá porque la orden de esta pasada es "corregí sin crecer", no "escribí en N".
+//   · TÍTULO — sólo se menciona si la pieza original TRAE título (editorial): en social no hay
+//     título y nombrarlo sería invitar a inventar uno. Lo decide el dato, no el destino escrito acá.
+function buildRepairInstruction(
+  formatBlock: string,
+  repair: RepairInput,
+  lengthBudgetChars: number | null,
+): string {
+  const { title } = parsePiece(repair.piece_text);
+  const tituloRegla = title
+    ? '\n\nEl título es parte de la pieza: devolvelo TAL CUAL, salvo que una de las violaciones sea'
+      + ' sobre él.'
+    : '';
+  const presupuesto = lengthBudgetChars === null
+    ? ''
+    : `\n\nEl presupuesto de longitud sigue vigente: la pieza corregida entra en los mismos ~${lengthBudgetChars}`
+      + ' caracteres. Reparar no es agregar — si una corrección necesita espacio, sale de otra parte'
+      + ' de la pieza.';
+  const bloques = repair.violations.map(v => `[${v.code}]\n${v.instruction}`).join('\n\n');
+  return `${formatBlock}\n\n`
+    + 'TAREA — REPARACIÓN DIRIGIDA (no es una pieza nueva):\n'
+    + 'Esta pieza ya está escrita y cumple todo salvo lo listado. Devolvé la pieza COMPLETA'
+    + ' corregida, cambiando lo MÍNIMO necesario para cumplir cada código listado. No reescribas lo'
+    + ' que ya cumple. Cerrala completa.'
+    + tituloRegla
+    + presupuesto
+    + `\n\nPIEZA A REPARAR (íntegra, tal como se publicaría):\n${repair.piece_text}`
+    + `\n\nQUÉ INCUMPLE (${repair.violations.length}) — una por bloque, cada una tiene que quedar`
+    + ` cumplida:\n${bloques}`
+    + '\n\nDevolvé SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
+    + ' explicar qué cambiaste y sin nombrar los códigos dentro del texto.';
 }
 
 // ── B2 · el mapa del carril ─────────────────────────────────────────────────
@@ -1392,6 +1503,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   rules_injected: string[];
   rules_skipped: string[];
   rules_by_instruction: string[];
+  repair: { codes: string[]; original_title: string | null } | null;
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -1400,6 +1512,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // ── Modo carril (§3.3): la PRESENCIA de builder_input activa el carril.
   //    Consumo obligatorio y validación fail-fast en §3.4 — nada de defaults.
   const bi = req.builder_input ?? null;
+  // G2-F — el encargo de reparación se lee ACÁ, con el resto de la validación fail-fast: un
+  // encargo roto tiene que cortar antes de gastar queries y una llamada a Claude. `null` = modo
+  // generación, y entonces nada de G2-F corre.
+  let repair: RepairInput | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -1410,6 +1526,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     if (!bi.iid_brief || !String(bi.iid_brief).trim()) {
       throw new Error('COPYLAB_IID_BRIEF_REQUIRED: builder_input.iid_brief es obligatorio en modo carril');
     }
+    // El brief sigue siendo obligatorio también en reparación —el contrato del carril no cambia—
+    // aunque en esa pasada NO llegue al prompt: lo que se le da al escritor es la pieza, no la
+    // materia prima con la que ya la escribió.
+    repair = normalizeRepair(bi.repair);
   }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
@@ -1856,7 +1976,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     const fmt = bi.destination === 'editorial'
       ? 'FORMATO (editorial):\n- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n- Luego una línea en blanco y el cuerpo.\n- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
       : 'FORMATO (social):\n- Sin título, sin la etiqueta "TÍTULO:".\n- Solo el cuerpo, listo para publicar.\n- Termina en su última frase de contenido: sin CTA final añadido, sin firma.';
-    userInstruction = `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
+    // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
+    // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
+    // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
+    userInstruction = repair
+      ? buildRepairInstruction(fmt, repair, lengthBudgetChars)
+      : `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
   }
 
   return {
@@ -1897,6 +2022,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     rules_injected: rulesInjected,
     rules_skipped: rulesSkipped,
     rules_by_instruction: rulesByInstruction,
+    // G2-F — el encargo ya leído: qué códigos se mandaron a reparar (para el eco del meta) y el
+    // título del ORIGINAL, que el handler conserva si la pieza corregida vuelve sin él. `null` =
+    // modo generación: nada de esto viaja, y la respuesta queda como hoy.
+    repair: repair
+      ? { codes: repair.violations.map(v => v.code), original_title: parsePiece(repair.piece_text).title }
+      : null,
   };
 }
 
@@ -2162,7 +2293,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
@@ -2171,7 +2302,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { title, body: pieceBody } = parsePiece(output);
       return res.status(200).json({
         status: 'ok',
-        title,
+        // G2-F — en reparación el título se conserva del ORIGINAL cuando la pieza corregida vuelve
+        // sin él (el caso normal: la violación estaba en el cuerpo). Si vuelve CON título, ése gana:
+        // es una violación que lo afectaba. En generación, exactamente como hoy.
+        title: built.repair ? (title ?? built.repair.original_title) : title,
         body: pieceBody,
         signature: built.signature,
         usage,
@@ -2181,6 +2315,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           language: built.language,
           psycho_preset: built.psycho_preset,
           platform_key: built.platform_key,
+          // G2-F — la marca de la segunda pasada, y qué códigos se mandaron a reparar. Sólo viajan
+          // en modo reparación: sin `builder_input.repair` el meta queda como hoy, clave por clave.
+          ...(built.repair ? { repair: true, repair_codes: built.repair.codes } : {}),
           // G1-C — el techo que CopyLab APLICÓ de verdad, y el nivel que lo declaró. El carril ya
           // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
           // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar

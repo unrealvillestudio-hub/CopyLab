@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1718,6 +1718,160 @@ async function run() {
       assert(!s.includes('## KEYWORDS'), 'keywords 0 → sin bloque');
       assert(s.includes('## MARCA: Lucien Sael') && s.includes('## OBJETIVOS ESTRATÉGICOS'), 'los bloques con datos sí aparecen');
     } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  // ── G2-F · el bucle de reparación acotado ──────────────────────────────────
+  // El defecto que reparan: con el filtro de aplicabilidad del juez vivo (G2-E, 21-ago), lo que
+  // queda es COLA LARGA — 10 reglas distintas, 1–3 disparos cada una, la mayoría de los REJECT con
+  // UNA o DOS violaciones sobre ~19 reglas evaluadas. Tirar esa pieza y volver a escribirla desde
+  // el brief es tirar las 17 reglas que sí cumplía. Estos tests fijan las tres mitades del
+  // mecanismo: que sin `repair` NO cambie un byte, que con `repair` cambie la TAREA y sólo la
+  // tarea (la pieza y los códigos en el user, el system intacto), y que el presupuesto de longitud
+  // siga vigente en la segunda pasada.
+  //
+  // Cero marcas: las violaciones son DATO del payload. Los códigos de estos tests son los que
+  // dispararon en la corrida, pero el motor no los conoce — lo prueba el test del código inventado.
+  const RP_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
+  const rpBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'la materia prima de la primera pasada', angle: null, audience_frame: null, ...extra });
+  const PIEZA = 'La primera frase de la pieza que ya está escrita. Y su cierre, entero.';
+  const VIOLACIONES = [
+    { code: 'HR-GEN-01', instruction: 'Cerrá la pieza: la última frase termina en signo de cierre.' },
+    { code: 'HR-UNRLVL-03', instruction: 'La cifra va con su fuente nombrada en el texto.' },
+  ];
+  const REPARACION = { piece_text: PIEZA, violations: VIOLACIONES };
+
+  await test('G2-F·pure normalizeRepair: ausencia → null; encargo roto CORTA con nombre propio', () => {
+    eq(PURE.normalizeRepair(null), null, 'sin la clave → modo generación');
+    eq(PURE.normalizeRepair(undefined), null, 'undefined idem');
+    const ok = PURE.normalizeRepair(REPARACION);
+    eq(ok.piece_text, PIEZA, 'la pieza viaja entera');
+    eq(ok.violations.length, 2, 'las dos violaciones');
+    // Una violación SIN instruction no se puede reparar: se descarta (el código nombra la regla,
+    // la instrucción es lo único que dice QUÉ cambiar).
+    const filtrada = PURE.normalizeRepair({ piece_text: PIEZA, violations: [VIOLACIONES[0], { code: 'HR-MUDA', instruction: '  ' }] });
+    eq(filtrada.violations.length, 1, 'la muda se descarta');
+    eq(filtrada.violations[0].code, 'HR-GEN-01', 'queda la que sí trae instrucción');
+    // Un código ausente no tira la instrucción: se nombra ∅, como rules_skipped.
+    eq(PURE.normalizeRepair({ piece_text: PIEZA, violations: [{ instruction: 'algo' }] }).violations[0].code, '∅', 'código ausente → ∅');
+    // Y los tres cortes nominales: ninguno cae a generación en silencio.
+    const lanza = (repair: any, nombre: string) => {
+      let msg = '';
+      try { PURE.normalizeRepair(repair); } catch (e) { msg = e instanceof Error ? e.message : String(e); }
+      assert(msg.startsWith(nombre), `${nombre} — obtenido "${msg || '(no lanzó)'}"`);
+    };
+    lanza('una pieza', 'COPYLAB_REPAIR_MALFORMED');
+    lanza([REPARACION], 'COPYLAB_REPAIR_MALFORMED');
+    lanza({ violations: VIOLACIONES }, 'COPYLAB_REPAIR_PIECE_REQUIRED');
+    lanza({ piece_text: '   ', violations: VIOLACIONES }, 'COPYLAB_REPAIR_PIECE_REQUIRED');
+    lanza({ piece_text: PIEZA }, 'COPYLAB_REPAIR_VIOLATIONS_REQUIRED');
+    lanza({ piece_text: PIEZA, violations: [] }, 'COPYLAB_REPAIR_VIOLATIONS_REQUIRED');
+    lanza({ piece_text: PIEZA, violations: [{ code: 'HR-MUDA' }] }, 'COPYLAB_REPAIR_VIOLATIONS_REQUIRED');
+  });
+
+  await test('G2-F·pure buildRepairInstruction: la orden es corregir lo MÍNIMO, con la pieza y los códigos', () => {
+    const fmt = 'FORMATO (social):\n- Solo el cuerpo.';
+    const u = String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair(REPARACION), 1000));
+    assertOrdered(u, [fmt, 'REPARACIÓN DIRIGIDA', 'MÍNIMO', 'PIEZA A REPARAR', PIEZA, 'QUÉ INCUMPLE', '[HR-GEN-01]', VIOLACIONES[0].instruction, '[HR-UNRLVL-03]', VIOLACIONES[1].instruction]);
+    assert(u.includes('No reescribas lo que ya cumple'), 'la orden que impide que la segunda pasada rompa las 17 que cumplía');
+    assert(u.includes('Cerrala completa'), 'y la que impide que vuelva truncada');
+    // El presupuesto de G1-D sigue vigente: reparar no puede ser crecer.
+    assert(u.includes('~1000 caracteres'), 'el presupuesto viaja también en la instrucción de reparación');
+    assert(!String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair(REPARACION), null)).includes('presupuesto'),
+      'sin techo declarado no hay presupuesto que repetir');
+    // El título sólo se menciona si la pieza original LO TRAE (editorial). En social no hay título,
+    // y nombrarlo sería invitar a inventar uno.
+    assert(!u.includes('título'), 'pieza social sin título → no se habla de título');
+    const conTitulo = String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair({ piece_text: `TÍTULO: Un título\n\n${PIEZA}`, violations: VIOLACIONES }), null));
+    assert(conTitulo.includes('devolvelo TAL CUAL'), 'pieza con título → se conserva salvo que la violación sea sobre él');
+    // Motor, no caso: el bloque no nombra marcas, plataformas ni reglas propias.
+    const codigosDelPayload = String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair({ piece_text: PIEZA, violations: [{ code: 'XX-INVENTADO-99', instruction: 'hacé tal cosa' }] }), null));
+    assert(codigosDelPayload.includes('[XX-INVENTADO-99]'), 'el código sale del payload, no de una lista escrita en el motor');
+    for (const nombre of ['meta_fb', 'linkedin', 'ForumPHs', 'NeuroneSCF', 'LucienSael', 'HR-GEN-01']) {
+      assert(!codigosDelPayload.includes(nombre), `el bloque no nombra ${nombre}`);
+    }
+  });
+
+  // CABLEADO. Lo que este PR promete es que el system NO cambia: si la reparación tocara la voz o
+  // las reglas, la segunda pasada dejaría de ser una corrección y sería otra pieza.
+  await test('G2-F·cableado: con repair cambia la TAREA y sólo la tarea; sin repair, byte-idéntico', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const gen = await buildPrompt(reqWith(RP_BCTX, { builder_input: rpBI({}) }));
+      const rep = await buildPrompt(reqWith(RP_BCTX, { builder_input: rpBI({ repair: REPARACION }) }));
+      eq(rep.system, gen.system, 'el system de la reparación es el de generación, byte a byte (voz, genoma, reglas, presupuesto)');
+      assert(rep.user !== gen.user, 'lo que cambia es la instrucción de usuario');
+      assertOrdered(rep.user, ['FORMATO (social)', 'REPARACIÓN DIRIGIDA', PIEZA, 'HR-GEN-01', 'HR-UNRLVL-03']);
+      assert(!rep.user.includes('MATERIA PRIMA'), 'el brief NO vuelve: el material de esta pasada es la pieza escrita');
+      assert(gen.user.includes('MATERIA PRIMA'), 'y en generación sigue exactamente como hoy');
+      eq(gen.repair, null, 'sin la clave, nada que ecoar');
+      eq(JSON.stringify(rep.repair?.codes), JSON.stringify(['HR-GEN-01', 'HR-UNRLVL-03']), 'los códigos, para el eco del meta');
+
+      // El modo UI ni se entera, y un encargo roto corta ANTES de gastar la llamada a Claude.
+      const ui = await buildPrompt(reqWith(RP_BCTX));
+      eq(ui.repair, null, 'el modo UI no ve el modo reparación');
+      await assertThrows(
+        () => buildPrompt(reqWith(RP_BCTX, { builder_input: rpBI({ repair: { piece_text: '', violations: VIOLACIONES } }) })),
+        'COPYLAB_REPAIR_PIECE_REQUIRED',
+      );
+      assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'buildPrompt no llama a Claude (el corte es previo)');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  await test('G2-F·cableado: el presupuesto de longitud gobierna también la segunda pasada', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const rep = await buildPrompt(reqWith(RP_BCTX, { builder_input: rpBI({ max_tokens: 320, max_tokens_source: 'base_platform', repair: REPARACION }) }));
+      assert(rep.system.includes('## PRESUPUESTO DE LONGITUD') && rep.system.includes('1000 caracteres'), 'el bloque de G1-D sigue en el system');
+      assert(rep.user.includes('~1000 caracteres'), 'y la tarea de reparación lo repite: corregir no es crecer');
+      eq(rep.length_budget_chars, 1000, 'el eco del presupuesto, igual que en generación');
+      eq(rep.max_tokens, 384, 'y el techo con margen, igual que en generación');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  await test('G2-F·respuesta: mismo contrato + meta.repair; el título se conserva del original', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const PIEZA_ED = 'TÍTULO: El título original\n\nEl cuerpo de la pieza, ya escrito.';
+    const edBI = (extra: any) => rpBI({ destination: 'editorial', platform: 'blog', ...extra });
+    try {
+      // La pieza corregida vuelve SIN título (el caso normal: la violación estaba en el cuerpo).
+      let fx = installFetch({ claude: { content: [{ text: 'El cuerpo corregido, cerrado.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+      let r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: edBI({ repair: { piece_text: PIEZA_ED, violations: VIOLACIONES } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.title, 'El título original', 'el título se conserva del original');
+      eq(r._out._json.body, 'El cuerpo corregido, cerrado.', 'y el cuerpo es el corregido');
+      eq(r._out._json.meta.repair, true, 'meta.repair — la marca de la segunda pasada');
+      eq(JSON.stringify(r._out._json.meta.repair_codes), JSON.stringify(['HR-GEN-01', 'HR-UNRLVL-03']), 'meta.repair_codes');
+      assert(typeof r._out._json.usage === 'object' && r._out._json.usage !== null, 'el contrato de respuesta no cambia: usage sigue viajando');
+      assert('signature' in r._out._json && 'meta' in r._out._json, 'ni signature ni meta');
+      fx.restore();
+
+      // Si la pieza corregida trae título, ÉSE gana: es una violación que lo afectaba.
+      fx = installFetch({ claude: { content: [{ text: 'TÍTULO: El título corregido\n\nCuerpo.' }], usage: {} } });
+      r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: edBI({ repair: { piece_text: PIEZA_ED, violations: VIOLACIONES } }) }) } as any, r as any);
+      eq(r._out._json.title, 'El título corregido', 'la violación sobre el título gana');
+      fx.restore();
+
+      // Sin repair, el meta queda como hoy: la clave no existe (aditividad, no bandera muda).
+      fx = installFetch({ claude: { content: [{ text: 'TÍTULO: T\n\nCuerpo.' }], usage: {} } });
+      r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: edBI({}) }) } as any, r as any);
+      eq('repair' in r._out._json.meta, false, 'sin la clave, el meta no gana una bandera');
+      eq('repair_codes' in r._out._json.meta, false, 'ni los códigos');
+      fx.restore();
+
+      // Y un encargo roto es 500 con nombre propio, no una pieza nueva devuelta como reparación.
+      fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: {} } });
+      r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: edBI({ repair: { piece_text: PIEZA_ED, violations: [] } }) }) } as any, r as any);
+      eq(r._out._status, 500, 'encargo sin violaciones → 500');
+      assert(String(r._out._json.error).startsWith('COPYLAB_REPAIR_VIOLATIONS_REQUIRED'), 'con el error nominal');
+      assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'y sin gastar la llamada a Claude');
+      fx.restore();
+    } finally { Math.random = realRandom; }
   });
 
   const total = passed + xfails.length + failures.length;
