@@ -176,6 +176,12 @@ interface BuilderInput {
   platform: string;                                 // x | meta_fb | meta_ig | linkedin | blog | tiktok | email_propietarios
   language: string | null;                          // eje M-12·B
   psycho_preset: string | null;
+  // BRIEF 8 · A — el presupuesto del TÍTULO, en caracteres, ya resuelto por el carril contra la
+  // física real del overlay (los `fit_steps` de los tokens de la marca) o su fallback declarado.
+  // Opcional: su ausencia deja la sección ## TÍTULO sin cifra, nunca sin título. Acá no se decide
+  // el número — mismo contrato que `max_tokens`: el carril resuelve, CopyLab obedece y hace eco.
+  title_budget_chars?: number | null;
+  title_budget_source?: string | null;   // de qué nivel salió el número, verbatim del carril
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -593,6 +599,96 @@ function apiMaxTokensFor(
   const declared = readDeclaredMaxTokens(builderInput?.max_tokens);
   if (declared === null) return maxTokensFor(builderInput);
   return Math.ceil(declared * LENGTH_BUDGET_API_MARGIN);
+}
+
+// ── BRIEF 8 · A · EL TÍTULO ES CIUDADANO DE PRIMERA ────────────────────────────────────────────
+//
+// POR QUÉ AHORA. El compositor (BRIEF 7, en producción) convirtió a `title` en el texto MÁS VISIBLE
+// del sistema: es lo que se dibuja sobre la imagen. Y era el menos gobernado de todos.
+//
+// LA CAUSA, medida contra esta fuente y no supuesta: el bloque FORMATO de abajo le decía al
+// escritor, en modo social, «Sin título, sin la etiqueta "TÍTULO:"». No es que CopyLab emitiera el
+// título de forma poco confiable — es que en social tenía PROHIBIDO emitirlo. Por eso el lote de 9
+// piezas no trae ninguno: son sociales. El título nunca fue opcional por descuido; era imposible.
+//
+// QUÉ CAMBIA. El título pasa a ser obligatorio en LOS DOS destinos, con tres piezas:
+//   1 · OFICIO — el título es la afirmación más filosa de la pieza, no su resumen. Y cumple TODAS
+//       las reglas de marca que gobiernan el cuerpo: tratamiento, tono, legal, neutralidad. Esto
+//       último no es retórica: desde el BRIEF 8-B el Watcher juzga el título con las mismas reglas,
+//       así que un título que las rompe REPRUEBA la pieza entera.
+//   2 · PRESUPUESTO — `title_budget_chars` llega por builder_input, resuelto por el carril contra
+//       la física real del overlay (los `fit_steps` de la marca). Acá no se decide CUÁNTO: el
+//       número es dato, igual que `max_tokens`. Sin número, la sección sale igual pero sin cifra.
+//   3 · SEPARACIÓN — en social el título NO se publica en el cuerpo: es el texto del overlay. Hay
+//       que decírselo, o el escritor lo repite en la primera línea y la pieza sale duplicada.
+//
+// CERO MARCAS Y CERO PLATAFORMAS acá: el destino es un eje del sistema ('editorial' | 'social') y
+// el número llega como dato. Test de la marca N+1 en `api/execute.test.ts`.
+
+// Piso del presupuesto de título. Un número diminuto (o negativo, o basura) no es un presupuesto:
+// es una orden imposible. Se nombra por lo que es y NO se usa como default cuando el dato falta —
+// sin dato no hay cifra en la instrucción, que es distinto de tener una inventada.
+const TITLE_BUDGET_MIN_CHARS = 20;
+
+// Lector fail-soft del presupuesto de título, gemelo de `readDeclaredMaxTokens`: un valor ilegible
+// NO corta la generación (la pieza es más importante que su presupuesto) pero DEJA RASTRO. Ausente
+// ⇒ null, que es el caso legítimo de un emisor anterior a BRIEF 8.
+function readTitleBudgetChars(declared: unknown): number | null {
+  if (declared === null || declared === undefined) return null;
+  const n = typeof declared === 'number' ? declared : Number(declared);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(`[CopyLab][BRIEF8] builder_input.title_budget_chars ilegible (${JSON.stringify(declared)}) — se escribe el título sin cifra declarada`);
+    return null;
+  }
+  return Math.max(TITLE_BUDGET_MIN_CHARS, Math.round(n));
+}
+
+// La sección ## TÍTULO del system. Instrucción de OFICIO, no una restricción más: dice qué clase de
+// frase es un título y qué NO es. La cifra entra sólo si el carril la declaró.
+function buildTitleBlock(titleBudgetChars: number | null, destination: string | null | undefined): string {
+  const esSocial = String(destination ?? '').trim() !== 'editorial';
+  const presupuesto = titleBudgetChars === null
+    ? 'Es UNA línea: una afirmación que se lee de un vistazo, sin subordinadas apiladas.'
+    : `Tiene ${titleBudgetChars} caracteres, cierre incluido. No es un límite del que convenga`
+      + ' quedarse lejos ni una meta que alcanzar: es el espacio que hay. Un título que no CIERRA'
+      + ' dentro de ese espacio no sirve — se reescribe más corto, no se recorta.';
+  const publicacion = esSocial
+    ? '\n\nEl título NO se publica dentro del cuerpo: es el texto que va sobre la imagen. No lo'
+      + ' repitas en la primera línea ni lo anuncies — el cuerpo empieza por su propia apertura.'
+    : '';
+  return '## TÍTULO\n'
+    + 'Toda pieza lleva título, y el título es la AFIRMACIÓN MÁS FILOSA de la pieza — no su resumen,'
+    + ' no su tema, no una etiqueta de categoría. Si el cuerpo demuestra algo, el título lo AFIRMA.\n\n'
+    + 'Tiene que sostenerse solo: alguien que lee únicamente el título entiende qué se le está'
+    + ' diciendo, sin el cuerpo debajo.\n\n'
+    + 'El título es PARTE DE LA PIEZA, no su envoltorio: todas las reglas que gobiernan el cuerpo lo'
+    + ' gobiernan a él —tratamiento, tono, prohibiciones, exigencias de prueba, neutralidad—, y se'
+    + ' juzga con ellas. Un título que rompe una regla reprueba la pieza entera.\n\n'
+    + presupuesto
+    + publicacion;
+}
+
+// El bloque FORMATO de la instrucción de usuario. Función pura del destino — el ternario que vivía
+// suelto dentro de buildPrompt, ahora testeable y con el título obligatorio en las DOS ramas.
+// Lo único que separa a los destinos es DÓNDE vive el título: en editorial encabeza la pieza
+// publicada; en social es sólo el texto del overlay y el cuerpo se publica sin él.
+function buildCarrilFormatBlock(destination: string | null | undefined): string {
+  const primeraLinea = '- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n'
+    + '- Luego una línea en blanco y el cuerpo.\n';
+  return String(destination ?? '').trim() === 'editorial'
+    ? 'FORMATO (editorial):\n'
+      + primeraLinea
+      + '- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
+    : 'FORMATO (social):\n'
+      + primeraLinea
+      + '- El cuerpo NO repite el título ni lo cita: arranca con su propia apertura.\n'
+      + '- El cuerpo termina en su última frase de contenido: sin CTA final añadido, sin firma.';
+}
+
+// Eco medible del título emitido. Se cuenta en caracteres —la misma unidad del presupuesto— para
+// que la próxima corrida pueda cruzar "cuánto se le dio" contra "cuánto usó" sin convertir nada.
+function titleCharCount(title: string | null | undefined): number {
+  return typeof title === 'string' ? title.trim().length : 0;
 }
 
 // Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
@@ -1491,6 +1587,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   max_tokens: number;
   max_tokens_source: string | null;
   length_budget_chars: number | null;
+  title_budget_chars: number | null;
+  title_budget_source: string | null;
   audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
@@ -1915,6 +2013,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
   if (lengthBudgetBlock) layers.push(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
 
+  // BRIEF 8 · A — la sección ## TÍTULO va en la misma banda de FORMA DE SALIDA y DESPUÉS del
+  // presupuesto de longitud: primero cuánto espacio tiene la pieza, después qué clase de frase la
+  // encabeza. Sólo en modo carril — el modo UI no tiene destino ni contrato title/body y su prompt
+  // queda byte-idéntico al de hoy.
+  const titleBudgetChars = bi ? readTitleBudgetChars(bi.title_budget_chars) : null;
+  if (bi) layers.push(buildTitleBlock(titleBudgetChars, bi.destination));   // ## TÍTULO
+
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
   let templateVarsUnresolved: string[] = [];
@@ -1973,9 +2078,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // (editorial → TÍTULO: sentinel; social → body only) and the iid_brief is the
   // neutral raw material — interpret it, NEVER copy it verbatim (§3.4 / §4.3).
   if (bi) {
-    const fmt = bi.destination === 'editorial'
-      ? 'FORMATO (editorial):\n- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n- Luego una línea en blanco y el cuerpo.\n- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
-      : 'FORMATO (social):\n- Sin título, sin la etiqueta "TÍTULO:".\n- Solo el cuerpo, listo para publicar.\n- Termina en su última frase de contenido: sin CTA final añadido, sin firma.';
+    // BRIEF 8 · A — el título es obligatorio en los DOS destinos. Antes, la rama social decía
+    // literalmente «Sin título, sin la etiqueta "TÍTULO:"»: el overlay no tenía qué componer porque
+    // el escritor tenía prohibido escribirlo. Ahora lo que cambia entre destinos es DÓNDE vive el
+    // título, no si existe.
+    const fmt = buildCarrilFormatBlock(bi.destination);
     // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
     // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
@@ -2008,6 +2115,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // Sin los DOS números (este y max_tokens_applied) la próxima medición no puede distinguir "el
     // escritor ignoró el presupuesto" de "la API lo cortó igual" — la lección de esta corrida.
     length_budget_chars: lengthBudgetChars,
+    // BRIEF 8 · A — el presupuesto de título APLICADO (el declarado, saneado) y de qué nivel salió.
+    // Los dos, por la misma razón que los dos de longitud: sin ellos, una corrida con títulos largos
+    // no se puede leer — no se distingue "no se le dijo" de "se le dijo y lo ignoró".
+    title_budget_chars: titleBudgetChars,
+    title_budget_source: bi?.title_budget_source ?? null,
     // G2-C — QUÉ política de CTA se aplicó de verdad ('none' = frente no declarado). Misma lección
     // que max_tokens_applied: sin el eco, la próxima migración del eje vuelve a ser invisible.
     audience_cta_applied: audienceCtaApplied,
@@ -2293,19 +2405,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
     //    SIN estampar, usage real. El modo UI conserva su forma histórica.
     if (carril) {
       const { title, body: pieceBody } = parsePiece(output);
+      // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
+      // siempre y el eco dice cuánto midió. Un título ausente ahora es un INCUMPLIMIENTO del
+      // escritor (la sección ## TÍTULO lo pide en los dos destinos), no un caso normal: se grita,
+      // se marca en el meta y la pieza sigue viva — el carril decide qué hacer con una pieza sin
+      // título, y hoy hace lo correcto: no compone y conserva la imagen limpia.
+      const tituloFinal = built.repair ? (title ?? built.repair.original_title) : title;
+      if (!tituloFinal) {
+        console.error(
+          `[CopyLab][BRIEF8] COPYLAB_TITLE_MISSING brand=${body.brandId} destination=${body.builder_input?.destination ?? '∅'} ` +
+          `title_budget=${built.title_budget_chars ?? '∅'} (${built.title_budget_source ?? 'sin declarar'}) ` +
+          '— la respuesta volvió sin la línea "TÍTULO:" pese a que el prompt la exige en ambos destinos',
+        );
+      }
       return res.status(200).json({
         status: 'ok',
         // G2-F — en reparación el título se conserva del ORIGINAL cuando la pieza corregida vuelve
         // sin él (el caso normal: la violación estaba en el cuerpo). Si vuelve CON título, ése gana:
         // es una violación que lo afectaba. En generación, exactamente como hoy.
-        title: built.repair ? (title ?? built.repair.original_title) : title,
+        title: tituloFinal,
         body: pieceBody,
         signature: built.signature,
         usage,
@@ -2329,6 +2454,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // G1-D — el presupuesto en caracteres que recibió el escritor, al lado del techo que se
           // le mandó a la API. Los dos juntos, o la próxima corrida no se puede leer.
           length_budget_chars: built.length_budget_chars,
+          // BRIEF 8 · A — el trío del título: lo que se le dio (presupuesto + de dónde salió) y lo
+          // que devolvió (caracteres). `title_missing` distingue la ausencia REAL de un título de
+          // longitud cero, y es lo que el carril asienta cuando el overlay no puede componerse.
+          title_budget_chars: built.title_budget_chars,
+          title_budget_source: built.title_budget_source,
+          title_chars: titleCharCount(tituloFinal),
+          title_missing: !tituloFinal,
           // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
           // 'decide' | 'influye' | 'general' | 'none'.
           audience_cta_applied: built.audience_cta_applied,
