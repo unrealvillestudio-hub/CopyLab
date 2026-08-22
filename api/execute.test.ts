@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -985,6 +985,122 @@ async function run() {
       eq(r._out._json.meta.max_tokens_applied, 384, 'meta.max_tokens_applied — lo que se le mandó a la API');
       // Y el número que se le mandó a la API es el que la API RECIBIÓ: sin esto, el eco miente.
       eq(fx.claudeBodies[0]?.max_tokens, 384, 'el body de la llamada a Claude lleva el techo con margen');
+    } finally { fx.restore(); }
+  });
+
+  // ── BRIEF 8 · A · el título es ciudadano de primera ────────────────────────
+  // El defecto que reparan, medido contra ESTA fuente y no supuesto: el bloque FORMATO decía, en
+  // modo social, «Sin título, sin la etiqueta "TÍTULO:"». Las 9 piezas del lote sin título eran
+  // sociales: el título no faltaba por descuido del escritor, estaba PROHIBIDO. Y desde BRIEF 7 el
+  // título es el texto que se dibuja sobre la imagen — sin él, el overlay no compone jamás.
+  const T8_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
+  const t8BI = (extra: any = {}) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+
+  await test('BRIEF8·A·pure readTitleBudgetChars: el número es DATO; ilegible no corta, deja rastro', () => {
+    eq(PURE.readTitleBudgetChars(72), 72, 'el declarado manda');
+    eq(PURE.readTitleBudgetChars('90'), 90, 'numérico en string');
+    eq(PURE.readTitleBudgetChars(null), null, 'ausente = emisor anterior a BRIEF 8');
+    eq(PURE.readTitleBudgetChars(undefined), null, 'undefined idem');
+    eq(PURE.readTitleBudgetChars(5), 20, 'piso: un presupuesto diminuto sería una orden imposible');
+    const realWarn = console.warn; const warned: string[] = [];
+    console.warn = (m: any) => { warned.push(String(m)); };
+    try {
+      eq(PURE.readTitleBudgetChars('setenta'), null, 'basura → null, la pieza no muere por su presupuesto');
+      eq(PURE.readTitleBudgetChars(-10), null, 'negativo idem');
+      assert(warned.length === 2 && /title_budget_chars ilegible/.test(warned[0]), 'y deja rastro');
+    } finally { console.warn = realWarn; }
+  });
+
+  await test('BRIEF8·A·pure buildTitleBlock: oficio + regla + presupuesto, sin marcas ni plataformas', () => {
+    const con = String(PURE.buildTitleBlock(72, 'social'));
+    assert(con.includes('## TÍTULO'), 'encabezado');
+    assert(/AFIRMACIÓN MÁS FILOSA/.test(con), 'el título AFIRMA, no resume — es el oficio, no una restricción');
+    assert(/sostenerse solo/.test(con), 'se lee sin el cuerpo debajo');
+    assert(/todas las reglas que gobiernan el cuerpo lo/i.test(con), 'toda regla de marca aplica también al título');
+    assert(con.includes('72 caracteres'), 'la cifra declarada');
+    assert(/CIERRA dentro/.test(con), 'y que el título CIERRA dentro de ella');
+    // Sin cifra: la sección sale IGUAL (el título nunca es opcional), sólo sin número.
+    const sin = String(PURE.buildTitleBlock(null, 'social'));
+    assert(sin.includes('## TÍTULO'), 'sin presupuesto declarado el título sigue siendo obligatorio');
+    assert(!/\d+ caracteres/.test(sin), 'pero no se inventa una cifra');
+    // Marca N+1: el bloque es motor. Ni marcas, ni plataformas, ni jurisdicciones.
+    for (const nombre of ['meta_fb', 'meta_ig', 'linkedin', 'ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville']) {
+      assert(!con.includes(nombre), `el bloque no nombra ${nombre}`);
+    }
+  });
+
+  await test('BRIEF8·A·pure buildTitleBlock: en social el título NO se publica en el cuerpo', () => {
+    const social = String(PURE.buildTitleBlock(72, 'social'));
+    const editorial = String(PURE.buildTitleBlock(72, 'editorial'));
+    assert(/NO se publica dentro del cuerpo/.test(social), 'en social el título es el texto del overlay');
+    assert(!/NO se publica dentro del cuerpo/.test(editorial), 'en editorial encabeza la pieza publicada');
+    // Lo que NO cambia entre destinos: que exista y que se juzgue.
+    for (const b of [social, editorial]) assert(/AFIRMACIÓN MÁS FILOSA/.test(b), 'el oficio es el mismo');
+  });
+
+  await test('BRIEF8·A·pure buildCarrilFormatBlock: TÍTULO obligatorio en los DOS destinos', () => {
+    const social = String(PURE.buildCarrilFormatBlock('social'));
+    const editorial = String(PURE.buildCarrilFormatBlock('editorial'));
+    for (const [nombre, b] of [['social', social], ['editorial', editorial]] as const) {
+      assert(b.includes('Primera línea EXACTA: "TÍTULO: <título de la pieza>"'), `${nombre} pide el título`);
+    }
+    // La regresión que este test fija para siempre: la prohibición vieja no puede volver.
+    assert(!/Sin título/.test(social), 'la orden «Sin título» era la causa del lote sin títulos');
+    assert(!/sin la etiqueta/.test(social), 'ni su corolario');
+    assert(/El cuerpo NO repite el título/.test(social), 'en social el cuerpo se publica sin el título');
+    assert(/sin repetir el título, sin H1/.test(editorial), 'editorial conserva su forma');
+  });
+
+  await test('BRIEF8·A·pure titleCharCount: mide lo que se emitió, en la unidad del presupuesto', () => {
+    eq(PURE.titleCharCount('La cuota no se vota'), 19, 'caracteres, no palabras ni tokens');
+    eq(PURE.titleCharCount('  con bordes  '), 10, 'sin contar el espacio de los bordes');
+    eq(PURE.titleCharCount(null), 0, 'ausente = 0');
+    eq(PURE.titleCharCount(undefined), 0, 'undefined idem');
+  });
+
+  await test('BRIEF8·A·cableado: la sección llega al prompt y el trío del título al meta', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'TÍTULO: La cuota no se vota a mano alzada\n\nCuerpo de la pieza.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      const built = await buildPrompt(reqWith(T8_BCTX, { builder_input: t8BI({ title_budget_chars: 72, title_budget_source: 'imagelab_overlay_tokens:fit_steps[0]' }) }));
+      assert(built.system.includes('## TÍTULO'), 'la sección llega al system');
+      assert(built.system.includes('72 caracteres'), 'con el número que resolvió el carril');
+      assert(built.user.includes('TÍTULO: <título de la pieza>'), 'y el FORMATO lo exige aunque sea social');
+      eq(built.title_budget_chars, 72, 'eco del presupuesto aplicado');
+      eq(built.title_budget_source, 'imagelab_overlay_tokens:fit_steps[0]', 'y de qué nivel salió');
+
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(T8_BCTX, { builder_input: t8BI({ title_budget_chars: 72, title_budget_source: 'imagelab_overlay_tokens:fit_steps[0]' }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.title, 'La cuota no se vota a mano alzada', 'el título viaja en el contrato');
+      eq(r._out._json.body, 'Cuerpo de la pieza.', 'y el cuerpo sale sin él');
+      eq(r._out._json.meta.title_chars, 33, 'eco medible: cuánto midió');
+      eq(r._out._json.meta.title_budget_chars, 72, 'contra cuánto se le dio');
+      eq(r._out._json.meta.title_missing, false, 'y que no faltó');
+    } finally { fx.restore(); }
+  });
+
+  await test('BRIEF8·A·cableado: un título ausente es INCUMPLIMIENTO — se marca, no se inventa', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo sin la línea de título.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    const realErr = console.error; const errs: string[] = [];
+    console.error = (m: any) => { errs.push(String(m)); };
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(T8_BCTX, { builder_input: t8BI({ title_budget_chars: 72 }) }) } as any, r as any);
+      eq(r._out._status, 200, 'la pieza sigue viva: un título ausente no la tira');
+      eq(r._out._json.title, null, 'y NO se fabrica uno — el carril decide qué hacer');
+      eq(r._out._json.meta.title_missing, true, 'la marca que el carril asienta');
+      eq(r._out._json.meta.title_chars, 0, 'medida honesta');
+      assert(errs.some(e => /COPYLAB_TITLE_MISSING/.test(e)), 'y grita con nombre propio');
+    } finally { console.error = realErr; fx.restore(); }
+  });
+
+  await test('BRIEF8·A·cableado: el modo UI no ve nada de esto (prompt byte-idéntico)', async () => {
+    const fx = installFetch({});
+    try {
+      const ui = await buildPrompt(reqWith(T8_BCTX));
+      assert(!ui.system.includes('## TÍTULO'), 'la sección es del carril, no del modo UI');
+      eq(ui.title_budget_chars, null, 'sin presupuesto');
+      eq(ui.title_budget_source, null, 'sin procedencia');
     } finally { fx.restore(); }
   });
 
