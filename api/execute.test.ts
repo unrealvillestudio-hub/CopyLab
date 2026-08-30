@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, baseLanguageSubtag, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -652,24 +652,34 @@ async function run() {
       eq(a.system, b.system, 'determinista con Math.random fijo');
       // A2·b — gramática nueva (buildCopyPrompt) + orden nuevo: contexto → restricciones →
       // ángulo creativo → forma de salida. El template cierra (último bloque).
-      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## MARCA: BrandX'), 'preámbulo + ## MARCA exactos');
+      // FIX-LANG-01 — el idioma abre el prompt: es la PRIMERA capa, antes de ## MARCA.
+      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## IDIOMA DE OUTPUT'), 'preámbulo + idioma como primera capa');
       assertOrdered(a.system, [
+        '## IDIOMA DE OUTPUT',
         '## MARCA: BrandX',
         '## OBJETIVOS ESTRATÉGICOS DE LA MARCA', '## SEGMENTOS OBJETIVO (ICP)',
-        '## IDIOMA DE OUTPUT', '## CANAL: INSTAGRAM',
+        '## CANAL: INSTAGRAM',
         'VOZ DE MARCA — BASE (L1):', '## GEOMIX — US', '## KEYWORDS', '## CTA ACTIVO',
         '## COMPLIANCE — REGLAS OBLIGATORIAS', '## VOZ DE MARCA — BP_COPY_1.0',
         '## L1.5 VOICE GENOME INJECTION',
         '## L14 CREATIVE VECTOR [VEC1', '## L15 TENSION ARCHITECTURE [TEN1', '## L16 AGGRO DIAL [AGGRO_2',
+        // …y se REPITE al cierre, antes del template de output: dos colocaciones del
+        // mismo bloque, porque entre la apertura y el cierre hay ~24 capas en español.
+        '## IDIOMA DE OUTPUT',
         '## TEMPLATE DE OUTPUT [TPL]',
       ]);
+      eq(a.system.split('## IDIOMA DE OUTPUT').length - 1, 2, 'la directiva de idioma aparece exactamente DOS veces: apertura y cierre');
       // genoma DESPUÉS del copy profile; template DESPUÉS de los creativos (cierra)
       assert(a.system.indexOf('## VOZ DE MARCA — BP_COPY_1.0') < a.system.indexOf('## L1.5 VOICE GENOME'), 'genoma tras copy profile');
       assert(a.system.indexOf('## L16 AGGRO DIAL') < a.system.indexOf('## TEMPLATE DE OUTPUT [TPL]'), 'template tras el ángulo creativo (forma de salida al final)');
       for (const leak of ['EJE ESTRUCTURAL', 'REGLAS DEL WATCHER', 'PSICO-ESTÍMULO', 'MATERIA PRIMA', 'FORMATO (']) {
         assert(!a.system.includes(leak) && !a.user.includes(leak), `fuga de carril en modo UI: ${leak}`);
       }
-      eq(fx.calls.length, 0, 'cache completo ⇒ CERO queries directas');
+      // FIX-LANG-01 — el snapshot todavía no emite `language_directives`, así que su
+      // query directa corre. Es UNA, dentro del Promise.all (sin coste de latencia),
+      // y es la única: el resto del cache sigue cancelando su viaje.
+      eq(fx.calls.length, 2, 'cache completo ⇒ una sola query directa por build (este test arma dos)');
+      assert(fx.calls.every(u => u.includes('/rest/v1/language_directives')), `la única query es language_directives — obtenido: ${fx.calls.join(', ')}`);
       eq(a.max_tokens, 1600, 'techo UI');
     } finally { fx.restore(); Math.random = realRandom; }
   });
@@ -681,8 +691,69 @@ async function run() {
       const built = await buildPrompt(reqWith({ brandContext: { brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
       assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.UnrealvilleStudio')), 'la query directa de brands debe ejecutarse');
       eq(built.language, 'en/FL', 'idioma real de brands.language_primary');
-      assert(built.system.includes('Idioma: en/FL') && built.system.includes('**en/FL**'), 'system con idioma real (## MARCA + ## IDIOMA DE OUTPUT)');
+      assert(built.system.includes('Idioma: en/FL'), 'el ## MARCA conserva el código tal cual viene de brands');
+      // FIX-LANG-01 — al escritor ya NO le llega el código crudo: 'en/FL' no tiene fila
+      // ni alias exacto, cae a la subetiqueta base 'en' y le llega su ETIQUETA.
+      assert(!built.system.includes('exclusivamente en: **en/FL**'), 'el código crudo ya no se usa como etiqueta de idioma');
+      assert(built.system.includes('exclusivamente en: **English (neutral)**'), 'la directiva nombra la variante, no el código');
       assert(!/(?:en|exclusivamente en): \*\*Español/.test(built.system) && !built.system.includes('IDIOMA: ES'), "el literal 'ES' no aparece por ningún camino");
+    } finally { fx.restore(); }
+  });
+
+  // FIX-LANG-01 · integración — la directiva sale de la TABLA y llega redactada en
+  // la lengua de salida. Es el efecto observable del corte: una marca con idioma 'en'
+  // recibe su instrucción en inglés, en la primera capa y repetida al cierre, en vez
+  // de una línea suelta con el código crudo entre dos docenas de bloques en español.
+  await test('FIX-LANG-01·int: la fila de language_directives gobierna el bloque de idioma', async () => {
+    const fx = installFetch({
+      tables: {
+        brands: [{ id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en' }],
+        language_directives: [
+          { language_code: 'en', label: 'English (neutral international)', active: true,
+            directive_block: '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in neutral international English.',
+            register_constraints: 'No regional slang.' },
+          { language_code: 'es', label: 'Español neutro internacional', active: true,
+            directive_block: '## IDIOMA DE OUTPUT\nEscribe TODO en español neutro internacional.',
+            register_constraints: 'Sin voseo.' },
+        ],
+      },
+    });
+    try {
+      const built = await buildPrompt(reqWith({ brandContext: { brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      eq(built.language, 'en', "el idioma resuelto es el de la marca, en minúscula tal como viaja");
+      // la fila gana: ni el alias legacy ni el andamiaje viejo aparecen
+      assert(built.system.includes('Write EVERYTHING exclusively in neutral international English.'), 'el cuerpo de la directiva sale de la fila');
+      assert(built.system.includes('No regional slang.'), 'register_constraints llega al prompt');
+      assert(!built.system.includes('Genera TODO el contenido exclusivamente en'), 'con fila, cero andamiaje del alias legacy');
+      // primera capa y repetida al cierre
+      assert(built.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## OUTPUT LANGUAGE'), 'la directiva ABRE el prompt');
+      eq(built.system.split('## OUTPUT LANGUAGE').length - 1, 2, 'aparece dos veces: apertura y cierre');
+      // y la capa L1.5 nombra la VARIANTE, no el código crudo
+      assert(built.system.includes('IDIOMA DE GENERACIÓN: English (neutral international).'), 'L1.5 nombra la variante');
+      assert(!built.system.includes('IDIOMA DE GENERACIÓN: en.'), 'L1.5 ya no imprime el código crudo');
+      // la fila de 'es' está en la tabla y NO se filtró al prompt
+      assert(!built.system.includes('Sin voseo.'), 'sólo entra la fila del idioma declarado');
+    } finally { fx.restore(); }
+  });
+
+  // FIX-LANG-01 · la ventana entre el deploy y el DDL — la tabla TODAVÍA NO EXISTE.
+  // PostgREST devuelve 404 y `sbArray` lo convierte en throw; sin la tolerancia
+  // transitoria, este PR detendría el 100 % de las generaciones en esa ventana.
+  // Se retira junto con el alias legacy, en el tercer PR del corte.
+  await test('FIX-LANG-01·int: sin la tabla (pre-DDL) degrada al alias legacy y sigue generando', async () => {
+    const fx = installFetch({
+      tables: {
+        brands: [{ id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'es' }],
+        language_directives: () => res({ message: 'relation "public.language_directives" does not exist' }, 404),
+      },
+    });
+    try {
+      const built = await buildPrompt(reqWith({ brandContext: { brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
+      eq(built.language, 'es', 'la generación NO se detiene por la tabla ausente');
+      // y la reparación del defecto de origen ya está viva sin la tabla: 'es' en
+      // minúscula encuentra su etiqueta, donde antes imprimía el código crudo.
+      assert(built.system.includes('exclusivamente en: **Español (neutro)**'), "'es' resuelve su etiqueta — antes salía '**es**'");
+      assert(!built.system.includes('exclusivamente en: **es**'), 'el código crudo ya no llega al escritor');
     } finally { fx.restore(); }
   });
 
@@ -701,7 +772,10 @@ async function run() {
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
       assert(singular.system.includes('## MARCA: UNRLVL') && singular.system.includes('Mercado: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
-      eq(fx.calls.length, 0, 'con el registro resuelto y el cache completo: CERO queries');
+      // FIX-LANG-01 — una query de `language_directives` por build (dos builds acá);
+      // ninguna otra: el cache completo sigue cancelando el resto.
+      eq(fx.calls.length, 2, 'con el registro resuelto y el cache completo: sólo la query de idioma, una por build');
+      assert(fx.calls.every(u => u.includes('/rest/v1/language_directives')), `sólo language_directives — obtenido: ${fx.calls.join(', ')}`);
     } finally { fx.restore(); }
   });
 
@@ -1699,12 +1773,65 @@ async function run() {
     for (const s of ['Motivaciones: m1', 'Objeciones a superar: o1', 'Trigger de compra: bt1']) assert(out.includes(s), `incluye ${s}`);
     eq(PURE.buildPersonasBlock([]), '', 'sin personas → vacío');
   });
-  await test('A2b·pure buildIdiomaBlock — ## IDIOMA DE OUTPUT + LANGUAGE_LABELS (es-FL/es-PA)', () => {
-    assert(PURE.buildIdiomaBlock('es-FL').includes('Español — mercado Florida/Miami (es-FL)'), 'label es-FL');
-    assert(PURE.buildIdiomaBlock('es-PA').includes('Español de Panamá'), 'label es-PA');
-    const b = PURE.buildIdiomaBlock('en-US');
-    assert(b.startsWith('## IDIOMA DE OUTPUT') && b.includes('prioridad absoluta') && b.includes('No mezcles idiomas'), 'bloque completo, no sólo el header');
-    assert(PURE.buildIdiomaBlock('zz-ZZ').includes('**zz-ZZ**'), 'idioma sin label → el código crudo');
+  // FIX-LANG-01 — buildIdiomaBlock ya no busca etiqueta: COLOCA la directiva
+  // resuelta. El texto llega redactado en su propia lengua desde la fila de
+  // `language_directives`; el bloque no aporta andamiaje en otro idioma.
+  await test('FIX-LANG-01·pure buildIdiomaBlock — coloca la directiva, no la redacta', () => {
+    const d = {
+      language_code: 'en', label: 'English (neutral)',
+      directive_block: '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in English.',
+      register_constraints: 'Do not use regional slang.',
+    };
+    const out = PURE.buildIdiomaBlock(d);
+    assert(out.startsWith('## OUTPUT LANGUAGE'), 'el encabezado sale de la fila, no del código');
+    assert(out.includes('Write EVERYTHING exclusively in English.'), 'el cuerpo de la directiva, literal');
+    assert(out.includes('Do not use regional slang.'), 'register_constraints va DENTRO del mismo bloque');
+    assert(!/Genera TODO|prioridad absoluta|No mezcles idiomas/.test(out), 'cero andamiaje en español cableado en el código');
+    eq(PURE.buildIdiomaBlock({ ...d, register_constraints: null }),
+       '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in English.',
+       'sin register_constraints → sólo el bloque, sin separador colgando');
+  });
+
+  // FIX-LANG-01 — el defecto de origen: el mapa estaba en MAYÚSCULAS y el código
+  // llega en minúsculas ('es' en 14 de 15 marcas, 'en' en la restante — medido
+  // 2026-08-30 contra public.brands). La normalización es la reparación.
+  await test('FIX-LANG-01·pure normalizeLanguageCode — el código se normaliza antes de buscar', () => {
+    for (const raw of ['es', 'ES', ' Es ', 'eS']) eq(PURE.normalizeLanguageCode(raw), 'es', `'${raw}' → 'es'`);
+    eq(PURE.baseLanguageSubtag('en-FL'), 'en', 'subetiqueta base de un regional con guion');
+    eq(PURE.baseLanguageSubtag('en/FL'), 'en', 'subetiqueta base con barra');
+    eq(PURE.baseLanguageSubtag('es'), 'es', 'un código sin región es su propia base');
+  });
+
+  await test('FIX-LANG-01·pure resolveLanguageDirective — tabla > alias exacto > alias base > throw', () => {
+    const rows = [
+      { language_code: 'es', label: 'Español neutro internacional', directive_block: '## IDIOMA DE OUTPUT\nEscribe TODO en español neutro.', register_constraints: 'Sin voseo.', active: true },
+      { language_code: 'en', label: 'English (neutral)', directive_block: '## OUTPUT LANGUAGE\nWrite everything in neutral English.', register_constraints: null, active: false },
+    ];
+    // 1 · fila de la tabla, buscada con el código NORMALIZADO — el caso que el defecto rompía
+    for (const raw of ['es', 'ES', ' es ']) {
+      const r = PURE.resolveLanguageDirective(rows, raw);
+      eq(r.source, 'table', `'${raw}' resuelve por tabla`);
+      eq(r.directive.label, 'Español neutro internacional', 'la etiqueta sale de la fila');
+      assert(r.directive.register_constraints === 'Sin voseo.', 'el registro prohibido viaja con la directiva');
+    }
+    // 2 · fila inactiva no cuenta: cae al alias legacy, y lo declara
+    const inactive = PURE.resolveLanguageDirective(rows, 'en');
+    eq(inactive.source, 'legacy_alias', 'active=false no es fila utilizable');
+    eq(inactive.directive.label, 'English (neutral)', 'el alias legacy da la etiqueta, ya normalizado a minúsculas');
+    // 3 · sin tabla: alias legacy exacto, y ahora SÍ encuentra 'es' (antes era undefined)
+    eq(PURE.resolveLanguageDirective([], 'es').source, 'legacy_alias', 'sin tabla → alias');
+    assert(PURE.resolveLanguageDirective([], 'es').directive.directive_block.includes('**Español (neutro)**'),
+      "'es' en minúscula encuentra su etiqueta — la palabra «neutro» llega al escritor");
+    assert(PURE.resolveLanguageDirective(null, 'es-FL').directive.directive_block.includes('Español — mercado Florida/Miami'), 'regional por alias exacto');
+    // 4 · regional sin alias exacto → subetiqueta base, declarada como tal
+    const base = PURE.resolveLanguageDirective([], 'en/FL');
+    eq(base.source, 'legacy_alias_base', 'sin alias exacto cae a la base y lo dice');
+    assert(base.directive.directive_block.includes('**English (neutral)**'), 'la base da una etiqueta real, nunca el código crudo');
+    // 5 · fail-loud: el `?? language` que imprimía el código crudo se retiró
+    let threw = '';
+    try { PURE.resolveLanguageDirective([], 'zz-ZZ'); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
+    assert(threw.includes('COPYLAB_LANGUAGE_DIRECTIVE_MISSING') && threw.includes('zz-zz'),
+      `sin fila ni alias → throw nombrando el código; obtenido: ${threw || '(no lanzó)'}`);
   });
   await test('A2b·pure buildGeomixBlock — ## GEOMIX, omite si null', () => {
     const out = PURE.buildGeomixBlock({ geo: 'Miami', servicios: ['s1', 's2'], combos: ['c1'], local_slang: 'ls', cultural_refs: 'cr' });

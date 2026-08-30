@@ -1,9 +1,19 @@
 # CopyLab golden — system prompt del modo UI (gramática buildCopyPrompt + genoma serializado · B0)
-# origen: api/execute.ts @ fix/voice-genome-injector — B0 (renderGenomeSection, genoma jsonb entero)
-# generado: 2026-08-04 · fixture: FULL_SNAPSHOT · Math.random=()=>0 · fetch mockeado sin tablas
+# origen: api/execute.ts @ claude/fix-lang-writer-language-taiqtd — FIX-LANG-01 (directiva de idioma por tabla; primera capa + repetición al cierre)
+# generado: 2026-08-30 · fixture: FULL_SNAPSHOT · Math.random=()=>0 · fetch mockeado sin tablas
+# recongelado por FIX-LANG-01: el bloque de idioma sube al primer lugar y se repite antes del template;
+#   L1.5 nombra la VARIANTE ('English — US market') en vez del código crudo ('en-US'). Sin fila en
+#   language_directives, el texto del bloque es el del alias legacy — idéntico al anterior, sólo movido.
 # NO editar a mano. Regenerar desde los fixtures del test (buildPrompt sobre el fixture).
 # ──────────────────────────────────────────────────────────────────────────
 Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.
+
+## IDIOMA DE OUTPUT
+Genera TODO el contenido exclusivamente en: **English — US market**
+Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.
+No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.
+
+---
 
 ## MARCA: BrandX
 Mercado: US
@@ -27,13 +37,6 @@ Escribe para estas personas. Sus dolores, motivaciones y objeciones deben resona
   Hooks que convierten: ch
   Tono recomendado: ts
   Evitar: av
-
----
-
-## IDIOMA DE OUTPUT
-Genera TODO el contenido exclusivamente en: **English — US market**
-Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.
-No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.
 
 ---
 
@@ -86,7 +89,7 @@ FRASES A EVITAR: sap
 
 VOICE ID: v1 v1 (maturity: stable)
 
-IDIOMA DE GENERACIÓN: en-US. Reescribir desde origen en en-US aplicando el mismo genoma. NUNCA traducir.
+IDIOMA DE GENERACIÓN: English — US market. Reescribir desde origen en English — US market aplicando el mismo genoma. NUNCA traducir.
 
 IDENTITY ANCHORS:
 TAGLINE: ia-tagline
@@ -144,6 +147,13 @@ ANTI-HEDGING:
 ah
 
 El objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.
+
+---
+
+## IDIOMA DE OUTPUT
+Genera TODO el contenido exclusivamente en: **English — US market**
+Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.
+No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.
 
 ---
 
