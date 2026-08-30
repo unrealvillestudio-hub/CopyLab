@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, baseLanguageSubtag, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -170,7 +170,7 @@ const GENOME_V1 = {
   application_constraints: { no_emoji: true },
 };
 const FULL_SNAPSHOT = {
-  brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en-US' }],
+  brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en' }],
   humanize_profiles: [{ tone: 't', personality: 'p', authenticity_rules: 'a', anti_patterns: ['x'] }],
   brand_goals: [{ goal_text: 'g1', priority: 1 }],
   brand_personas: [{ label: 'P', pain_points: ['pp'], copy_hooks: ['ch'], tone_for_segment: 'ts', avoid: ['av'] }],
@@ -205,7 +205,7 @@ const FULL_SNAPSHOT = {
 // Debe coincidir byte a byte con scratchpad/prod_snapshot.json usado para generar
 // api/__fixtures__/golden_ui_prod.txt.
 const PROD_SNAPSHOT = {
-  brand: { id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en-FL' },
+  brand: { id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'es' },
   humanize_profiles: [
     { id: 'd-copy',  brand_id: 'DEFAULT',    medium: 'copy',  tone: 'default-copy-tone', personality: 'def-persona', authenticity_rules: 'def-auth', anti_patterns: ['def-anti'] },
     { id: 'd-image', brand_id: 'DEFAULT',    medium: 'image', tone: 'img', personality: 'i', authenticity_rules: 'i', anti_patterns: ['i'] },
@@ -600,8 +600,8 @@ async function run() {
 
   // Case 2 (pure) — precedencia de idioma sin literal 'ES'; empty = absence
   await test('2·pure resolveLanguage nunca inventa ES; sliceOf trata [] como ausencia', () => {
-    eq(PURE.resolveLanguage(null, undefined, undefined, 'en/FL'), 'en/FL', 'cae a brands.language_primary');
-    eq(PURE.resolveLanguage('EN', undefined, 'ES', 'en/FL'), 'EN', 'builder gana');
+    eq(PURE.resolveLanguage(null, undefined, undefined, 'en'), 'en', 'cae a brands.language_primary');
+    eq(PURE.resolveLanguage('EN', undefined, 'ES', 'en'), 'EN', 'builder gana');
     eq(PURE.resolveLanguage(null, undefined, undefined, null), null, 'sin fuente → null (el caller lanza)');
     const nc = PURE.normalizeCache({ brands: [], brand_voice_genome: [GENOME_V1] }).cache;
     eq(PURE.sliceOf(nc, 'brands'), null, 'brands [] es ausencia');
@@ -629,7 +629,9 @@ async function run() {
 
   // Case 1-prod — golden UI sobre la forma REAL de PRODUCCIÓN (PROD_SNAPSHOT: registro
   // `brand` singular v2.1, dos genomas hermanos, humanize [DEFAULT×5 + marca(text)], idioma
-  // en/FL). Byte a byte contra su golden — cubre que la forma de producción arma el prompt
+  // 'es' — el valor REAL de LucienSael en public.brands [medido 2026-08-30]. El fixture decía
+  // 'en-FL', que nunca existió, y de esa afirmación falsa salió el aparato de variantes
+  // regionales. Byte a byte contra su golden — cubre que la forma de producción arma el prompt
   // esperado (idioma real, humanize de la marca, etc., ahora horneados en la referencia A2·b).
   await test('1-prod·golden UI PROD: buildPrompt(PROD_SNAPSHOT) reproduce el golden byte a byte', async () => {
     const realRandom = Math.random; Math.random = () => 0;
@@ -653,9 +655,12 @@ async function run() {
       // A2·b — gramática nueva (buildCopyPrompt) + orden nuevo: contexto → restricciones →
       // ángulo creativo → forma de salida. El template cierra (último bloque).
       // FIX-LANG-01 — el idioma abre el prompt: es la PRIMERA capa, antes de ## MARCA.
-      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## IDIOMA DE OUTPUT'), 'preámbulo + idioma como primera capa');
+      // BrandX declara 'en', así que su bloque de idioma va EN INGLÉS: es el fondo
+      // del corte —la directiva se redacta en la lengua que instruye, no se traduce.
+      assert(a.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## OUTPUT LANGUAGE'), 'preámbulo + idioma como primera capa, en inglés');
+      assert(!a.system.includes('## IDIOMA DE OUTPUT'), 'una marca EN no recibe el encabezado en español');
       assertOrdered(a.system, [
-        '## IDIOMA DE OUTPUT',
+        '## OUTPUT LANGUAGE',
         '## MARCA: BrandX',
         '## OBJETIVOS ESTRATÉGICOS DE LA MARCA', '## SEGMENTOS OBJETIVO (ICP)',
         '## CANAL: INSTAGRAM',
@@ -665,10 +670,10 @@ async function run() {
         '## L14 CREATIVE VECTOR [VEC1', '## L15 TENSION ARCHITECTURE [TEN1', '## L16 AGGRO DIAL [AGGRO_2',
         // …y se REPITE al cierre, antes del template de output: dos colocaciones del
         // mismo bloque, porque entre la apertura y el cierre hay ~24 capas en español.
-        '## IDIOMA DE OUTPUT',
+        '## OUTPUT LANGUAGE',
         '## TEMPLATE DE OUTPUT [TPL]',
       ]);
-      eq(a.system.split('## IDIOMA DE OUTPUT').length - 1, 2, 'la directiva de idioma aparece exactamente DOS veces: apertura y cierre');
+      eq(a.system.split('## OUTPUT LANGUAGE').length - 1, 2, 'la directiva de idioma aparece exactamente DOS veces: apertura y cierre');
       // genoma DESPUÉS del copy profile; template DESPUÉS de los creativos (cierra)
       assert(a.system.indexOf('## VOZ DE MARCA — BP_COPY_1.0') < a.system.indexOf('## L1.5 VOICE GENOME'), 'genoma tras copy profile');
       assert(a.system.indexOf('## L16 AGGRO DIAL') < a.system.indexOf('## TEMPLATE DE OUTPUT [TPL]'), 'template tras el ángulo creativo (forma de salida al final)');
@@ -686,17 +691,21 @@ async function run() {
 
   // Case 2 — colisión: bc sin `brands` → la query de brands SÍ se ejecuta, idioma real, sin 'ES'
   await test('2·colisión: bc sin brands ⇒ query brands se ejecuta, language real, sin ES', async () => {
-    const fx = installFetch({ tables: { brands: [{ id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' }] } });
+    const fx = installFetch({ tables: { brands: [{ id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en' }] } });
     try {
       const built = await buildPrompt(reqWith({ brandContext: { brand_voice_genome: [GENOME_V1] } }, { brandId: 'UnrealvilleStudio' }));
       assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.UnrealvilleStudio')), 'la query directa de brands debe ejecutarse');
-      eq(built.language, 'en/FL', 'idioma real de brands.language_primary');
-      assert(built.system.includes('Idioma: en/FL'), 'el ## MARCA conserva el código tal cual viene de brands');
-      // FIX-LANG-01 — al escritor ya NO le llega el código crudo: 'en/FL' no tiene fila
-      // ni alias exacto, cae a la subetiqueta base 'en' y le llega su ETIQUETA.
-      assert(!built.system.includes('exclusivamente en: **en/FL**'), 'el código crudo ya no se usa como etiqueta de idioma');
-      assert(built.system.includes('exclusivamente en: **English (neutral)**'), 'la directiva nombra la variante, no el código');
-      assert(!/(?:en|exclusivamente en): \*\*Español/.test(built.system) && !built.system.includes('IDIOMA: ES'), "el literal 'ES' no aparece por ningún camino");
+      eq(built.language, 'en', 'idioma real de brands.language_primary');
+      assert(built.system.includes('Idioma: en'), 'el ## MARCA conserva el código tal cual viene de brands');
+      // FIX-LANG-01 — al escritor ya NO le llega el código crudo. Sin fila sembrada corre el
+      // alias legacy, y su bloque va REDACTADO EN INGLÉS, no traducido del español.
+      eq(built.language_directive.source, 'legacy_alias', 'sin tabla, la procedencia lo declara');
+      eq(built.language_directive.register_type, 'neutral', 'el registro viaja en la meta de la corrida');
+      eq(built.language_directive.register_scope, 'international', 'y su alcance también');
+      assert(!built.system.includes('**en**'), 'el código crudo ya no se usa como etiqueta de idioma');
+      assert(built.system.includes('## OUTPUT LANGUAGE') && built.system.includes('neutral international English'), 'la directiva de una marca EN va en inglés');
+      assert(!built.system.includes('Genera TODO el contenido') && !built.system.includes('IDIOMA DE OUTPUT'), 'cero andamiaje en español en el bloque de idioma de una marca EN');
+      assert(!built.system.includes('IDIOMA: ES'), "el literal 'ES' no aparece por ningún camino");
     } finally { fx.restore(); }
   });
 
@@ -709,10 +718,12 @@ async function run() {
       tables: {
         brands: [{ id: 'UnrealvilleStudio', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en' }],
         language_directives: [
-          { language_code: 'en', label: 'English (neutral international)', active: true,
+          { language_code: 'en', label: 'neutral international English', active: true,
+            register_type: 'neutral', register_scope: 'international',
             directive_block: '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in neutral international English.',
             register_constraints: 'No regional slang.' },
-          { language_code: 'es', label: 'Español neutro internacional', active: true,
+          { language_code: 'es', label: 'español neutro internacional', active: true,
+            register_type: 'neutral', register_scope: 'international',
             directive_block: '## IDIOMA DE OUTPUT\nEscribe TODO en español neutro internacional.',
             register_constraints: 'Sin voseo.' },
         ],
@@ -729,7 +740,10 @@ async function run() {
       assert(built.system.startsWith('Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n## OUTPUT LANGUAGE'), 'la directiva ABRE el prompt');
       eq(built.system.split('## OUTPUT LANGUAGE').length - 1, 2, 'aparece dos veces: apertura y cierre');
       // y la capa L1.5 nombra la VARIANTE, no el código crudo
-      assert(built.system.includes('IDIOMA DE GENERACIÓN: English (neutral international).'), 'L1.5 nombra la variante');
+      assert(built.system.includes('IDIOMA DE GENERACIÓN: neutral international English.'), 'L1.5 nombra la variante');
+      eq(built.language_directive.source, 'table', 'la procedencia declara que gobernó la fila');
+      eq(built.language_directive.register_type, 'neutral', 'el eje de registro viaja en la meta');
+      eq(built.language_directive.register_scope, 'international', 'y su alcance también');
       assert(!built.system.includes('IDIOMA DE GENERACIÓN: en.'), 'L1.5 ya no imprime el código crudo');
       // la fila de 'es' está en la tabla y NO se filtró al prompt
       assert(!built.system.includes('Sin voseo.'), 'sólo entra la fila del idioma declarado');
@@ -752,8 +766,10 @@ async function run() {
       eq(built.language, 'es', 'la generación NO se detiene por la tabla ausente');
       // y la reparación del defecto de origen ya está viva sin la tabla: 'es' en
       // minúscula encuentra su etiqueta, donde antes imprimía el código crudo.
-      assert(built.system.includes('exclusivamente en: **Español (neutro)**'), "'es' resuelve su etiqueta — antes salía '**es**'");
-      assert(!built.system.includes('exclusivamente en: **es**'), 'el código crudo ya no llega al escritor');
+      assert(built.system.includes('**español neutro internacional**'), "'es' resuelve su directiva — antes salía el código crudo '**es**'");
+      assert(built.system.includes('SIN VOSEO'), 'y el respaldo ya prohíbe el voseo, que es el defecto que se quiere cerrar');
+      assert(!built.system.includes('**es**'), 'el código crudo ya no llega al escritor');
+      eq(built.language_directive.source, 'legacy_alias', 'la degradación queda declarada en la procedencia');
     } finally { fx.restore(); }
   });
 
@@ -762,13 +778,13 @@ async function run() {
   // Cache completo en ambas formas ⇒ el registro se resuelve del cache y NO se
   // consulta nada (fx.calls === 0): la forma singular alcanza el modo cero-query.
   await test('2b·clave normalizada: bc.brand (v2.1) ≡ bc.brands[0] (v2.0)', async () => {
-    const rec = { id: 'B', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en/FL' };
+    const rec = { id: 'B', display_name: 'UNRLVL', market: 'Miami', language_primary: 'en' };
     const { brands: _b, ...rest } = FULL_SNAPSHOT;
     const fx = installFetch({});
     try {
       const singular = await buildPrompt(reqWith({ brandContext: { ...rest, brand: rec } }, { brandId: 'B' }));
       const plural   = await buildPrompt(reqWith({ brandContext: { ...rest, brands: [rec] } }, { brandId: 'B' }));
-      eq(singular.language, 'en/FL', 'la forma singular resuelve el idioma');
+      eq(singular.language, 'en', 'la forma singular resuelve el idioma');
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
       assert(singular.system.includes('## MARCA: UNRLVL') && singular.system.includes('Mercado: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
@@ -780,7 +796,7 @@ async function run() {
   });
 
   await test('2b-neg·brand null es ausencia, no cobertura', async () => {
-    const fx = installFetch({ tables: { brands: [{ id: 'X', display_name: 'X', market: 'US', language_primary: 'en-US' }] } });
+    const fx = installFetch({ tables: { brands: [{ id: 'X', display_name: 'X', market: 'US', language_primary: 'en' }] } });
     try {
       await buildPrompt(reqWith({ brandContext: { brand: null, brand_voice_genome: [GENOME_V1] } }, { brandId: 'X' }));
       assert(fx.calls.some(u => u.includes('/rest/v1/brands?id=eq.X')), 'brand:null NO puede cancelar la query');
@@ -794,7 +810,7 @@ async function run() {
   await test('2c·humanize: la fila de la marca gana al DEFAULT, orden-independiente', async () => {
     const DEF   = { id: 'd', brand_id: 'DEFAULT', medium: 'copy', tone: 'neutro', personality: 'p0', authenticity_rules: 'a0', anti_patterns: ['x0'] };
     const BRAND = { id: 'b', brand_id: 'B', medium: 'copy', tone: 'seco', personality: 'p1', authenticity_rules: 'a1', anti_patterns: ['x1'] };
-    const base  = { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] };
+    const base  = { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] };
     const fx = installFetch({});
     try {
       const adverso = await buildPrompt(reqWith({ brandContext: { ...base, humanize_profiles: [DEF, BRAND] } }));
@@ -878,7 +894,7 @@ async function run() {
       },
     });
     try {
-      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'NeuroneSCF', language_primary: 'es-FL' }], creative_vectors: [] } }, { brandId: 'NeuroneSCF' }));
+      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'NeuroneSCF', language_primary: 'es' }], creative_vectors: [] } }, { brandId: 'NeuroneSCF' }));
       assert(fx.calls.some(u => u.includes('/rest/v1/creative_vectors?active=eq.true')), 'creative_vectors [] debe caer a query directa');
       assert(built.creative_seed.vector_id !== null, 'el motor creativo se restaura (vector_id no null)');
     } finally { fx.restore(); }
@@ -890,10 +906,10 @@ async function run() {
     try {
       const r = makeRes();
       const body = reqWith(
-        { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } },
+        { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } },
         // B2 — la regla 'firma' se SURFACEA como signature (deriveSignature), NO se inyecta como orden; la
         // 'prohibition' SÍ se inyecta. Por eso rules_count = 1 (sólo la imperativa), y la firma va aparte.
-        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'en-US', psycho_preset: null, rules: [{ code: 'SIG-1', kind: 'firma', statement: '— Lucien Sael' }, { code: 'HR-9', kind: 'prohibition', statement: 'No prometer resultados.' }], iid_brief: 'Algo pasó hoy', angle: null, audience_frame: 'general' } },
+        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'en', psycho_preset: null, rules: [{ code: 'SIG-1', kind: 'firma', statement: '— Lucien Sael' }, { code: 'HR-9', kind: 'prohibition', statement: 'No prometer resultados.' }], iid_brief: 'Algo pasó hoy', angle: null, audience_frame: 'general' } },
       );
       await handler({ method: 'POST', body } as any, r as any);
       const o = r._out;
@@ -924,7 +940,7 @@ async function run() {
     const realWarn = console.warn; console.warn = (...a: any[]) => { warns.push(a.join(' ')); };
     const fx = installFetch({ tables: { creative_vectors: [] } });
     try {
-      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], creative_vectors: [] } }));
+      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en' }], creative_vectors: [] } }));
       eq(built.creative_seed.vector_id, null, 'degrada a vector null (no throw)');
       assert(warns.some(w => w.includes('creative_vectors') && w.includes('B')), 'warn nominal (marca + fuente)');
     } finally { fx.restore(); console.warn = realWarn; }
@@ -934,9 +950,9 @@ async function run() {
   await test('9·techo: buildPrompt editorial 4000 · social 640 · UI 1600', async () => {
     const fx = installFetch({});
     try {
-      const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-      const ed = await buildPrompt(reqWith(bctx, { builder_input: { domain: 'd', voice_id: 'v1', destination: 'editorial', platform: 'blog', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } }));
-      const so = await buildPrompt(reqWith(bctx, { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'x', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } }));
+      const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+      const ed = await buildPrompt(reqWith(bctx, { builder_input: { domain: 'd', voice_id: 'v1', destination: 'editorial', platform: 'blog', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } }));
+      const so = await buildPrompt(reqWith(bctx, { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'x', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } }));
       const ui = await buildPrompt(reqWith(bctx));
       eq(ed.max_tokens, 4000, 'editorial'); eq(so.max_tokens, 640, 'social'); eq(ui.max_tokens, 1600, 'UI');
     } finally { fx.restore(); }
@@ -948,8 +964,8 @@ async function run() {
   await test('G1-C·techo: buildPrompt aplica builder_input.max_tokens y reporta su procedencia', async () => {
     const fx = installFetch({});
     try {
-      const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-      const bi = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+      const bctx = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+      const bi = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
 
       // G1-D — el techo declarado sigue mandando, pero a la API va CON margen: ceil(1400 × 1,2).
       // La pieza corta la garantiza el PRESUPUESTO del prompt; la API es red de seguridad, no
@@ -977,8 +993,8 @@ async function run() {
   // exactos) y las truncadas a media frase SUBIENDO de 26/48 a 34/48. El techo actuaba de
   // guillotina. Estos tests fijan las tres mitades: que el presupuesto EXISTA en el prompt, que la
   // API deje de ser el mecanismo de corte, y que los dos números queden registrados.
-  const LB_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-  const lbBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+  const LB_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+  const lbBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
 
   await test('G1-D·pure lengthBudgetCharsFor: techo × 3, redondeado a la centena; null → null', () => {
     // El ratio es dato del MODELO (≈3,27 medidos: 320 tokens → 1.045 chars), no de una marca, y se
@@ -1067,8 +1083,8 @@ async function run() {
   // modo social, «Sin título, sin la etiqueta "TÍTULO:"». Las 9 piezas del lote sin título eran
   // sociales: el título no faltaba por descuido del escritor, estaba PROHIBIDO. Y desde BRIEF 7 el
   // título es el texto que se dibuja sobre la imagen — sin él, el overlay no compone jamás.
-  const T8_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-  const t8BI = (extra: any = {}) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+  const T8_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+  const t8BI = (extra: any = {}) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
 
   await test('BRIEF8·A·pure readTitleBudgetChars: el número es DATO; ilegible no corta, deja rastro', () => {
     eq(PURE.readTitleBudgetChars(72), 72, 'el declarado manda');
@@ -1185,8 +1201,8 @@ async function run() {
   // NADA debajo, mientras gate7 la juzgaba contra la regla completa. Estos tests fijan las dos
   // mitades: que la política tenga CUERPO, y que un frente que el mapa no cubre no vuelva a
   // pasar en silencio.
-  const AF_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-  const afBI = (frame: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: frame });
+  const AF_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+  const afBI = (frame: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: frame });
   // Devuelve el cuerpo de la política emitida (lo que va DEBAJO del encabezado), o null si no
   // se emitió bloque. Es la aserción que el `?? ''` de main no pasa: el encabezado existía.
   function ctaBody(system: string): string | null {
@@ -1289,7 +1305,7 @@ async function run() {
   // Base para los tres tests de registro: catálogo creativo con AGGRO_1/2/3 para
   // distinguir de qué fila salió el aggro (voz vs BASE).
   const REG_BASE = {
-    brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en-US' }],
+    brands: [{ id: 'B', display_name: 'BrandX', market: 'US', language_primary: 'en' }],
     brand_voice_genome: [
       { voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
       { voice_id: 'lucien_social', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] },
@@ -1302,7 +1318,7 @@ async function run() {
       { id: 'AGGRO_3', level: 3, label: 'L', instruction: 'i', anti_hedging: 'h' },
     ],
   };
-  const carrilBI = (extra: any) => ({ domain: 'd', voice_id: 'v', destination: 'social', platform: 'x', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
+  const carrilBI = (extra: any) => ({ domain: 'd', voice_id: 'v', destination: 'social', platform: 'x', language: 'en', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, ...extra });
 
   // INT-1 — editorial_post + lucien_editorial: gana la fila de la voz; el aggro sale
   // de SU allowed_aggro (AGGRO_3), no del de la BASE (AGGRO_1) ni del aggro_default del
@@ -1500,7 +1516,7 @@ async function run() {
       };
       const built = await buildPrompt(reqWith(
         { brandContext: cache },
-        { params: { pack: 'email_sequence_cart' }, meta: { sequence_type: 'abandoned_cart', position: 2, language: 'en-US' } },
+        { params: { pack: 'email_sequence_cart' }, meta: { sequence_type: 'abandoned_cart', position: 2, language: 'en' } },
       ));
       eq(built.creative_seed.aggro_id, 'AGGRO_4', 'aggro del EJE CREATIVO (abandoned_cart_2 → 4), no del pipeline (2)');
       eq(built.output_template_id, 'prompt_Email_Sequence', 'template del EJE PIPELINE (email_sequence), no del creativo (Email_Campaign)');
@@ -1528,7 +1544,7 @@ async function run() {
     });
     try {
       // modo UI (sin builder_input), cache sin slice de creative_compatibility_rules → query directa
-      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }] } }));
+      const built = await buildPrompt(reqWith({ brandContext: { brands: [{ id: 'B', language_primary: 'en' }] } }));
       assert(fx.calls.some(u => u.includes('/rest/v1/creative_compatibility_rules') && u.includes('content_type=eq.social_post') && !u.includes('voice_id')), 'la query directa NO lleva filtro de voz (trae todo el content_type)');
       eq(built.creative_seed.aggro_id, 'AGGRO_2', 'resuelve BASE por query directa sin romper (400)');
     } finally { fx.restore(); Math.random = realRandom; }
@@ -1542,7 +1558,7 @@ async function run() {
     const fx = installFetch({});
     try {
       const cache = {
-        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en' }],
         brand_voice_genome: [{ voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] }],
         creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
         tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
@@ -1566,7 +1582,7 @@ async function run() {
     const fx = installFetch({});
     try {
       const cache = {
-        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en' }],
         brand_voice_genome: [{ voice_id: 'lucien_editorial', version: '1', maturity: 'stable', identity_anchors: 'ia', lexicon_signature: {}, lexicon_forbidden: [], syntactic_signatures: {}, argumentative_architecture: {}, relational_stance: {}, emotional_register: 'er', prohibited_registers: [] }],
         creative_vectors: [{ id: 'VEC1', category: 'c', label: 'L', instruction: 'i', aggro_min: 1, aggro_max: 5 }],
         tension_architectures: [{ id: 'TEN1', label: 'L', instruction: 'i', curve: 'c' }],
@@ -1598,7 +1614,7 @@ async function run() {
       const cache = {
         ...REG_BASE,
         brand_voice_genome: [],
-        brands: [{ id: 'B', display_name: 'ACME', market: 'US', language_primary: 'en-US', cta_base: 'Comprá ya', geo_principal: 'Miami' }],
+        brands: [{ id: 'B', display_name: 'ACME', market: 'US', language_primary: 'en', cta_base: 'Comprá ya', geo_principal: 'Miami' }],
         content_type_registry: [
           { content_type: 'email_sequence', pipeline_family: 'email_sequence', output_template_id: 'prompt_Email_Sequence', aggro_default: 2, active: true },
         ],
@@ -1608,7 +1624,7 @@ async function run() {
       };
       const built = await buildPrompt(reqWith(
         { brandContext: cache },
-        { params: { pack: 'email_sequence_welcome' }, meta: { sequence_type: 'welcome', position: 1, language: 'en-US' } },
+        { params: { pack: 'email_sequence_welcome' }, meta: { sequence_type: 'welcome', position: 1, language: 'en' } },
       ));
       assert(!built.system.includes('{{') && !built.system.includes('}}'), 'ningún placeholder {{ }} crudo llega al modelo');
       assert(built.system.includes('Hola ACME — Comprá ya en Miami'), 'las variables con valor se sustituyen');
@@ -1624,7 +1640,7 @@ async function run() {
       const cache = {
         ...REG_BASE,
         brand_voice_genome: [],
-        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en-US' }],
+        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en' }],
         content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: 'tX', aggro_default: 2, active: true }],
         creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
         aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
@@ -1649,7 +1665,7 @@ async function run() {
       const cache = {
         ...REG_BASE,
         brand_voice_genome: [],
-        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en-US' }], // sin disclaimer_base
+        brands: [{ id: 'B', display_name: 'ACME', language_primary: 'en' }], // sin disclaimer_base
         content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: 'tD', aggro_default: 2, active: true }],
         creative_compatibility_rules: [{ content_type: 'social_post', voice_id: null, allowed_vectors: ['VEC1'], excluded_vectors: [], allowed_tensions: ['TEN1'], allowed_aggro: ['AGGRO_2'] }],
         aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'L', instruction: 'i', anti_hedging: 'h' }],
@@ -1743,9 +1759,9 @@ async function run() {
     eq(JSON.stringify(PURE.getComplianceRules([])), JSON.stringify([]), 'vacío → []');
   });
   await test('A2b·pure buildBrandBlock — ## MARCA + campos ampliados, omite ausentes', () => {
-    const b = PURE.buildBrandBlock({ display_name: 'ACME', brand_context: 'ctx', geo_principal: 'Miami', tono_base: 'seco', diferenciador_base: 'dif', disclaimer_base: 'disc', market: 'US', language_primary: 'en-US' });
+    const b = PURE.buildBrandBlock({ display_name: 'ACME', brand_context: 'ctx', geo_principal: 'Miami', tono_base: 'seco', diferenciador_base: 'dif', disclaimer_base: 'disc', market: 'US', language_primary: 'en' });
     assert(b.startsWith('## MARCA: ACME'), 'header ## MARCA');
-    for (const s of ['Contexto: ctx', 'Geo principal: Miami', 'Tono base: seco', 'Diferenciador: dif', 'Disclaimer: disc', 'Mercado: US', 'Idioma: en-US']) assert(b.includes(s), `incluye ${s}`);
+    for (const s of ['Contexto: ctx', 'Geo principal: Miami', 'Tono base: seco', 'Diferenciador: dif', 'Disclaimer: disc', 'Mercado: US', 'Idioma: en']) assert(b.includes(s), `incluye ${s}`);
     assert(!PURE.buildBrandBlock({ display_name: 'X' }).includes('Contexto:'), 'omite campos ausentes (sin línea vacía)');
   });
   await test('A2b·pure buildGoalsBlock — agrupa por horizon, KPI+target, 3/horizonte', () => {
@@ -1778,17 +1794,22 @@ async function run() {
   // `language_directives`; el bloque no aporta andamiaje en otro idioma.
   await test('FIX-LANG-01·pure buildIdiomaBlock — coloca la directiva, no la redacta', () => {
     const d = {
-      language_code: 'en', label: 'English (neutral)',
-      directive_block: '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in English.',
-      register_constraints: 'Do not use regional slang.',
+      language_code: 'en', label: 'neutral international English',
+      register_type: 'neutral', register_scope: 'international',
+      directive_block: '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in neutral international English.',
+      register_constraints: 'No regional slang.',
     };
     const out = PURE.buildIdiomaBlock(d);
     assert(out.startsWith('## OUTPUT LANGUAGE'), 'el encabezado sale de la fila, no del código');
-    assert(out.includes('Write EVERYTHING exclusively in English.'), 'el cuerpo de la directiva, literal');
-    assert(out.includes('Do not use regional slang.'), 'register_constraints va DENTRO del mismo bloque');
+    assert(out.includes('Write EVERYTHING exclusively in neutral international English.'), 'el cuerpo de la directiva, literal');
+    assert(out.includes('No regional slang.'), 'register_constraints va DENTRO del mismo bloque');
     assert(!/Genera TODO|prioridad absoluta|No mezcles idiomas/.test(out), 'cero andamiaje en español cableado en el código');
+    // los tokens de registro NO se renderizan como campos: meter la palabra «neutro»
+    // dentro de una directiva en inglés sería el mismo defecto que este corte repara.
+    // Son eje de AUDITORÍA y viajan en la meta de la corrida, no en el prompt.
+    assert(!/register_type|register_scope/.test(out), 'los tokens de registro no se vuelcan al prompt');
     eq(PURE.buildIdiomaBlock({ ...d, register_constraints: null }),
-       '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in English.',
+       '## OUTPUT LANGUAGE\nWrite EVERYTHING exclusively in neutral international English.',
        'sin register_constraints → sólo el bloque, sin separador colgando');
   });
 
@@ -1797,42 +1818,54 @@ async function run() {
   // 2026-08-30 contra public.brands). La normalización es la reparación.
   await test('FIX-LANG-01·pure normalizeLanguageCode — el código se normaliza antes de buscar', () => {
     for (const raw of ['es', 'ES', ' Es ', 'eS']) eq(PURE.normalizeLanguageCode(raw), 'es', `'${raw}' → 'es'`);
-    eq(PURE.baseLanguageSubtag('en-FL'), 'en', 'subetiqueta base de un regional con guion');
-    eq(PURE.baseLanguageSubtag('en/FL'), 'en', 'subetiqueta base con barra');
-    eq(PURE.baseLanguageSubtag('es'), 'es', 'un código sin región es su propia base');
+    eq(PURE.normalizeLanguageCode('  EN  '), 'en', 'recorta y baja');
+    eq(PURE.normalizeLanguageCode(undefined as any), '', 'ausencia → cadena vacía, nunca "undefined"');
   });
 
-  await test('FIX-LANG-01·pure resolveLanguageDirective — tabla > alias exacto > alias base > throw', () => {
+  await test('FIX-LANG-01·pure resolveLanguageDirective — tabla > alias exacto > throw', () => {
     const rows = [
-      { language_code: 'es', label: 'Español neutro internacional', directive_block: '## IDIOMA DE OUTPUT\nEscribe TODO en español neutro.', register_constraints: 'Sin voseo.', active: true },
-      { language_code: 'en', label: 'English (neutral)', directive_block: '## OUTPUT LANGUAGE\nWrite everything in neutral English.', register_constraints: null, active: false },
+      { language_code: 'es', label: 'español neutro internacional', register_type: 'neutral', register_scope: 'international', directive_block: '## IDIOMA DE OUTPUT\nEscribe TODO en español neutro internacional.', register_constraints: 'Sin voseo.', active: true },
+      { language_code: 'en', label: 'neutral international English', register_type: 'neutral', register_scope: 'international', directive_block: '## OUTPUT LANGUAGE\nWrite everything in neutral international English.', register_constraints: null, active: false },
     ];
     // 1 · fila de la tabla, buscada con el código NORMALIZADO — el caso que el defecto rompía
     for (const raw of ['es', 'ES', ' es ']) {
       const r = PURE.resolveLanguageDirective(rows, raw);
       eq(r.source, 'table', `'${raw}' resuelve por tabla`);
-      eq(r.directive.label, 'Español neutro internacional', 'la etiqueta sale de la fila');
-      assert(r.directive.register_constraints === 'Sin voseo.', 'el registro prohibido viaja con la directiva');
+      eq(r.directive.label, 'español neutro internacional', 'la etiqueta sale de la fila');
+      eq(r.directive.register_type, 'neutral', 'el eje de registro sale de la fila');
+      eq(r.directive.register_scope, 'international', 'y su alcance también');
+      eq(r.directive.register_constraints, 'Sin voseo.', 'el registro prohibido viaja con la directiva');
     }
     // 2 · fila inactiva no cuenta: cae al alias legacy, y lo declara
     const inactive = PURE.resolveLanguageDirective(rows, 'en');
     eq(inactive.source, 'legacy_alias', 'active=false no es fila utilizable');
-    eq(inactive.directive.label, 'English (neutral)', 'el alias legacy da la etiqueta, ya normalizado a minúsculas');
     // 3 · sin tabla: alias legacy exacto, y ahora SÍ encuentra 'es' (antes era undefined)
     eq(PURE.resolveLanguageDirective([], 'es').source, 'legacy_alias', 'sin tabla → alias');
-    assert(PURE.resolveLanguageDirective([], 'es').directive.directive_block.includes('**Español (neutro)**'),
-      "'es' en minúscula encuentra su etiqueta — la palabra «neutro» llega al escritor");
-    assert(PURE.resolveLanguageDirective(null, 'es-FL').directive.directive_block.includes('Español — mercado Florida/Miami'), 'regional por alias exacto');
-    // 4 · regional sin alias exacto → subetiqueta base, declarada como tal
-    const base = PURE.resolveLanguageDirective([], 'en/FL');
-    eq(base.source, 'legacy_alias_base', 'sin alias exacto cae a la base y lo dice');
-    assert(base.directive.directive_block.includes('**English (neutral)**'), 'la base da una etiqueta real, nunca el código crudo');
-    // 5 · fail-loud: el `?? language` que imprimía el código crudo se retiró
-    let threw = '';
-    try { PURE.resolveLanguageDirective([], 'zz-ZZ'); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
-    assert(threw.includes('COPYLAB_LANGUAGE_DIRECTIVE_MISSING') && threw.includes('zz-zz'),
-      `sin fila ni alias → throw nombrando el código; obtenido: ${threw || '(no lanzó)'}`);
+    assert(PURE.resolveLanguageDirective([], 'es').directive.directive_block.includes('español neutro internacional'),
+      "'es' en minúscula encuentra su directiva — antes salía el código crudo '**es**'");
+    // 4 · cada respaldo va REDACTADO en la lengua que instruye, no traducido
+    assert(PURE.resolveLanguageDirective(null, 'en').directive.directive_block.startsWith('## OUTPUT LANGUAGE'),
+      'el respaldo de EN va en inglés, encabezado incluido');
+    assert(!PURE.resolveLanguageDirective(null, 'en').directive.directive_block.includes('Escribe'),
+      'ni una palabra de español en la directiva de EN');
+    assert(PURE.resolveLanguageDirective(null, 'es').directive.directive_block.includes('SIN VOSEO'),
+      'el respaldo de ES ya prohíbe el voseo, con su motivo operativo');
+    // 5 · fail-loud: NO hay caída a subetiqueta base. Ninguna marca declara una
+    //     variante regional [medido 2026-08-30], así que un regional se para y se dice.
+    for (const unknown of ['en-FL', 'es-PA', 'en/FL', 'lt', 'ru', 'zz-ZZ', '']) {
+      let threw = '';
+      try { PURE.resolveLanguageDirective([], unknown); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
+      assert(threw.includes('COPYLAB_LANGUAGE_DIRECTIVE_MISSING'),
+        `'${unknown}' sin fila ni alias debe DETENER la generación; obtenido: ${threw || '(no lanzó)'}`);
+    }
+    // 6 · y con su fila sembrada, un idioma nuevo entra sin tocar código
+    const lt = PURE.resolveLanguageDirective(
+      [{ language_code: 'lt', label: 'neutrali tarptautinė lietuvių kalba', register_type: 'neutral', register_scope: 'international', directive_block: '## IŠVESTIES KALBA\nVisą turinį rašyk tik neutralia tarptautine lietuvių kalba.', register_constraints: null, active: true }],
+      'LT');
+    eq(lt.source, 'table', 'una marca lituana entra con un INSERT, sin tocar este archivo');
+    assert(lt.directive.directive_block.startsWith('## IŠVESTIES KALBA'), 'y su bloque va en lituano');
   });
+
   await test('A2b·pure buildGeomixBlock — ## GEOMIX, omite si null', () => {
     const out = PURE.buildGeomixBlock({ geo: 'Miami', servicios: ['s1', 's2'], combos: ['c1'], local_slang: 'ls', cultural_refs: 'cr' });
     assert(out.startsWith('## GEOMIX — Miami'), 'header con geo');
@@ -1891,7 +1924,7 @@ async function run() {
         relational_stance: {}, emotional_register: {}, prohibited_registers: [], application_constraints: {},
       };
       const cache = {
-        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en-US' }],
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', language_primary: 'en' }],
         brand_voice_genome: [genomeLucien],
         content_type_registry: [{ content_type: 'social_post', pipeline_family: 'post', output_template_id: null, aggro_default: 2, active: true }],
       };
@@ -1912,7 +1945,7 @@ async function run() {
     try {
       // Cache representativo de NeuroneSCF (prod: geomix 5, ctas 12, personas 9, goals 12).
       const cache = {
-        brands: [{ id: 'NeuroneSCF', display_name: 'NeuroneSCF', market: 'Panamá', language_primary: 'es-PA', brand_context: 'neuro', geo_principal: 'PA', tono_base: 'clínico', diferenciador_base: 'ciencia', disclaimer_base: 'no es consejo médico' }],
+        brands: [{ id: 'NeuroneSCF', display_name: 'NeuroneSCF', market: 'Panamá', language_primary: 'es', brand_context: 'neuro', geo_principal: 'PA', tono_base: 'clínico', diferenciador_base: 'ciencia', disclaimer_base: 'no es consejo médico' }],
         brand_voice_genome: [], humanize_profiles: [{ tone: 't', personality: 'p', authenticity_rules: 'a', anti_patterns: ['x'] }],
         brand_goals: [{ horizon: '6m', category: 'growth', goal: 'crecer', kpi: 'MRR', target: '10k' }, { horizon: '12m', category: 'brand', goal: 'marca' }],
         brand_personas: [{ label: 'Doctor', priority: 1, segment_type: 'b2b', pain_points: ['pp'], motivations: ['mot'], objections: ['obj'], buying_trigger: 'trig', copy_hooks: ['h'] }],
@@ -1942,7 +1975,7 @@ async function run() {
     const fx = installFetch({});
     try {
       const cache = {
-        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en/FL' }], // sin cta_base
+        brands: [{ id: 'LucienSael', display_name: 'Lucien Sael', market: 'Miami', language_primary: 'en' }], // sin cta_base
         brand_voice_genome: [], humanize_profiles: [{ tone: 't', personality: 'p', authenticity_rules: 'a', anti_patterns: ['x'] }],
         brand_goals: [{ horizon: '12m', category: 'brand', goal: 'autoridad editorial' }],
         brand_personas: [{ label: 'Lector', priority: 1 }],
@@ -1974,8 +2007,8 @@ async function run() {
   //
   // Cero marcas: las violaciones son DATO del payload. Los códigos de estos tests son los que
   // dispararon en la corrida, pero el motor no los conoce — lo prueba el test del código inventado.
-  const RP_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en-US' }], brand_voice_genome: [GENOME_V1] } };
-  const rpBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en-US', psycho_preset: null, rules: [], iid_brief: 'la materia prima de la primera pasada', angle: null, audience_frame: null, ...extra });
+  const RP_BCTX = { brandContext: { brands: [{ id: 'B', language_primary: 'en' }], brand_voice_genome: [GENOME_V1] } };
+  const rpBI = (extra: any) => ({ domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_fb', language: 'en', psycho_preset: null, rules: [], iid_brief: 'la materia prima de la primera pasada', angle: null, audience_frame: null, ...extra });
   const PIEZA = 'La primera frase de la pieza que ya está escrita. Y su cierre, entero.';
   const VIOLACIONES = [
     { code: 'HR-GEN-01', instruction: 'Cerrá la pieza: la última frase termina en signo de cierre.' },
