@@ -317,6 +317,7 @@ interface NormalizedCache {
   canal_blocks: any[];
   platform_canal_map: any[];
   geomix: any[];
+  language_directives: any[];
   _shape: 'snapshot' | 'context_json';
 }
 
@@ -331,6 +332,10 @@ const CACHE_SLICES: Array<keyof NormalizedCache> = [
   'canal_blocks', 'platform_canal_map',
   // A2·b — geomix (mezcla geográfica); ya viaja en el snapshot, execute.ts no lo mapeaba.
   'geomix',
+  // FIX-LANG-01 — directivas de idioma. Se declara como slice para que el día que el
+  // snapshot las traiga se lean de memoria; hoy ningún snapshot las emite y el
+  // fallback de la query directa las trae (sliceOf trata [] y ausencia por igual).
+  'language_directives',
 ];
 
 function emptyNormalizedCache(shape: NormalizedCache['_shape']): NormalizedCache {
@@ -1171,12 +1176,150 @@ function ensureArray(val: any): string[] {
   return [];
 }
 
-const LANGUAGE_LABELS: Record<string, string> = {
-  ES: 'Español (neutro)', 'es-ES': 'Español de España', 'es-FL': 'Español — mercado Florida/Miami (es-FL)',
-  'es-PA': 'Español de Panamá', 'es-MX': 'Español de México',
-  EN: 'English (neutral)', 'en-US': 'English — US market', 'en-FL': 'English — Florida market',
-  PT: 'Português', FR: 'Français',
+// FIX-LANG-01 · ALIAS LEGACY, con fecha de retiro declarada ─────────────────
+// Este mapa fue la ÚNICA fuente de la etiqueta de idioma y por eso produjo el
+// defecto que FIX-LANG-01 repara: estaba indexado en MAYÚSCULAS ('ES', 'EN') y
+// el código de idioma viaja por la cascada en MINÚSCULAS. `LANGUAGE_LABELS['es']`
+// era `undefined`, el `?? language` imprimía el código crudo, y al escritor le
+// llegaba literalmente «exclusivamente en: **es**». La palabra «neutro» nunca
+// llegó al modelo.
+//
+// **Sólo dos entradas, y es a propósito.** La versión anterior de este mapa
+// enumeraba variantes regionales —'es-ES', 'es-FL', 'es-PA', 'es-MX', 'en-US',
+// 'en-FL'— más 'pt' y 'fr'. **Ninguna existe.** `select language_primary,
+// count(*) from public.brands group by 1` → **14 marcas en 'es', 1 en 'en', cero
+// códigos regionales** [medido 2026-08-30]. Las variantes regionales entraron en
+// el mapa desde un fixture de test cuyo comentario afirmaba una forma de
+// producción que nunca fue cierta (ver `PROD_SNAPSHOT` en execute.test.ts).
+// Modelar una variante que ninguna marca declara no es previsión: es un camino
+// vivo que nadie prueba y que ablanda el fail-loud.
+//
+// Un código que no esté acá y no tenga fila en `language_directives` DETIENE la
+// generación. Es lo correcto: si mañana entra una marca lituana, la generación
+// se para hasta que su fila esté sembrada, en vez de mandarle al escritor una
+// instrucción que no dice nada.
+//
+// RETIRO PREVISTO: tercer PR de FIX-LANG-01, cuando `language_directives` tenga
+// fila para todo código en uso.
+const LANGUAGE_LABELS_LEGACY: Record<string, string> = {
+  es: 'español neutro internacional',
+  en: 'neutral international English',
 };
+
+// La directiva de idioma resuelta: lo que la capa de idioma inyecta al prompt.
+//
+// `directive_block` es el bloque COMPLETO —encabezado incluido— y viene redactado
+// en la propia lengua de salida; el código no arma texto de instrucción, sólo lo
+// coloca. Ése es el eje: cada idioma declarado trae su propio bloque. El texto de
+// cada bloque es instancia y vive en dato.
+//
+// `register_type` y `register_scope` son el eje que declaró Sam el 2026-08-30:
+// todo idioma del ecosistema es NEUTRO e INTERNACIONAL, sin regionalismos
+// (`DELIVERY_AND_VERIFICATION_RULE` §2-BIS lo exige y hasta hoy no lo comprobaba
+// nadie). Son **tokens canónicos en inglés**, no texto de prompt, y por eso NO se
+// renderizan: meter la palabra «neutro» dentro de una directiva en inglés sería
+// el mismo defecto que este corte repara. Lo que el modelo lee es `label` y
+// `directive_block`, que ya lo dicen en su propia lengua. Lo que estos dos campos
+// habilitan es la AUDITORÍA —`where register_type <> 'neutral'` responde «¿queda
+// alguna variante regional viva?»— y viajan en la meta de la corrida para que la
+// procedencia de cada pieza diga bajo qué registro se generó.
+type LanguageDirective = {
+  language_code: string;
+  label: string;
+  register_type: string;
+  register_scope: string;
+  directive_block: string;
+  register_constraints: string | null;
+};
+
+// El código de idioma viaja sin forma canónica ('ES', 'es', ' es '). Se normaliza
+// a minúsculas y sin espacios ANTES de cualquier búsqueda — el defecto de origen
+// fue exactamente una búsqueda sobre una forma no normalizada.
+function normalizeLanguageCode(code: string): string {
+  return String(code ?? '').trim().toLowerCase();
+}
+
+// Resuelve la directiva del idioma declarado. Devuelve también su PROCEDENCIA,
+// para que el caller la registre: una degradación al alias legacy nunca cae en
+// silencio, que es el defecto que este corte repara.
+//
+// Precedencia — DOS pasos y un throw, sin escalones intermedios:
+//   1. fila en `language_directives` (activa, con bloque no vacío)
+//   2. alias legacy por código exacto → warn nominal
+//   3. throw COPYLAB_LANGUAGE_DIRECTIVE_MISSING
+//
+// No hay caída a la subetiqueta base ('en-FL' → 'en'). La versión anterior la
+// tenía, y era un escalón para cubrir códigos regionales que **ninguna marca
+// declara** [medido 2026-08-30]: un camino que nadie ejerce y que convierte un
+// código desconocido en una generación silenciosamente aproximada. Un código que
+// no se reconoce se para y se dice.
+//
+// El `?? language` de la versión original —que imprimía el código crudo como si
+// fuese una etiqueta— se retira aquí.
+function resolveLanguageDirective(
+  rows: any[] | null | undefined,
+  language: string,
+): { directive: LanguageDirective; source: 'table' | 'legacy_alias' } {
+  const code = normalizeLanguageCode(language);
+
+  const row = (rows ?? []).find(
+    (r: any) => r && r.active !== false && normalizeLanguageCode(r.language_code) === code,
+  );
+  if (row && String(row.directive_block ?? '').trim()) {
+    return {
+      source: 'table',
+      directive: {
+        language_code: code,
+        label: String(row.label ?? '').trim() || code,
+        register_type: String(row.register_type ?? '').trim() || 'unknown',
+        register_scope: String(row.register_scope ?? '').trim() || 'unknown',
+        directive_block: String(row.directive_block).trim(),
+        register_constraints: String(row.register_constraints ?? '').trim() || null,
+      },
+    };
+  }
+
+  const label = code ? LANGUAGE_LABELS_LEGACY[code] : undefined;
+  if (label) return { source: 'legacy_alias', directive: legacyDirective(code, label) };
+
+  throw new Error(
+    `COPYLAB_LANGUAGE_DIRECTIVE_MISSING: sin fila en language_directives para '${code}' ` +
+    `y sin alias legacy que lo cubra — sembrar la fila del idioma antes de generar en él`,
+  );
+}
+
+// Respaldo mientras `language_directives` no exista ni esté sembrada. El bloque va
+// REDACTADO EN LA LENGUA QUE INSTRUYE —no traducido desde el español— porque ése
+// es el fondo del corte: una directiva en inglés dentro de un prompt en español
+// pierde contra las ~24 capas que la rodean. Es respaldo, no destino: el destino
+// es la fila, que además trae sus restricciones de registro.
+function legacyDirective(code: string, label: string): LanguageDirective {
+  const BLOCKS: Record<string, string> = {
+    es: [
+      '## IDIOMA DE OUTPUT',
+      'Escribe TODO el contenido exclusivamente en **español neutro internacional**.',
+      'Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.',
+      'Neutro internacional significa: léxico comprensible en todo el ámbito hispanohablante, SIN VOSEO, sin modismos locales y sin jerga regional.',
+      'El voseo se prohíbe por una razón operativa: el imperativo voseante y el pretérito son homógrafos («decidí» es a la vez una orden y un hecho consumado).',
+      'No mezcles idiomas. Si un término técnico no tiene traducción natural, mantenlo en su idioma original.',
+    ].join('\n'),
+    en: [
+      '## OUTPUT LANGUAGE',
+      'Write ALL content exclusively in **neutral international English**.',
+      'This instruction takes absolute priority over any language implied by the surrounding context.',
+      'Neutral international means: vocabulary understood across the entire English-speaking world, with no local idioms and no regional slang.',
+      'Do not mix languages. If a technical term has no natural translation, keep it in its original language.',
+    ].join('\n'),
+  };
+  return {
+    language_code: code,
+    label,
+    register_type: 'neutral',
+    register_scope: 'international',
+    register_constraints: null,
+    directive_block: BLOCKS[code] ?? `## OUTPUT LANGUAGE\nWrite ALL content exclusively in ${label}.`,
+  };
+}
 
 // CTA field por canal_block_id (A2·a lo resuelve). Los IDs (META_ADS, BLOG, INSTAGRAM_
 // ORGANICO…) son el vocabulario que esta función espera. cta_ads sale de aquí (lo usa ADS).
@@ -1273,13 +1416,18 @@ function buildPersonasBlock(personas: any[] | null | undefined): string {
   return lines.join('\n');
 }
 
-function buildIdiomaBlock(language: string): string {
-  return [
-    '## IDIOMA DE OUTPUT',
-    `Genera TODO el contenido exclusivamente en: **${LANGUAGE_LABELS[language] ?? language}**`,
-    'Esta instrucción tiene prioridad absoluta sobre cualquier idioma implícito en el contexto.',
-    'No mezcles idiomas. Si algún término técnico no tiene traducción natural, mantenlo en su idioma original.',
-  ].join('\n');
+// FIX-LANG-01 · la capa de idioma COLOCA la directiva, no la redacta. El texto
+// llega ya escrito en la lengua de salida desde `language_directives`; el código
+// no aporta ni una palabra de andamiaje en otro idioma, que es lo que hacía que
+// una línea en inglés compitiera contra dos docenas de bloques en español.
+// `register_constraints` va DENTRO del mismo bloque —lo prohibido de registro es
+// parte de la instrucción de idioma, no una capa aparte— y viene redactado en esa
+// misma lengua.
+function buildIdiomaBlock(directive: LanguageDirective): string {
+  const parts = [directive.directive_block.trim()];
+  const constraints = (directive.register_constraints ?? '').trim();
+  if (constraints) parts.push(constraints);
+  return parts.join('\n\n');
 }
 
 function buildGeomixBlock(geo: any): string {
@@ -1417,6 +1565,25 @@ async function sbArray<T>(path: string): Promise<T[]> {
   }
   const data = await res.json();
   return Array.isArray(data) ? data : [];
+}
+
+// FIX-LANG-01 · TOLERANCIA TRANSITORIA — se retira con el alias legacy (tercer PR)
+// El orden inviolable del corte es: PR de código → deploy → DDL → siembra. Entre el
+// deploy y el DDL la tabla NO existe, y `sbArray` convierte ese 404 de PostgREST en
+// throw: sin esta tolerancia, el PR que repara el idioma detendría el 100 % de las
+// generaciones durante esa ventana. Acá el fallo de LECTURA del catálogo degrada al
+// alias legacy y lo DECLARA con su error; el fail-loud sigue vivo donde importa —
+// si además no hay alias que cubra el código, `resolveLanguageDirective` lanza.
+async function fetchLanguageDirectives(): Promise<any[]> {
+  try {
+    return await sbArray<any>('language_directives?active=eq.true&select=*');
+  } catch (e) {
+    console.warn(
+      `[CopyLab] no se pudo leer language_directives (${e instanceof Error ? e.message : String(e)}) — ` +
+      'se cae al alias legacy de idioma; si la tabla ya está creada y sembrada, esto es un defecto a revisar',
+    );
+    return [];
+  }
 }
 
 // ── BRAND CACHE FETCH v9.5 ─────────────────────────────────────────────────
@@ -1582,6 +1749,16 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   voice_id: string | null;
   voice_version: string | null;
   language: string;
+  // FIX-LANG-01 — bajo qué DIRECTIVA se generó, no sólo en qué código. `source`
+  // distingue la fila sembrada del alias legacy: sin él, una corrida degradada y
+  // una corrida gobernada por la tabla se leen igual en la procedencia.
+  language_directive: {
+    code: string;
+    label: string;
+    register_type: string;
+    register_scope: string;
+    source: 'table' | 'legacy_alias';
+  };
   creative_seed: { vector_id: string | null; tension_id: string | null; aggro_id: string | null; };
   cache_mode: string;
   max_tokens: number;
@@ -1691,7 +1868,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     brand, humRows, goalsList, personasList, complianceRows, kwList, ctaList, cp,
     genomes, allVectors, allTensions, allAggros, compatSliceRaw,
     pipelineSkillsSlice, outputTemplatesSlice, contentTypeRegistrySlice,
-    canalBlocksSlice, geomixSlice, seqContext,
+    canalBlocksSlice, geomixSlice, languageDirectivesSlice, seqContext,
   ] = await Promise.all([
     // select=* (A1): las variables de template necesitan cta_base, diferenciador_base,
     // disclaimer_base, url_base, cta_url_base, geo_principal, tono_base, canales_activos,
@@ -1725,6 +1902,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'canal_blocks') ?? sbArray<any>(`canal_blocks?active=eq.true&select=*`),
     // A2·b — geomix por marca (buildGeomixBlock). Se omite el bloque si la marca no tiene fila.
     sliceOf(bc, 'geomix') ?? sbArray<any>(`geomix?brand_id=eq.${eBrand}&active=eq.true&select=*`),
+    // FIX-LANG-01 — directivas de idioma. Catálogo del sistema, no de marca: se
+    // indexa por CÓDIGO DE IDIOMA y una marca nueva de otro país entra con un
+    // INSERT, sin tocar este archivo. Va en el Promise.all —como creative_vectors
+    // o aggro_presets— para no añadir un viaje serializado: el código de idioma
+    // todavía no está resuelto acá, pero la tabla es pequeña y se filtra en memoria.
+    sliceOf(bc, 'language_directives') ?? fetchLanguageDirectives(),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
 
@@ -1743,6 +1926,19 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     throw new Error(`COPYLAB_LANGUAGE_UNRESOLVED: sin idioma para ${brandId} — declarar builder_input.language, meta.language, params.idioma o brands.language_primary`);
   }
 
+  // FIX-LANG-01 — la directiva del idioma declarado sale de `language_directives`.
+  // Mientras la tabla no exista o no tenga la fila, cae al alias legacy y lo DICE:
+  // la degradación se registra con el código y la procedencia, nunca en silencio.
+  const { directive: languageDirective, source: languageDirectiveSource } =
+    resolveLanguageDirective(languageDirectivesSlice as any[], idioma);
+  if (languageDirectiveSource !== 'table') {
+    console.warn(
+      `[CopyLab] sin fila en language_directives para '${normalizeLanguageCode(idioma)}' (${brandId}) — ` +
+      `se usa el alias legacy (etiqueta '${languageDirective.label}'); ` +
+      `sembrar la fila para que la directiva llegue redactada en su propia lengua`,
+    );
+  }
+
   // ── Cambio 1 · el registro decide, en DOS ejes ─────────────────────────────
   // El registro se lee con dos llaves distintas, cada campo con la suya:
   //   • aggro_default: cadena creativeContentType → pipelineContentType → 2. Replica
@@ -1757,7 +1953,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // sale del genoma resuelto (antes la UI no alimentaba la voz y caía SIEMPRE en BASE).
   const genome = selectGenome(genomes as any[], bi?.voice_id, brandId);
   const voiceGenomeResult = genome
-    ? assembleVoiceGenomeLayer(genome, idioma)
+    ? assembleVoiceGenomeLayer(genome, languageDirective.label)
     : { layer: null, voice_id: null, voice_version: null };
   const effectiveVoiceId = bi?.voice_id ?? genome?.voice_id ?? null;
 
@@ -1899,6 +2095,18 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   //   contexto → restricciones → ángulo creativo → forma de salida → instrucción.
   const layers: string[] = [];
 
+  // ── IDIOMA — PRIMERO Y ÚLTIMO ─────────────────────────────────────────────
+  // FIX-LANG-01. Antes esta capa era la 4.ª de ~28 y las ~24 que la seguían están
+  // redactadas en español, sea cual sea el idioma de salida (## CANAL, VOZ DE MARCA,
+  // ## COMPLIANCE, L1.5, reglas del Watcher, ## PRESUPUESTO DE LONGITUD, ## TÍTULO…).
+  // Una instrucción de idioma sepultada entre dos docenas de bloques en otra lengua
+  // compite con ellos y pierde: la pieza e3c9acc3 de UnrealvilleStudio tenía
+  // meta.language='en' y salió en español. Este corte NO traduce el andamiaje —eso es
+  // otro corte—: antepone la directiva y la REPITE al cierre, que es la contramedida
+  // barata y no cuesta tokens significativos.
+  const idiomaBlock = buildIdiomaBlock(languageDirective);
+  layers.push(idiomaBlock);                                            // idioma — apertura
+
   // ── CONTEXTO ──────────────────────────────────────────────────────────────
   layers.push(buildBrandBlock(brand));                                  // ## MARCA
 
@@ -1907,8 +2115,6 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   const personasBlock = buildPersonasBlock(personasList as any[]);
   if (personasBlock) layers.push(personasBlock);                       // ## SEGMENTOS OBJETIVO (ICP)
-
-  layers.push(buildIdiomaBlock(idioma));                               // ## IDIOMA DE OUTPUT
 
   // A2·a — bloque de canal REAL en modo carril: platform_canal_map (plataforma → canal_block_id)
   // + canal_blocks.block_text. Sin bi (UI): layer genérico. canalBlockId se reusa para el CTA.
@@ -2022,6 +2228,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
+  // FIX-LANG-01 — el idioma se REPITE al cierre, antes del template de output: es lo
+  // último que el escritor lee antes del formato de salida, después de las ~24 capas
+  // en español que lo separan de la apertura. Misma directiva, misma fuente, sin
+  // reformular: dos colocaciones del mismo bloque, no dos instrucciones.
+  layers.push(idiomaBlock);                                            // idioma — cierre
+
   let templateVarsUnresolved: string[] = [];
   let templateVarsUnresolvedCompliance: string[] = [];
   if (outputTemplate?.template_text) {
@@ -2098,6 +2310,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     voice_id,
     voice_version,
     language: idioma,
+    language_directive: {
+      code: languageDirective.language_code,
+      label: languageDirective.label,
+      register_type: languageDirective.register_type,
+      register_scope: languageDirective.register_scope,
+      source: languageDirectiveSource,
+    },
     creative_seed: {
       vector_id: vector?.id ?? null,
       tension_id: tension?.id ?? null,
