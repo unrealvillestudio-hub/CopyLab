@@ -182,6 +182,11 @@ interface BuilderInput {
   // el número — mismo contrato que `max_tokens`: el carril resuelve, CopyLab obedece y hace eco.
   title_budget_chars?: number | null;
   title_budget_source?: string | null;   // de qué nivel salió el número, verbatim del carril
+  // BRIEF-04 — el MODO de relación entre el texto de la imagen y el título, resuelto por el carril
+  // contra `intel.brand_publish_channels.image_title_mode` para el canal de ESTA pieza. Mismo
+  // contrato que `title_budget_chars` y `max_tokens`: el carril resuelve, CopyLab obedece. Ausente
+  // o desconocido ⇒ el modo que REPITE, que es el comportamiento vigente.
+  image_title_mode?: string | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -648,18 +653,101 @@ function readTitleBudgetChars(declared: unknown): number | null {
   return Math.max(TITLE_BUDGET_MIN_CHARS, Math.round(n));
 }
 
+// ── BRIEF-04 · LA IMAGEN ABRE, EL TÍTULO RESPONDE ──────────────────────────────────────────────
+//
+// EL DEFECTO. La imagen REPETÍA el texto de la pieza: el compositor estampaba `copy.title` como
+// titular y la primera frase del cuerpo como bajada. Tres impactos de la misma idea — título
+// estampado, primera frase estampada, y las dos otra vez debajo en texto.
+//
+// EL EJE. El escritor deja de entregar UN título que se replica y entrega TRES cadenas con
+// funciones distintas: un gancho que abre sobre la imagen, un apoyo que lo matiza, y un título que
+// le RESPONDE. La relación entre las tres es lo que se nombra; los dos estados de esa relación son
+// `echo` (repetir, el comportamiento vigente) y `dialogue` (responder).
+//
+// EL MODO ES DEL CANAL Y LLEGA COMO DATO. Donde el título es la primera línea de un caption, el
+// diálogo funciona; donde es un H1 que indexa o el asunto de un correo, un gancho suelto es un
+// desastre de búsqueda. Eso depende de la SUPERFICIE, no de quién publica, y por eso NO se decide
+// acá: llega resuelto en `builder_input`. Cero marcas y cero canales en este archivo.
+//
+// LA REGLA QUE HACE EL MODO SEGURO: LA RESPUESTA CONTIENE SU PREMISA. El texto sobre la imagen no
+// distribuye —las plataformas rankean, buscan y previsualizan sobre el caption, y un lector de
+// pantalla no lee píxeles—, así que el título no puede depender de que la imagen se haya visto. No
+// repetir la premisa: IMPLICARLA dentro de la réplica.
+const IMAGE_TITLE_MODES = ['echo', 'dialogue'] as const;
+type ImageTitleMode = (typeof IMAGE_TITLE_MODES)[number];
+
+// Lector fail-soft del modo, gemelo de `readTitleBudgetChars`. Un valor desconocido NO corta la
+// generación y NO se obedece a medias: degrada al modo que repite —el vigente— y deja rastro.
+// Inventar un modo a partir de un valor que no se entiende es peor que ignorarlo.
+function readImageTitleMode(declared: unknown): ImageTitleMode {
+  if (declared === null || declared === undefined) return 'echo';
+  const raw = String(declared).trim().toLowerCase();
+  if ((IMAGE_TITLE_MODES as readonly string[]).includes(raw)) return raw as ImageTitleMode;
+  console.warn(`[CopyLab][BRIEF-04] builder_input.image_title_mode desconocido (${JSON.stringify(declared)}) — se escribe en modo 'echo', que es el comportamiento vigente`);
+  return 'echo';
+}
+
+// La sección ## IMAGEN Y TÍTULO del system. Sólo existe en modo diálogo: en `echo` el prompt queda
+// BYTE-IDÉNTICO al de hoy, que es lo que hace que este cambio no toque las piezas vigentes.
+//
+// El presupuesto de caracteres se lo lleva el GANCHO, y no es un detalle: `title_budget_chars` lo
+// resolvió el carril contra los `fit_steps` del overlay, y en modo diálogo quien ocupa esa ranura
+// es el gancho. Decirle al escritor que el título tiene N caracteres para un espacio que ya no
+// ocupa sería darle una restricción de un sitio donde no va a estar.
+function buildImageDialogueBlock(hookBudgetChars: number | null): string {
+  const presupuesto = hookBudgetChars === null
+    ? 'El gancho es UNA línea que se lee de un vistazo.'
+    : `El gancho tiene ${hookBudgetChars} caracteres, cierre incluido: es el espacio que hay sobre`
+      + ' la imagen. Un gancho que no CIERRA dentro de ese espacio no sirve — se reescribe más'
+      + ' corto, no se recorta.';
+  return '## IMAGEN Y TÍTULO\n'
+    + 'Esta pieza lleva texto sobre la imagen, y ese texto y el título son DOS TURNOS DE UNA'
+    + ' CONVERSACIÓN, no la misma frase dos veces.\n\n'
+    + 'GANCHO — va sobre la imagen. Abre, provoca, y NO se explica. Es lo que hace detener el'
+    + ' scroll, no lo que resume la pieza.\n\n'
+    + presupuesto + '\n\n'
+    + 'APOYO — va sobre la imagen, debajo del gancho. MATIZA el gancho: le da el giro que el gancho'
+    + ' insinúa. NUNCA es la primera frase del cuerpo, y nunca repite el gancho con otras palabras.'
+    + ' Si no aporta nada que el gancho no diga ya, se omite.\n\n'
+    + 'TÍTULO — RESPONDE al gancho, y es la primera línea del texto publicado.\n\n'
+    + 'LA REGLA QUE NO SE NEGOCIA: LA RESPUESTA CONTIENE SU PREMISA. El texto sobre la imagen no'
+    + ' viaja — quien busca, quien previsualiza y quien lee con lector de pantalla recibe SÓLO el'
+    + ' texto—, así que el título no puede depender de que la imagen se haya visto. No repitas la'
+    + ' premisa: IMPLÍCALA dentro de la réplica. Alguien que lee únicamente el título, sin haber'
+    + ' visto la imagen, tiene que entender la pieza entera.\n\n'
+    + 'Y no compartas secuencias de palabras entre el gancho y el título: si las dos cadenas'
+    + ' repiten la misma tirada, no hay conversación, hay eco.';
+}
+
 // La sección ## TÍTULO del system. Instrucción de OFICIO, no una restricción más: dice qué clase de
 // frase es un título y qué NO es. La cifra entra sólo si el carril la declaró.
-function buildTitleBlock(titleBudgetChars: number | null, destination: string | null | undefined): string {
+function buildTitleBlock(
+  titleBudgetChars: number | null, destination: string | null | undefined,
+  // BRIEF-04 — parámetro con default al final, mismo patrón que DIV-01 en el carril: sin él, el
+  // bloque es byte-idéntico al de antes de este brief y ningún llamador existente se mueve.
+  mode: ImageTitleMode = 'echo',
+): string {
   const esSocial = String(destination ?? '').trim() !== 'editorial';
-  const presupuesto = titleBudgetChars === null
+  const dialogo = mode === 'dialogue';
+  // En diálogo la cifra pertenece al GANCHO, que es quien ocupa la ranura del overlay: la declara
+  // `## IMAGEN Y TÍTULO` y aquí NO se repite. El título deja de estar limitado por un espacio que
+  // ya no ocupa.
+  const presupuesto = (dialogo || titleBudgetChars === null)
     ? 'Es UNA línea: una afirmación que se lee de un vistazo, sin subordinadas apiladas.'
     : `Tiene ${titleBudgetChars} caracteres, cierre incluido. No es un límite del que convenga`
       + ' quedarse lejos ni una meta que alcanzar: es el espacio que hay. Un título que no CIERRA'
       + ' dentro de ese espacio no sirve — se reescribe más corto, no se recorta.';
-  const publicacion = esSocial
+  // En diálogo el título SÍ se publica: es la primera línea del texto, y lo que va sobre la imagen
+  // es el gancho. La advertencia de no repetirlo en el cuerpo describía el modo que repite y sería
+  // falsa aquí.
+  const publicacion = (esSocial && !dialogo)
     ? '\n\nEl título NO se publica dentro del cuerpo: es el texto que va sobre la imagen. No lo'
       + ' repitas en la primera línea ni lo anuncies — el cuerpo empieza por su propia apertura.'
+    : '';
+  const respuesta = dialogo
+    ? '\n\nEn esta pieza el título RESPONDE al gancho de la imagen — ver ## IMAGEN Y TÍTULO. Sigue'
+      + ' siendo la afirmación más filosa y sigue sosteniéndose solo: la réplica IMPLICA su premisa'
+      + ' en vez de repetirla.'
     : '';
   return '## TÍTULO\n'
     + 'Toda pieza lleva título, y el título es la AFIRMACIÓN MÁS FILOSA de la pieza — no su resumen,'
@@ -670,6 +758,7 @@ function buildTitleBlock(titleBudgetChars: number | null, destination: string | 
     + ' gobiernan a él —tratamiento, tono, prohibiciones, exigencias de prueba, neutralidad—, y se'
     + ' juzga con ellas. Un título que rompe una regla reprueba la pieza entera.\n\n'
     + presupuesto
+    + respuesta
     + publicacion;
 }
 
@@ -677,9 +766,19 @@ function buildTitleBlock(titleBudgetChars: number | null, destination: string | 
 // suelto dentro de buildPrompt, ahora testeable y con el título obligatorio en las DOS ramas.
 // Lo único que separa a los destinos es DÓNDE vive el título: en editorial encabeza la pieza
 // publicada; en social es sólo el texto del overlay y el cuerpo se publica sin él.
-function buildCarrilFormatBlock(destination: string | null | undefined): string {
-  const primeraLinea = '- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n'
-    + '- Luego una línea en blanco y el cuerpo.\n';
+function buildCarrilFormatBlock(
+  destination: string | null | undefined, mode: ImageTitleMode = 'echo',
+): string {
+  // En diálogo la salida trae TRES cadenas antes del cuerpo, cada una en su centinela. El apoyo es
+  // el único omitible: si no matiza el gancho, su línea no se escribe (ver ## IMAGEN Y TÍTULO).
+  const primeraLinea = mode === 'dialogue'
+    ? '- Primera línea EXACTA: "GANCHO: <el texto que va sobre la imagen>".\n'
+      + '- Segunda línea EXACTA: "APOYO: <el matiz del gancho>". Si el apoyo no aporta nada, OMITE'
+      + ' esta línea entera — no la escribas vacía.\n'
+      + '- Luego la línea EXACTA: "TÍTULO: <el título que responde al gancho>".\n'
+      + '- Luego una línea en blanco y el cuerpo.\n'
+    : '- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n'
+      + '- Luego una línea en blanco y el cuerpo.\n';
   return String(destination ?? '').trim() === 'editorial'
     ? 'FORMATO (editorial):\n'
       + primeraLinea
@@ -699,14 +798,30 @@ function titleCharCount(title: string | null | undefined): number {
 // Split CopyLab's internal `TÍTULO:` sentinel into { title, body } (§4.3). The
 // sentinel is internal to CopyLab — the carril receives title/body already split
 // and never parses again. body is trimmed and never carries a trailing signature.
-function parsePiece(output: string): { title: string | null; body: string } {
-  const text = String(output ?? '').trim();
+function parsePiece(output: string): {
+  title: string | null; image_hook: string | null; image_support: string | null; body: string;
+} {
+  let text = String(output ?? '').trim();
+
+  // BRIEF-04 — los centinelas del modo diálogo, en el orden en que el formato los pide y SÓLO desde
+  // el principio del texto. Se consumen si están; su ausencia es el modo que repite y deja el
+  // resultado byte-idéntico al de antes de este brief. El apoyo es legítimamente omitible.
+  const comer = (re: RegExp): string | null => {
+    const m = text.match(re);
+    if (!m) return null;
+    text = text.slice(m[0].length).trimStart();
+    const v = m[1].trim();
+    return v || null;
+  };
+  const image_hook = comer(/^\s*GANCHO:\s*(.+?)\s*(?:\n|$)/i);
+  const image_support = comer(/^\s*APOYO:\s*(.+?)\s*(?:\n|$)/i);
+
   const m = text.match(/^\s*T[IÍ]TULO:\s*(.+?)\s*(?:\n|$)/i);
   if (m) {
     const title = m[1].trim();
-    return { title: title || null, body: text.slice(m[0].length).trim() };
+    return { title: title || null, image_hook, image_support, body: text.slice(m[0].length).trim() };
   }
-  return { title: null, body: text };
+  return { title: null, image_hook, image_support, body: text };
 }
 
 // The signature travels WITHOUT stamping (§4.3): stampSignature runs in the
@@ -1766,6 +1881,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   length_budget_chars: number | null;
   title_budget_chars: number | null;
   title_budget_source: string | null;
+  image_title_mode: ImageTitleMode;
   audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
@@ -2224,7 +2340,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // encabeza. Sólo en modo carril — el modo UI no tiene destino ni contrato title/body y su prompt
   // queda byte-idéntico al de hoy.
   const titleBudgetChars = bi ? readTitleBudgetChars(bi.title_budget_chars) : null;
-  if (bi) layers.push(buildTitleBlock(titleBudgetChars, bi.destination));   // ## TÍTULO
+  // BRIEF-04 — el modo llega resuelto por el canal. En `echo` las dos líneas de abajo producen el
+  // prompt de siempre, byte a byte: el bloque de diálogo no se empuja y el de título no cambia.
+  const imageTitleMode = bi ? readImageTitleMode(bi.image_title_mode) : 'echo';
+  if (bi && imageTitleMode === 'dialogue') {
+    layers.push(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
+  }
+  if (bi) layers.push(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
 
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
@@ -2294,7 +2416,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // literalmente «Sin título, sin la etiqueta "TÍTULO:"»: el overlay no tenía qué componer porque
     // el escritor tenía prohibido escribirlo. Ahora lo que cambia entre destinos es DÓNDE vive el
     // título, no si existe.
-    const fmt = buildCarrilFormatBlock(bi.destination);
+    const fmt = buildCarrilFormatBlock(bi.destination, imageTitleMode);
     // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
     // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
@@ -2339,6 +2461,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // no se puede leer — no se distingue "no se le dijo" de "se le dijo y lo ignoró".
     title_budget_chars: titleBudgetChars,
     title_budget_source: bi?.title_budget_source ?? null,
+    // BRIEF-04 — el modo con el que se ESCRIBIÓ, para que el eco diga en qué régimen salió la pieza
+    // y no haya que deducirlo de si vinieron las cadenas.
+    image_title_mode: imageTitleMode,
     // G2-C — QUÉ política de CTA se aplicó de verdad ('none' = frente no declarado). Misma lección
     // que max_tokens_applied: sin el eco, la próxima migración del eje vuelve a ser invisible.
     audience_cta_applied: audienceCtaApplied,
@@ -2630,7 +2755,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
     //    SIN estampar, usage real. El modo UI conserva su forma histórica.
     if (carril) {
-      const { title, body: pieceBody } = parsePiece(output);
+      const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsePiece(output);
       // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
       // siempre y el eco dice cuánto midió. Un título ausente ahora es un INCUMPLIMIENTO del
       // escritor (la sección ## TÍTULO lo pide en los dos destinos), no un caso normal: se grita,
@@ -2650,6 +2775,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // sin él (el caso normal: la violación estaba en el cuerpo). Si vuelve CON título, ése gana:
         // es una violación que lo afectaba. En generación, exactamente como hoy.
         title: tituloFinal,
+        // BRIEF-04 — las dos cadenas de la imagen. Viajan SIEMPRE, con `null` en el modo que
+        // repite: una clave ausente y una clave nula se distinguen, y el carril necesita saber que
+        // preguntó. En `echo` son null y el carril compone como hasta hoy.
+        image_hook: imageHook,
+        image_support: imageSupport,
         body: pieceBody,
         signature: built.signature,
         usage,
@@ -2680,6 +2810,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           title_budget_source: built.title_budget_source,
           title_chars: titleCharCount(tituloFinal),
           title_missing: !tituloFinal,
+          // BRIEF-04 — en qué régimen se escribió, y si el escritor devolvió lo que ese régimen
+          // pide. `image_hook_missing` sólo es un incumplimiento en modo diálogo; en `echo` es el
+          // estado normal, y por eso se declara junto al modo y no suelto.
+          image_title_mode: built.image_title_mode,
+          image_hook_chars: titleCharCount(imageHook),
+          image_hook_missing: built.image_title_mode === 'dialogue' && !imageHook,
+          image_support_present: !!imageSupport,
           // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
           // 'decide' | 'influye' | 'general' | 'none'.
           audience_cta_applied: built.audience_cta_applied,
