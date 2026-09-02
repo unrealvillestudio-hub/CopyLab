@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -377,6 +377,108 @@ async function run() {
     eq(JSON.stringify(PURE.resolveCarrilContentType('editorial', 'linkedin', CANAL_MAP)), JSON.stringify({ content_type: 'editorial_post', canal: 'WEB' }), 'editorial/linkedin');
     for (const d of ['social', 'editorial'])
       eq(JSON.stringify(PURE.resolveCarrilContentType(d, 'email_propietarios', CANAL_MAP)), JSON.stringify({ content_type: 'email_divulgacion', canal: 'email' }), `${d}/email_propietarios`);
+  });
+
+
+  // ── BRIEF-04 · LA IMAGEN ABRE, EL TÍTULO RESPONDE ───────────────────────────
+  //
+  // Lo que estas pruebas protegen no es el texto del prompt: es que el modo que REPITE quede
+  // BYTE-IDÉNTICO al de antes del brief. Si el modo por defecto cambiara aunque fuera un carácter,
+  // este cambio dejaría de ser inerte y las piezas vigentes cambiarían sin que nadie lo pidiera.
+
+  await test('BRIEF-04·pure readImageTitleMode: ausente o desconocido degrada al modo vigente', () => {
+    eq(PURE.readImageTitleMode(undefined), 'echo', 'ausente → echo');
+    eq(PURE.readImageTitleMode(null), 'echo', 'null → echo');
+    eq(PURE.readImageTitleMode('dialogue'), 'dialogue', 'el modo que responde se lee');
+    eq(PURE.readImageTitleMode('DIALOGUE'), 'dialogue', 'insensible a mayúsculas');
+    eq(PURE.readImageTitleMode('  echo '), 'echo', 'con espacios');
+    // Un modo que el código no conoce NO se obedece a medias: degrada al vigente. Inventar a
+    // partir de un valor que no se entiende es peor que ignorarlo.
+    eq(PURE.readImageTitleMode('conversacion'), 'echo', 'desconocido → echo, nunca a medias');
+    eq(PURE.readImageTitleMode(7), 'echo', 'basura → echo');
+  });
+
+  await test('BRIEF-04·pure el modo por defecto deja el prompt IDÉNTICO al de antes del brief', () => {
+    // La prueba que hace inerte a este PR: sin modo, los dos bloques son los de siempre.
+    for (const destino of ['social', 'editorial']) {
+      eq(String(PURE.buildTitleBlock(72, destino)), String(PURE.buildTitleBlock(72, destino, 'echo')),
+        `## TÍTULO sin modo === modo echo (${destino})`);
+      eq(String(PURE.buildCarrilFormatBlock(destino)), String(PURE.buildCarrilFormatBlock(destino, 'echo')),
+        `FORMATO sin modo === modo echo (${destino})`);
+    }
+    // Y en echo el formato sigue pidiendo UNA sola cadena.
+    const fmt = String(PURE.buildCarrilFormatBlock('social', 'echo'));
+    assert(fmt.includes('TÍTULO:'), 'echo conserva el centinela del título');
+    assert(!fmt.includes('GANCHO:'), 'echo NO pide gancho');
+    assert(!fmt.includes('APOYO:'), 'echo NO pide apoyo');
+  });
+
+  await test('BRIEF-04·pure en diálogo el formato pide TRES cadenas y el apoyo es omitible', () => {
+    const fmt = String(PURE.buildCarrilFormatBlock('social', 'dialogue'));
+    assert(fmt.includes('GANCHO:'), 'pide el gancho');
+    assert(fmt.includes('APOYO:'), 'pide el apoyo');
+    assert(fmt.includes('TÍTULO:'), 'sigue pidiendo el título');
+    assert(/OMITE/i.test(fmt), 'el apoyo se declara omitible: una línea vacía no es un apoyo');
+    // El orden importa: el gancho abre y el título responde. Si el título viniera primero, el
+    // escritor lo redactaría sin haber escrito aún aquello a lo que responde.
+    assert(fmt.indexOf('GANCHO:') < fmt.indexOf('TÍTULO:'), 'el gancho va antes que el título');
+  });
+
+  await test('BRIEF-04·pure el presupuesto se lo lleva el GANCHO, que es quien ocupa la ranura', () => {
+    const dialogo = String(PURE.buildTitleBlock(72, 'social', 'dialogue'));
+    assert(!dialogo.includes('72'), 'el título deja de estar limitado por un espacio que ya no ocupa');
+    const gancho = String(PURE.buildImageDialogueBlock(72));
+    assert(gancho.includes('72'), 'la cifra pasa al gancho');
+    // Sin cifra declarada no se inventa ninguna, igual que en ## TÍTULO.
+    assert(!/\d/.test(String(PURE.buildImageDialogueBlock(null)).replace(/[^0-9]/g, '')),
+      'sin presupuesto, ninguna cifra inventada');
+  });
+
+  await test('BRIEF-04·pure la regla que hace el modo seguro: la respuesta contiene su premisa', () => {
+    const b = String(PURE.buildImageDialogueBlock(72));
+    assert(/PREMISA/i.test(b), 'la regla se enuncia');
+    assert(/lector de pantalla/i.test(b), 'el motivo se declara: el texto en imagen no viaja');
+    assert(/únicamente el título/i.test(b), 'la pieza se entiende sin ver la imagen');
+    // Y el título, en diálogo, dice que responde.
+    assert(/RESPONDE/i.test(String(PURE.buildTitleBlock(72, 'social', 'dialogue'))), 'el título responde');
+  });
+
+  await test('BRIEF-04·pure parsePiece: tres centinelas, y sin ellos el resultado de siempre', () => {
+    const tres = PURE.parsePiece('GANCHO: El pozo no se rellena\nAPOYO: Nunca hubo intención\nTÍTULO: No deberías sorprenderte\n\nEl cuerpo.');
+    eq(tres.image_hook, 'El pozo no se rellena', 'gancho');
+    eq(tres.image_support, 'Nunca hubo intención', 'apoyo');
+    eq(tres.title, 'No deberías sorprenderte', 'título');
+    eq(tres.body, 'El cuerpo.', 'cuerpo limpio de los tres centinelas');
+
+    // El apoyo es omitible y su ausencia NO arrastra al título.
+    const sinApoyo = PURE.parsePiece('GANCHO: Un gancho\nTÍTULO: Un título\n\nCuerpo.');
+    eq(sinApoyo.image_hook, 'Un gancho', 'gancho sin apoyo');
+    eq(sinApoyo.image_support, null, 'apoyo ausente → null');
+    eq(sinApoyo.title, 'Un título', 'el título no se pierde');
+    eq(sinApoyo.body, 'Cuerpo.', 'cuerpo');
+
+    // Modo que repite: byte-idéntico a antes del brief.
+    const soloTitulo = PURE.parsePiece('TÍTULO: Un título\n\nEste es el cuerpo.');
+    eq(soloTitulo.title, 'Un título', 'título');
+    eq(soloTitulo.image_hook, null, 'sin gancho');
+    eq(soloTitulo.image_support, null, 'sin apoyo');
+    eq(soloTitulo.body, 'Este es el cuerpo.', 'cuerpo');
+    eq(PURE.parsePiece('Solo cuerpo social.').title, null, 'social sin título sigue dando null');
+  });
+
+  await test('BRIEF-04·pure la marca N+1: el modo es del CANAL y llega por dato', () => {
+    // Ni una marca, ni un canal, ni una jurisdicción en los bloques nuevos. El modo entra por
+    // `builder_input`; un canal que el código nunca nombró se comporta según su fila.
+    const textos = [
+      String(PURE.buildImageDialogueBlock(72)),
+      String(PURE.buildTitleBlock(72, 'social', 'dialogue')),
+      String(PURE.buildCarrilFormatBlock('social', 'dialogue')),
+    ].join('\n');
+    for (const prohibido of ['ForumPHs', 'LucienSael', 'NeuroneSCF', 'UnrealvilleStudio',
+                             'meta_ig', 'meta_fb', 'tiktok', 'linkedin', 'blog'])
+      assert(!textos.includes(prohibido), `sin literal de marca ni canal: ${prohibido}`);
+    // La enumeración del eje son sus DOS estados, no una lista de canales.
+    eq([...PURE.IMAGE_TITLE_MODES].join(','), 'echo,dialogue', 'el eje tiene dos estados');
   });
 
   // ── A2 · el test de la marca N+1, ejecutable ────────────────────────────────
