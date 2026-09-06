@@ -197,6 +197,15 @@ interface BuilderInput {
   // para el JUEZ ("Mira el FINAL de la pieza. CUMPLE si…") y pedirle eso a quien todavía está
   // escribiendo la pieza es criterio de auditoría sobre un objeto ausente. Opcional: 58 de 62 reglas
   // todavía no tienen redacción propia y caen a `statement`, exactamente como hoy.
+  // BRIEF-N02 — QUE PUEDE OFRECER la marca al lector de esta pieza, ya resuelto por el carril contra
+  // `public.product_blueprints` y el `offer_selector` del dominio. El escritor no podia nombrar
+  // productos porque nunca los recibia: medido el 2026-09-06, 7 de 13 `fixable` de una marca decian
+  // lo mismo con otras palabras y `builder_input` no traia ninguna clave de catalogo.
+  //
+  // Opcional, y su AUSENCIA no es su vacio: un carril anterior a N02 no manda la clave y el prompt
+  // queda byte-identico al de hoy; `selected_by: "none_declared"` es un carril nuevo diciendo que
+  // este dominio no declara oferta. Son dos cosas distintas y por eso la clave viaja siempre.
+  offer_catalog?: { source?: string | null; selected_by?: string | null; items?: Array<Record<string, unknown>> | null } | null;
   rules: Array<{ code: string; kind: string; statement: string; instruction?: string | null }>;
   iid_brief: string;
   angle: string | null;
@@ -1102,6 +1111,43 @@ function buildWritingMaterialBlock(
     parts.push(`CASOS PARA ILUSTRAR (${casos.length}):\n${lista}\n\n${comoUsarlos}`);
   }
   return parts.length ? parts.join('\n\n') : null;
+}
+
+// ── BRIEF-N02 · LA OFERTA DISPONIBLE ────────────────────────────────────────
+// Es MATERIAL DE ESCRITURA, no una restricción: va con el mecanismo y los casos, no con las reglas.
+// El carril ya decidió QUÉ elementos entran (selector del dominio, filtro de canal y techo de
+// ítems); acá sólo se le enseñan al escritor y se le dice qué hacer con ellos.
+//
+// LA INSTRUCCIÓN ES DE PESO, NO DE PRESENCIA. Nombrar un producto de pasada es lo que las piezas
+// ya hacían cuando el operador las corregía a mano: "le falta fuerza a la parte de Neurone", "no le
+// has dado real importancia a los productos". Por eso se pide UNO con trabajo en el argumento, y no
+// una lista — una enumeración es exactamente la forma de mencionar sin comprometerse.
+//
+// Cero marcas y cero productos en este archivo: los ítems llegan como dato y se imprimen verbatim.
+function buildOfferBlock(
+  offer: { selected_by?: string | null; items?: Array<Record<string, unknown>> | null } | null | undefined,
+): string | null {
+  const items = Array.isArray(offer?.items) ? offer!.items! : [];
+  if (!items.length) return null;   // sin oferta no hay bloque: el prompt queda como hoy
+  const lista = items
+    .map((it, i) => {
+      const nombre = String((it as any)?.name ?? '').trim();
+      if (!nombre) return null;     // un ítem sin nombre no se puede nombrar: no se emite
+      const ref = String((it as any)?.ref ?? '').trim();
+      const linea = String((it as any)?.line ?? '').trim();
+      const resumen = String((it as any)?.summary ?? '').trim();
+      const cabecera = [nombre, linea ? `(${linea})` : null, ref ? `[${ref}]` : null].filter(Boolean).join(' ');
+      return `${i + 1}. ${cabecera}${resumen ? `\n   ${resumen}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+  if (!lista) return null;
+  return `OFERTA DISPONIBLE (qué puede ofrecer la marca a quien lea esta pieza):\n${lista}\n\n`
+    + 'Elegí UNO y dale TRABAJO en el argumento: que sea lo que resuelve el problema que acabás de'
+    + ' describir, o lo que sostiene el mecanismo que afirmás, o el objeto del paso siguiente.'
+    + ' Nombralo por su nombre, tal como aparece arriba. No hagas una lista, no lo menciones de'
+    + ' pasada y no lo dejes caer en la última línea: si al borrar la mención el texto queda igual'
+    + ' de bueno, la mención no tenía peso. Primero el diagnóstico, después la solución.';
 }
 
 // ── G2-C · la política de CTA según el frente de audiencia ──────────────────
@@ -2195,6 +2241,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // C1 — mecanismo + caso concreto: el material de escritura. Ausentes → null → sin bloque.
   const writingMaterialBlock = buildWritingMaterialBlock(bi?.mechanism, bi?.case_examples ?? bi?.case_example);
 
+  // BRIEF-N02 — la oferta. Ausente o vacía → null → sin bloque, y el prompt queda como hoy.
+  const offerBlock = buildOfferBlock(bi?.offer_catalog);
+
   // audience_frame → política de CTA (C.3 · G2-C). Sin frente declarado no hay bloque; un frente
   // que el mapa no cubre corta el request con nombre propio (AUDIENCE_FRAME_UNKNOWN) en vez de
   // emitir el encabezado con la política vacía debajo.
@@ -2287,6 +2336,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
   if (writingMaterialBlock) layers.push(writingMaterialBlock);   // y con qué desarrollarlas
+  if (offerBlock) layers.push(offerBlock);                       // y hacia qué llevarlas
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
   const extra = req.params.extra_instructions ?? '';

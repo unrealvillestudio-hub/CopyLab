@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -617,6 +617,34 @@ async function run() {
     assert(/CASOS PARA ILUSTRAR/.test(PURE.buildWritingMaterialBlock(null, [CASO])!), 'sólo caso');
     for (const [m, c] of [[null, null], [undefined, undefined], ['', []], ['   ', [{ case: '  ' }]], ['', 'nada'], ['', 7]] as any[])
       eq(PURE.buildWritingMaterialBlock(m, c), null, `${JSON.stringify(m ?? null)} / ${JSON.stringify(c ?? null)}`);
+  });
+
+  // ── BRIEF-N02 · la oferta disponible ──────────────────────────────────────
+  // Lo que estos casos custodian: que la clave 18 se LEA. CopyLab enumera campos con nombre —no
+  // itera builder_input— asi que una clave que nadie nombra se ignora EN SILENCIO. Ese es el fallo
+  // que N02 vino a cerrar y seria absurdo reproducirlo un piso mas arriba.
+  const OFERTA = [
+    { ref: 'A1', name: 'Alfa', line: 'L1', summary: 'Resumen A', channel: 'b2c' },
+    { ref: 'A2', name: 'Beta', line: 'L2', summary: null, channel: 'b2c' },
+  ];
+  await test('N02·pure buildOfferBlock — los items entran verbatim y la instruccion pide PESO, no presencia', () => {
+    const block = PURE.buildOfferBlock({ selected_by: 'declared_selector', items: OFERTA })!;
+    assertOrdered(block, ['OFERTA DISPONIBLE', 'Alfa (L1) [A1]', 'Resumen A', 'Beta (L2) [A2]']);
+    assert(/Eleg[ií] UNO y dale TRABAJO/.test(block), 'la instruccion es de peso, no de presencia');
+    assert(/No hagas una lista/.test(block), 'una enumeracion es la forma de mencionar sin comprometerse');
+    assert(/Primero el diagn[oó]stico, despu[eé]s la soluci[oó]n/.test(block), 'y el orden importa');
+    assert(!/Neurone|shampoo|cabello/.test(block), 'cero marcas y cero rubro: los items llegan como dato');
+  });
+  await test('N02·pure buildOfferBlock — sin oferta no hay bloque, y la ausencia deja el prompt como hoy', () => {
+    for (const vacio of [null, undefined, {}, { items: [] }, { items: null }, { selected_by: 'none_declared', items: [] }]) {
+      assert(PURE.buildOfferBlock(vacio as any) === null, `deberia ser null con ${JSON.stringify(vacio)}`);
+    }
+  });
+  await test('N02·pure buildOfferBlock — un item sin nombre NO se emite: no se puede nombrar lo que no tiene nombre', () => {
+    assert(PURE.buildOfferBlock({ items: [{ ref: 'X', name: '  ', summary: 's' }] } as any) === null, 'un unico item sin nombre deja el bloque en null');
+    const block = PURE.buildOfferBlock({ items: [{ name: 'Solo' }, { ref: 'Y', name: '' }] } as any)!;
+    assert(/1\. Solo/.test(block), 'el que tiene nombre entra');
+    assert(!/\[Y\]/.test(block), 'el que no lo tiene se cae, y el resto sobrevive');
   });
   await test('C1·pure buildWritingMaterialBlock — un caso sin fuente o sin nombre NO se emite', () => {
     for (const c of [
