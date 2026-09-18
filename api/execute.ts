@@ -193,6 +193,19 @@ interface BuilderInput {
   // antes de G1-C. Opcionales: un emisor anterior a F1 que no los mande no cambia de comportamiento.
   max_tokens?: number | null;
   max_tokens_source?: string | null;
+  // LA INSTRUCCIÓN DE FORMATO DEL ARTEFACTO (2026-09-18). Sale de
+  // `public.content_type_registry.format_instruction` por la MISMA cascada de cinco niveles que el
+  // techo, resuelta por el carril; acá no se decide nada, se obedece — mismo contrato que
+  // `max_tokens` y `title_budget_chars`.
+  //
+  // POR QUÉ APARECE AHORA. La columna existía desde el 2026-08-08 y estaba sembrada, pero el carril
+  // no la pedía en su `select` y CopyLab no la conocía: la orden estaba escrita en la tabla y no
+  // llegaba a ningún prompt. Medido el 2026-09-18 en los dos repositorios.
+  //
+  // Opcional y sin default: ausente o vacía ⇒ no se emite el bloque y el prompt queda BYTE-IDÉNTICO
+  // al de antes de este cambio. Modo UI y emisores anteriores, intactos.
+  format_instruction?: string | null;
+  format_instruction_source?: string | null;
   // D2 (2026-08-18) — `instruction` es la MISMA regla en modo ESCRITURA. `statement` está redactado
   // para el JUEZ ("Mira el FINAL de la pieza. CUMPLE si…") y pedirle eso a quien todavía está
   // escribiendo la pieza es criterio de auditoría sobre un objeto ausente. Opcional: 58 de 62 reglas
@@ -607,6 +620,29 @@ function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): s
     + ' tres, una idea desarrollada en vez de tres enunciadas—, nunca el cierre ni la última'
     + ' frase. Una pieza que termina a media frase es el fallo que este presupuesto existe para'
     + ' impedir: vale más decir menos y cerrarlo, que decirlo todo y quedar cortado.';
+}
+
+// ── LA INSTRUCCIÓN DE FORMATO DEL ARTEFACTO ───────────────────────────────────────────────────
+//
+// QUÉ ES. Lo que la marca declaró en `content_type_registry.format_instruction` para este
+// (artefacto, voz, plataforma): la FORMA de la pieza — su estructura, su verbo, su registro.
+//
+// DÓNDE VA, Y POR QUÉ IMPORTA EL ORDEN. Entra en la banda de FORMA DE SALIDA, **antes** del
+// `## PRESUPUESTO DE LONGITUD`. Es deliberado y es una salvaguarda: varias de las instrucciones
+// sembradas hoy nombran una longitud en PALABRAS —«artículo de 800 a 1200 palabras»— mientras el
+// presupuesto la nombra en CARACTERES y la deriva del techo. Son dos números para lo mismo, y dos
+// números para lo mismo enseñan a no creerle a ninguno. Poniendo el presupuesto DESPUÉS, la última
+// palabra sobre cuánto espacio hay la tiene el bloque que se calcula, no el que se sembró.
+//
+// ESO NO ARREGLA LA CONTRADICCIÓN, SÓLO LA ORDENA. La corrección de verdad es que las instrucciones
+// sembradas dejen de hablar de longitud y hablen sólo de forma. Va en su propia migración; acá
+// queda escrito para que quien lea el prompt sepa por qué el orden es ése.
+//
+// Sin nombrar plataformas ni marcas: el TEXTO llega como dato, el bloque es motor.
+function buildFormatInstructionBlock(instruction: string | null | undefined): string | null {
+  const t = typeof instruction === 'string' ? instruction.trim() : '';
+  if (t === '') return null;   // ausencia declarada ⇒ prompt byte-idéntico al de antes
+  return `## FORMATO DECLARADO\n${t}`;
 }
 
 // El max_tokens que se le manda a la API. Con techo declarado, el declarado + margen (red de
@@ -1925,6 +1961,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   max_tokens: number;
   max_tokens_source: string | null;
   length_budget_chars: number | null;
+  format_instruction_chars: number;
+  format_instruction_source: string | null;
   title_budget_chars: number | null;
   title_budget_source: string | null;
   image_title_mode: ImageTitleMode;
@@ -2380,6 +2418,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // banda, no entre las restricciones. Antes del template a propósito — el template cierra las
   // capas, como dice la línea de abajo. Sin techo declarado no hay bloque y el prompt queda
   // byte-idéntico al de hoy (modo UI y emisores anteriores a F1, intactos).
+  // La FORMA declarada por la marca va primero; el presupuesto, que es quien manda sobre el espacio,
+  // va después. Ver `buildFormatInstructionBlock` sobre por qué el orden no es indiferente.
+  const formatInstructionBlock = bi ? buildFormatInstructionBlock(bi.format_instruction) : null;
+  if (formatInstructionBlock) layers.push(formatInstructionBlock);    // ## FORMATO DECLARADO
+
   const declaredCeiling = readDeclaredMaxTokens(bi?.max_tokens);
   const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling);
   const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
@@ -2506,6 +2549,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // Sin los DOS números (este y max_tokens_applied) la próxima medición no puede distinguir "el
     // escritor ignoró el presupuesto" de "la API lo cortó igual" — la lección de esta corrida.
     length_budget_chars: lengthBudgetChars,
+    // Eco de la instrucción recibida: su LARGO y de qué nivel salió, no el texto entero. Lo que hay
+    // que poder responder después es «¿le llegó, y de dónde?», y para eso basta con eso. El texto
+    // completo ya vive en la tabla; duplicarlo en cada pieza sería otra copia que puede divergir.
+    format_instruction_chars: typeof bi?.format_instruction === 'string' ? bi.format_instruction.trim().length : 0,
+    format_instruction_source: bi?.format_instruction_source ?? null,
     // BRIEF 8 · A — el presupuesto de título APLICADO (el declarado, saneado) y de qué nivel salió.
     // Los dos, por la misma razón que los dos de longitud: sin ellos, una corrida con títulos largos
     // no se puede leer — no se distingue "no se le dijo" de "se le dijo y lo ignoró".
