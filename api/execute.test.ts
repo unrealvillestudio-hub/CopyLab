@@ -1195,6 +1195,62 @@ async function run() {
     } finally { fx.restore(); }
   });
 
+  // ── LA INSTRUCCIÓN DE FORMATO DEL ARTEFACTO (2026-09-18) ──────────────────────────────────────
+  // EL DEFECTO QUE CIERRA. `content_type_registry.format_instruction` existía desde el 2026-08-08 y
+  // estaba sembrada, pero el carril no la pedía en su `select` y CopyLab no la conocía: la orden
+  // estaba escrita en la tabla y no llegaba a ningún prompt. Medido en los DOS repositorios.
+  await test('FI·cableado: la instrucción declarada llega al prompt, y su ausencia no cambia nada', async () => {
+    const fx = installFetch({});
+    try {
+      const con = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({
+        max_tokens: 320, max_tokens_source: 'base_platform',
+        format_instruction: 'FORMATO: párrafos cortos. Verbo REVELA.', format_instruction_source: 'voice_base',
+      }) }));
+      assert(con.system.includes('## FORMATO DECLARADO'), 'el encabezado llega al prompt');
+      assert(con.system.includes('FORMATO: párrafos cortos. Verbo REVELA.'), 'y el texto, verbatim');
+
+      // EL ORDEN ES LA SALVAGUARDA, y por eso se afirma. Varias instrucciones sembradas nombran una
+      // longitud en PALABRAS mientras el presupuesto la nombra en CARACTERES: dos números para lo
+      // mismo. Con el presupuesto DESPUÉS, la última palabra sobre el espacio la tiene el bloque que
+      // se calcula, no el que se sembró. Si alguien invierte el orden, esta línea se pone roja.
+      assert(con.system.indexOf('## FORMATO DECLARADO') < con.system.indexOf('## PRESUPUESTO DE LONGITUD'),
+        'la instrucción va ANTES del presupuesto: el presupuesto tiene la última palabra');
+
+      // Ausencia: prompt byte-idéntico al de antes del cambio.
+      const sin = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: 320, max_tokens_source: 'base_platform' }) }));
+      assert(!sin.system.includes('FORMATO DECLARADO'), 'sin instrucción no se emite bloque');
+
+      // Vacía o en blanco es la MISMA ausencia: una fila sembrada con "" no puede emitir un
+      // encabezado sin nada debajo, que es lo que enseña a ignorar los encabezados.
+      for (const vacia of ['', '   ', '\n\t ']) {
+        const v = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({
+          max_tokens: 320, max_tokens_source: 'base_platform', format_instruction: vacia }) }));
+        assert(!v.system.includes('FORMATO DECLARADO'), `vacía (${JSON.stringify(vacia)}) no emite bloque`);
+      }
+
+      // Modo UI: ni se entera, como con el presupuesto.
+      const ui = await buildPrompt(reqWith(LB_BCTX));
+      assert(!ui.system.includes('FORMATO DECLARADO'), 'el modo UI no ve la instrucción del carril');
+    } finally { fx.restore(); }
+  });
+
+  await test('FI·eco: el meta dice CUÁNTO llegó y DE DÓNDE, no el texto entero', async () => {
+    const fx = installFetch({});
+    try {
+      const con = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({
+        max_tokens: 320, max_tokens_source: 'base_platform',
+        format_instruction: '  FORMATO: doce.  ', format_instruction_source: 'voice_platform',
+      }) }));
+      // Se cuenta el texto RECORTADO: los espacios del borde no son instrucción.
+      eq(con.format_instruction_chars, 'FORMATO: doce.'.length, 'el largo, ya recortado');
+      eq(con.format_instruction_source, 'voice_platform', 'y el nivel del que salió, verbatim del carril');
+
+      const sin = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: 320, max_tokens_source: 'base_platform' }) }));
+      eq(sin.format_instruction_chars, 0, 'sin instrucción, cero');
+      eq(sin.format_instruction_source, null, 'y sin procedencia que declarar');
+    } finally { fx.restore(); }
+  });
+
   await test('G1-D·cableado: max_tokens de la API y length_budget_chars viajan en el meta del carril', async () => {
     const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
     try {
