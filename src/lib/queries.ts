@@ -67,54 +67,39 @@ function mergeImagelabPresets(global: any[], brand: any[]) {
 // Flujo:
 //   1. Consultar brand_context_cache WHERE brand_id = X AND is_stale = false
 //   2a. Cache HIT  → retornar datos del cache + keywords/CTAs dinámicos (3 queries total)
-//   2b. Cache MISS → full fetch (25 queries) + write cache en background (no bloquea)
+//   2b. Cache MISS → full fetch (25 queries). Desde 2026-09-25 NO se reescribe la caché:
+//       medido que estaba obsoleta para todas las marcas activas y que nadie la leía.
 //
 // Invalidación: triggers automáticos en Postgres marcan is_stale=true
 // cuando cualquier tabla fuente cambia. Sin TTL — los datos son válidos hasta
 // que algo los cambia.
 
-async function writeBrandCache(
-  brandId: string,
-  ctx: any,
-  compileMs: number,
-): Promise<void> {
-  const SUPABASE_URL      = (import.meta as any).env.VITE_SUPABASE_URL      as string;
-  const SUPABASE_ANON_KEY = (import.meta as any).env.VITE_SUPABASE_ANON_KEY as string;
-
-  const payload = {
-    p_brand_id:         brandId,
-    p_brand_data:       ctx.brand,
-    p_copy_profile:     ctx.copyProfile,
-    p_humanize:         ctx.humanize,
-    p_compliance:       ctx.compliance,
-    p_goals:            ctx.brandGoals,
-    p_personas:         ctx.brandPersonas,
-    p_geomix:           ctx.geomix,
-    p_voice_genome:     ctx.voiceGenome,
-    p_services:         ctx.brandServices,
-    p_languages:        ctx.brandLanguages,
-    p_output_templates: ctx.outputTemplates,
-    p_canal_blocks:     ctx.canalBlocks,
-    p_channel_rules:    ctx.channelPromptRules,
-    p_psycho_presets:   (ctx as any).psychoPresets ?? null,
-    p_compile_ms:       compileMs,
-  };
-
-  try {
-    // Usar RPC (SECURITY DEFINER) para escribir con privilegios elevados desde el browser
-    await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_brand_cache`, {
-      method: 'POST',
-      headers: {
-        apikey:         SUPABASE_ANON_KEY,
-        Authorization:  `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // Silencioso — el cache es opcional, no crítico
-  }
-}
+// ── LA CACHÉ QUE NADIE LEÍA DEJA DE ESCRIBIRSE · 2026-09-25 ──────────────────
+// Aquí vivía `writeBrandCache`, que llamaba a `rpc/upsert_brand_cache` —una función
+// SECURITY DEFINER— con `VITE_SUPABASE_ANON_KEY` desde el navegador. Su comentario lo decía
+// sin rodeos: «Usar RPC (SECURITY DEFINER) para escribir con privilegios elevados desde el
+// browser». Una variable `VITE_*` se INCRUSTA en el bundle, y este lab es un sitio PÚBLICO:
+// la única autenticación de esa escritura era descargar la página.
+//
+// SE RETIRA EN VEZ DE MOVERSE AL SERVIDOR, y el motivo está medido, no supuesto.
+//
+// MEDIDO el 2026-09-25 sobre `public.brand_context_cache`:
+//   · 15 filas. CATORCE con `is_stale = true`.
+//   · La única con `is_stale = false` es de una marca compilada el 2026-08-30, hace casi un mes.
+//   · La escritura más reciente de toda la tabla es del 2026-09-04.
+//
+// Y la lectura de más abajo pide `is_stale=eq.false`. Es decir: para TODAS las marcas activas
+// esta caché falla siempre, el `full fetch` de 25 consultas corre igual, y la escritura produce
+// una fila que un disparador vuelve a marcar obsoleta. Una escritura que nadie lee no se
+// traslada a una ruta del servidor: se quita. Mover la credencial habría sido cambiar de sitio
+// el riesgo sin ganar nada — y este lab no tiene SSO, así que una ruta propia habría quedado
+// igual de alcanzable que la RPC.
+//
+// LO QUE QUEDA DECLARADO, no resuelto: `brand_context_cache` y `brand_cache_snapshots` son DOS
+// cachés del mismo concepto. La segunda la construye la EF `brand-snapshot-builder` cada 3 h
+// —MEDIDO: su última construcción es de hoy—, y `api/brand-cache.js` ya la sirve bajo la regla
+// de v3.0: «un lab LEE el snapshot; ningún lab lo CONSTRUYE». Migrar la lectura de aquí a esa
+// vía es el paso siguiente, y es un cambio de comportamiento del lab: va en su propio PR.
 
 async function buildContextFromCache(
   cached: any,
@@ -268,8 +253,10 @@ export async function fetchBrandContext(
     voiceGenome:        voiceGenomeResult[0] ?? null,  // ← L1.5: null si no existe para esta marca
   };
 
-  // Write cache en background (no bloquea la generación)
-  writeBrandCache(brandId, _ctx, Date.now() - _t0).catch(() => {});
+  // Ya no se escribe la caché desde el navegador — ver el bloque «LA CACHÉ QUE NADIE LEÍA»
+  // más arriba. `_t0` se conserva porque mide el tiempo de compilación y se sigue usando en el
+  // registro; si dejara de usarse, se quita entonces y no antes.
+  void _t0;
 
   return _ctx;
 
