@@ -612,8 +612,8 @@ function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): s
   const chars = lengthBudgetCharsFor(declaredMaxTokens);
   if (chars === null) return null;
   return `## PRESUPUESTO DE LONGITUD\n`
-    + `Escribí la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
-    + ' alcanzar ni un límite del que convenga quedarse lejos: es el espacio TOTAL que tenés,'
+    + `Escribe la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
+    + ' alcanzar ni un límite del que convenga quedarse lejos: es el espacio TOTAL que tienes,'
     + ' cierre incluido.\n\n'
     + 'Planificá antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
     + ' Si el material no entra, achicá el ALCANCE —un caso en vez de dos, un ángulo en vez de'
@@ -942,7 +942,7 @@ function normalizeRepair(repair: unknown): RepairInput | null {
 //   · MÍNIMO NECESARIO — sin esto el modelo reescribe la pieza entera y rompe las reglas que ya
 //     cumplía, que es exactamente lo que la segunda pasada viene a evitar.
 //   · PRESUPUESTO — el techo de G1-D sigue vigente: reparar no puede ser agregar. El número se
-//     repite acá porque la orden de esta pasada es "corregí sin crecer", no "escribí en N".
+//     repite acá porque la orden de esta pasada es "corrige sin crecer", no "escribe en N".
 //   · TÍTULO — sólo se menciona si la pieza original TRAE título (editorial): en social no hay
 //     título y nombrarlo sería invitar a inventar uno. Lo decide el dato, no el destino escrito acá.
 function buildRepairInstruction(
@@ -1141,9 +1141,9 @@ function buildWritingMaterialBlock(
         + ' mostrar que el patrón se repite — no basta con que algo haya pasado una vez. Cada uno con'
         + ' su especificidad y nombrando su fuente citable en el texto. No ilustres con el mismo caso'
         + ' con el que abriste: eso no ilustra, repite.'
-      : 'Es UN solo caso: usalo donde más pese, con su especificidad y nombrando su fuente citable en'
+      : 'Es UN solo caso: úsalo donde más pese, con su especificidad y nombrando su fuente citable en'
         + ' el texto. No lo repitas como si fueran dos, y no inventes un segundo caso para acompañarlo'
-        + ' — si el patrón necesita un segundo ejemplo y no lo tenés, no lo afirmes como patrón.';
+        + ' — si el patrón necesita un segundo ejemplo y no lo tienes, no lo afirmes como patrón.';
     parts.push(`CASOS PARA ILUSTRAR (${casos.length}):\n${lista}\n\n${comoUsarlos}`);
   }
   return parts.length ? parts.join('\n\n') : null;
@@ -1165,25 +1165,40 @@ function buildOfferBlock(
 ): string | null {
   const items = Array.isArray(offer?.items) ? offer!.items! : [];
   if (!items.length) return null;   // sin oferta no hay bloque: el prompt queda como hoy
+  // FICHA-01 (2026-09-26) — cada ítem trae la ficha única del producto cuando la tiene: modo de
+  // uso, activos, problemas que atiende, beneficios y afirmaciones prohibidas. Se imprime verbatim
+  // y sólo la clave que viene: un ítem sin ficha se ve como antes. Ningún precio: no viajan.
+  const txt = (v: unknown) => String(v ?? '').trim();
+  const lst = (v: unknown) => Array.isArray(v) ? v.map((x) => txt(x)).filter(Boolean).join(' · ') : '';
   const lista = items
     .map((it, i) => {
-      const nombre = String((it as any)?.name ?? '').trim();
+      const x = it as any;
+      const nombre = txt(x?.name);
       if (!nombre) return null;     // un ítem sin nombre no se puede nombrar: no se emite
-      const ref = String((it as any)?.ref ?? '').trim();
-      const linea = String((it as any)?.line ?? '').trim();
-      const resumen = String((it as any)?.summary ?? '').trim();
-      const cabecera = [nombre, linea ? `(${linea})` : null, ref ? `[${ref}]` : null].filter(Boolean).join(' ');
-      return `${i + 1}. ${cabecera}${resumen ? `\n   ${resumen}` : ''}`;
+      const cabecera = [nombre, txt(x?.line) ? `(${txt(x.line)})` : null, txt(x?.ref) ? `[${txt(x.ref)}]` : null].filter(Boolean).join(' ');
+      const filas = [
+        txt(x?.summary),
+        lst(x?.components) ? `Incluye: ${lst(x.components)}` : '',
+        lst(x?.actives) ? `Activos: ${lst(x.actives)}` : '',
+        lst(x?.concerns) ? `Atiende: ${lst(x.concerns)}` : '',
+        lst(x?.benefits) ? `Beneficios: ${lst(x.benefits)}` : '',
+        txt(x?.how_to_use) ? `Modo de uso: ${txt(x.how_to_use)}` : '',
+        lst(x?.avoid_claims) ? `No afirmar: ${lst(x.avoid_claims)}` : '',
+      ].filter(Boolean);
+      return `${i + 1}. ${cabecera}${filas.length ? `\n   ${filas.join('\n   ')}` : ''}`;
     })
     .filter(Boolean)
     .join('\n');
   if (!lista) return null;
-  return `OFERTA DISPONIBLE (qué puede ofrecer la marca a quien lea esta pieza):\n${lista}\n\n`
-    + 'Elegí UNO y dale TRABAJO en el argumento: que sea lo que resuelve el problema que acabás de'
-    + ' describir, o lo que sostiene el mecanismo que afirmás, o el objeto del paso siguiente.'
-    + ' Nombralo por su nombre, tal como aparece arriba. No hagas una lista, no lo menciones de'
-    + ' pasada y no lo dejes caer en la última línea: si al borrar la mención el texto queda igual'
-    + ' de bueno, la mención no tenía peso. Primero el diagnóstico, después la solución.';
+  return `OFERTA DISPONIBLE (qué puede ofrecer la marca a quien lea esta pieza; está ordenada por afinidad con el tema):\n${lista}\n\n`
+    + 'Elige UNO y dale TRABAJO en el argumento: que sea lo que resuelve el problema que acabas de'
+    + ' describir, lo que sostiene el mecanismo que afirmas o el objeto del paso siguiente.'
+    + ' Nómbralo tal como aparece arriba. No hagas una lista, no lo menciones de pasada y no lo dejes'
+    + ' caer en la última línea: si al borrar la mención el texto queda igual de bueno, la mención no'
+    + ' tenía peso. Primero el diagnóstico, después la solución.'
+    + ' Todo lo que digas del producto (activos, cómo se usa, qué logra) tiene que estar en su ficha de'
+    + ' arriba: no inventes activos, pasos ni resultados, respeta cada «No afirmar» y no escribas'
+    + ' precios ni descuentos.';
 }
 
 // ── G2-C · la política de CTA según el frente de audiencia ──────────────────
@@ -1210,7 +1225,7 @@ const AUDIENCE_CTA: Record<AudienceFrame, string> = {
   decide:
     'El lector DECIDE y FIRMA: puede contratar o comprar y responde por esa decisión. El cierre PUEDE'
     + ' pedirle que contrate —contactar, agendar, pedir una propuesta— en el registro de la voz y sin'
-    + ' fórmula publicitaria. No es obligatorio: si la pieza cierra mejor sin pedido, cerrá sin pedido.'
+    + ' fórmula publicitaria. No es obligatorio: si la pieza cierra mejor sin pedido, cierra sin pedido.'
     + ' Su ausencia no es fallo; lo que sí es fallo es un pedido pegado que la pieza no se ganó.',
   influye:
     'El lector NO FIRMA ni contrata: no toma la decisión de compra — la padece o la condiciona.'
@@ -2490,12 +2505,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
         const product = (req.previousOutputs as any)?.product ?? null;
         let kitBlock = '';
         if (isKit && product) {
+          // FICHA-01 — sin precios: el precio del kit y de sus componentes vive en la tienda.
           const components = (product.kit_components ?? [])
-            .map((c: any) => `  - ${c.name} ${c.size} ($${c.price_individual}) · rol: ${c.role}`)
+            .map((c: any) => `  - ${c.name} ${c.size} · rol: ${c.role}`)
             .join('\n');
-          kitBlock = `\n\nKIT COMPOSITION:\nComponentes: \n${components}\nValor individual: $${product.kit_value_individual} | Precio kit: $${product.price} | Ahorro: $${product.kit_savings_amount} (${product.kit_savings_pct}% OFF)\nTagline: "${product.tagline}"`;
+          kitBlock = `\n\nKIT COMPOSITION:\nComponentes: \n${components}\nTagline: "${product.tagline}"`;
         }
-        return `Título SEO del producto (máx 70 chars) + Descripción corta (2-3 líneas, beneficio principal del ${isKit ? 'ritual completo' : 'producto'}) + Descripción larga (3-4 párrafos: pain point → mecanismo → beneficio sentido → social proof placeholder) + Bullet points de características (5-7 bullets, beneficio no feature) + ${isKit ? 'Bloque KIT_VALUE: qué incluye + valor vs precio + % ahorro + "envío gratis incluido" +' : ''} Bloque HOW_TO_USE separado (orden + frecuencia + cantidad por paso) + CTA de ficha.${kitBlock}`;
+        return `Título SEO del producto (máx 70 chars) + Descripción corta (2-3 líneas, beneficio principal del ${isKit ? 'ritual completo' : 'producto'}) + Descripción larga (3-4 párrafos: pain point → mecanismo → beneficio sentido → social proof placeholder) + Bullet points de características (5-7 bullets, beneficio no feature) + ${isKit ? 'Bloque KIT_VALUE: qué incluye, SIN precios ni porcentajes (la tienda los muestra) +' : ''} Bloque HOW_TO_USE separado, tomado del «Modo de uso» de la ficha, sin inventar pasos, frecuencias ni cantidades + CTA de ficha.${kitBlock}`;
       })(),
     };
     userInstruction = `PACK: ${pack}\n\n${packInstructions[pack] ?? 'Genera el copy apropiado para este pack.'}\n\nGenera ahora. Sin preámbulos.`;

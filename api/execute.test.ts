@@ -630,10 +630,25 @@ async function run() {
   await test('N02·pure buildOfferBlock — los items entran verbatim y la instruccion pide PESO, no presencia', () => {
     const block = PURE.buildOfferBlock({ selected_by: 'declared_selector', items: OFERTA })!;
     assertOrdered(block, ['OFERTA DISPONIBLE', 'Alfa (L1) [A1]', 'Resumen A', 'Beta (L2) [A2]']);
-    assert(/Eleg[ií] UNO y dale TRABAJO/.test(block), 'la instruccion es de peso, no de presencia');
+    assert(/Elige UNO y dale TRABAJO/.test(block), 'la instruccion es de peso, no de presencia');
     assert(/No hagas una lista/.test(block), 'una enumeracion es la forma de mencionar sin comprometerse');
     assert(/Primero el diagn[oó]stico, despu[eé]s la soluci[oó]n/.test(block), 'y el orden importa');
     assert(!/Neurone|shampoo|cabello/.test(block), 'cero marcas y cero rubro: los items llegan como dato');
+  });
+  await test('FICHA-01·pure buildOfferBlock — la ficha del item entra entera y ningun precio viaja', () => {
+    const block = PURE.buildOfferBlock({ items: [{ ref: 'K1', name: 'Kappa', line: 'L3', summary: 'Resumen K',
+      components: ['Pieza A 100 ml', 'Pieza B 50 ml'], actives: ['activo uno'], concerns: ['problema uno'],
+      benefits: ['beneficio uno'], how_to_use: 'Aplicar y enjuagar.', avoid_claims: ['no prometer x'], price: 99.99 }] } as any)!;
+    assertOrdered(block, ['Kappa (L3) [K1]', 'Resumen K', 'Incluye: Pieza A 100 ml · Pieza B 50 ml', 'Activos: activo uno',
+      'Atiende: problema uno', 'Beneficios: beneficio uno', 'Modo de uso: Aplicar y enjuagar.', 'No afirmar: no prometer x']);
+    assert(!/99\.99|\$/.test(block), 'un precio que llegara por error no se imprime');
+    assert(/no inventes activos, pasos ni resultados/.test(block), 'los hechos de producto salen de la ficha');
+    assert(/no escribas\s+precios/.test(block), 'y el escritor no pone precios');
+  });
+  await test('FICHA-01·pure buildOfferBlock — la instruccion no usa voseo', () => {
+    const block = PURE.buildOfferBlock({ items: [{ name: 'Solo' }] } as any)!;
+    assert(!/(?<![\p{L}])(eleg[ií]|acab[aá]s|afirm[aá]s|nombralo|ten[eé]s|pod[eé]s)(?![\p{L}])/iu.test(block.replace(/Elige|acabas|afirmas|Nómbralo/g, '')), 'sin formas voseantes');
+    assert(!/Elegí|acabás|afirmás|Nombralo/.test(block), 'ni las que tenia antes');
   });
   await test('N02·pure buildOfferBlock — sin oferta no hay bloque, y la ausencia deja el prompt como hoy', () => {
     for (const vacio of [null, undefined, {}, { items: [] }, { items: null }, { selected_by: 'none_declared', items: [] }]) {

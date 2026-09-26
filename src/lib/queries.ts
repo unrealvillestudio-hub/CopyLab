@@ -275,6 +275,7 @@ export async function fetchProductCatalog(brandId: string): Promise<any[]> {
     `&select=id,brand_id,sku,name,linea,line_family,subcategory,size,b2b_only,` +
     `shopify_visibility,image_filename,description_en,description_es,` +
     `benefit_claims,hair_type,dominant_hex,tagline,` +
-    `product_type,kit_components,kit_value_individual,kit_savings_amount,kit_savings_pct`,
+    `how_to_use_es,how_to_use_en,ingredients,concerns,claims_forbidden,` +
+    `product_type,kit_components`,
   );
 }
