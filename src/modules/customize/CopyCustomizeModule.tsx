@@ -60,20 +60,30 @@ function useBrandServices(brandId: string) {
 // ─── Helpers ───────────────────────────────────────────────────
 
 export function formatProductForPrompt(p: ProductBlueprint): string {
+  // FICHA-01 (2026-09-26) — la ficha única de producto (public.product_blueprints) es la fuente de
+  // todo hecho de producto. Sin precios: el precio vive en la tienda y se lee en vivo; una copia
+  // en el prompt se desactualiza el día que alguien cambia un precio.
+  const q = p as any
+  const lista = (v: unknown, lang = false) => Array.isArray(v) && v.length
+    ? v.map((x: any) => (x && typeof x === 'object' && lang) ? (x.es ?? x.en) : x).filter(Boolean).join(' · ')
+    : ''
   const lines = [
     `PRODUCTO: ${p.name}`,
     p.sku ? `SKU: ${p.sku}` : '',
     p.linea ? `Colección: ${p.linea}` : '',
     p.size ? `Presentación: ${p.size}` : '',
     p.description_es ?? p.description_en ?? '',
-    Array.isArray(p.benefit_claims) && p.benefit_claims.length ? `Claims: ${p.benefit_claims.join(' · ')}` : '',
-    Array.isArray(p.hair_type) && p.hair_type.length ? `Tipo de cabello: ${p.hair_type.join(', ')}` : '',
+    lista(q.ingredients, true) ? `Activos (según la ficha técnica): ${lista(q.ingredients, true)}` : '',
+    lista(q.concerns) ? `Problemas que atiende: ${lista(q.concerns)}` : '',
+    Array.isArray(q.use_contexts) && q.use_contexts.length ? `Contexto: ${q.use_contexts.map((c: any) => c?.es ?? c?.en).filter(Boolean).join(' · ')}` : '',
+    Array.isArray(p.benefit_claims) && p.benefit_claims.length ? `Beneficios: ${p.benefit_claims.join(' · ')}` : '',
+    Array.isArray(p.hair_type) && p.hair_type.length ? `Apto para: ${p.hair_type.join(', ')}` : '',
+    q.how_to_use_es ? `Modo de uso: ${q.how_to_use_es}` : '',
+    lista(q.claims_forbidden) ? `No afirmar: ${lista(q.claims_forbidden)}` : '',
   ]
-  // Kit: añadir composición y valor
-  if ((p as any).product_type === 'kit' && Array.isArray((p as any).kit_components) && (p as any).kit_components.length) {
-    const comps = (p as any).kit_components.map((c: any) => `${c.name} ${c.size} ($${c.price_individual})`).join(' + ')
+  if (q.product_type === 'kit' && Array.isArray(q.kit_components) && q.kit_components.length) {
+    const comps = q.kit_components.map((c: any) => `${c.name} ${c.size}`).join(' + ')
     lines.push(`Composición del kit: ${comps}`)
-    lines.push(`Valor individual: $${(p as any).kit_value_individual} | Precio kit: $${(p as any).price} | Ahorro: $${(p as any).kit_savings_amount} (${(p as any).kit_savings_pct}% OFF)`)
     if (p.tagline) lines.push(`Tagline: "${p.tagline}"`)
   }
   return lines.filter(Boolean).join('\n')
@@ -362,7 +372,7 @@ export const CopyCustomizeModule = () => {
                   <optgroup label="🎁 Rituales & Kits">
                     {kits.map(kit => (
                       <option key={(kit as any).sku ?? kit.id} value={`kit:${(kit as any).sku}`}>
-                        {kit.name}{(kit as any).kit_savings_pct ? ` · ${(kit as any).kit_savings_pct}% OFF` : ''}{` · $${(kit as any).price}`}
+                        {kit.name}
                       </option>
                     ))}
                   </optgroup>
@@ -443,11 +453,6 @@ export const CopyCustomizeModule = () => {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-bold text-accent">{selectedKit.name}</span>
               <span className="text-[10px] text-uv-text-muted font-mono">{(selectedKit as any).sku}</span>
-              {(selectedKit as any).kit_savings_pct && (
-                <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] font-bold rounded">
-                  {(selectedKit as any).kit_savings_pct}% OFF
-                </span>
-              )}
             </div>
             {selectedKit.description_es && (
               <p className="text-xs text-uv-text-muted line-clamp-2">{selectedKit.description_es}</p>
@@ -455,20 +460,10 @@ export const CopyCustomizeModule = () => {
             {Array.isArray((selectedKit as any).kit_components) && (selectedKit as any).kit_components.length > 0 && (
               <div className="space-y-0.5">
                 {((selectedKit as any).kit_components as any[]).map((c, i) => (
-                  <div key={i} className="flex justify-between text-[10px] text-uv-text-muted font-mono">
+                  <div key={i} className="text-[10px] text-uv-text-muted font-mono">
                     <span>{c.name} {c.size}</span>
-                    <span>${c.price_individual}</span>
                   </div>
                 ))}
-                <div className="flex justify-between text-[11px] font-bold border-t border-uv-border pt-1 mt-1">
-                  <span className="text-uv-text">Este ritual</span>
-                  <span className="text-accent">${(selectedKit as any).price}</span>
-                </div>
-                {(selectedKit as any).kit_savings_amount && (
-                  <p className="text-[10px] text-emerald-400 text-right">
-                    Ahorras ${(selectedKit as any).kit_savings_amount} vs compra individual
-                  </p>
-                )}
               </div>
             )}
           </div>
