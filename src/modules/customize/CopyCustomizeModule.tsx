@@ -75,6 +75,7 @@ export function formatProductForPrompt(p: ProductBlueprint): string {
     p.description_es ?? p.description_en ?? '',
     lista(q.ingredients, true) ? `Activos (según la ficha técnica): ${lista(q.ingredients, true)}` : '',
     lista(q.concerns) ? `Problemas que atiende: ${lista(q.concerns)}` : '',
+    Array.isArray(q.use_contexts) && q.use_contexts.length ? `Contexto: ${q.use_contexts.map((c: any) => c?.es ?? c?.en).filter(Boolean).join(' · ')}` : '',
     Array.isArray(p.benefit_claims) && p.benefit_claims.length ? `Beneficios: ${p.benefit_claims.join(' · ')}` : '',
     Array.isArray(p.hair_type) && p.hair_type.length ? `Apto para: ${p.hair_type.join(', ')}` : '',
     q.how_to_use_es ? `Modo de uso: ${q.how_to_use_es}` : '',

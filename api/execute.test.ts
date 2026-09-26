@@ -638,9 +638,9 @@ async function run() {
   await test('FICHA-01·pure buildOfferBlock — la ficha del item entra entera y ningun precio viaja', () => {
     const block = PURE.buildOfferBlock({ items: [{ ref: 'K1', name: 'Kappa', line: 'L3', summary: 'Resumen K',
       components: ['Pieza A 100 ml', 'Pieza B 50 ml'], actives: ['activo uno'], concerns: ['problema uno'],
-      benefits: ['beneficio uno'], how_to_use: 'Aplicar y enjuagar.', avoid_claims: ['no prometer x'], price: 99.99 }] } as any)!;
+      benefits: ['beneficio uno'], how_to_use: 'Aplicar y enjuagar.', avoid_claims: ['no prometer x'], contexts: ['por qué sirve en A'], price: 99.99 }] } as any)!;
     assertOrdered(block, ['Kappa (L3) [K1]', 'Resumen K', 'Incluye: Pieza A 100 ml · Pieza B 50 ml', 'Activos: activo uno',
-      'Atiende: problema uno', 'Beneficios: beneficio uno', 'Modo de uso: Aplicar y enjuagar.', 'No afirmar: no prometer x']);
+      'Atiende: problema uno', 'Contexto: por qué sirve en A', 'Beneficios: beneficio uno', 'Modo de uso: Aplicar y enjuagar.', 'No afirmar: no prometer x']);
     assert(!/99\.99|\$/.test(block), 'un precio que llegara por error no se imprime');
     assert(/no inventes activos, pasos ni resultados/.test(block), 'los hechos de producto salen de la ficha');
     assert(/no escribas\s+precios/.test(block), 'y el escritor no pone precios');

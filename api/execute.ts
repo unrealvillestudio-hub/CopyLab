@@ -1181,6 +1181,7 @@ function buildOfferBlock(
         lst(x?.components) ? `Incluye: ${lst(x.components)}` : '',
         lst(x?.actives) ? `Activos: ${lst(x.actives)}` : '',
         lst(x?.concerns) ? `Atiende: ${lst(x.concerns)}` : '',
+        lst(x?.contexts) ? `Contexto: ${lst(x.contexts)}` : '',
         lst(x?.benefits) ? `Beneficios: ${lst(x.benefits)}` : '',
         txt(x?.how_to_use) ? `Modo de uso: ${txt(x.how_to_use)}` : '',
         lst(x?.avoid_claims) ? `No afirmar: ${lst(x.avoid_claims)}` : '',
