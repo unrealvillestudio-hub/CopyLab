@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude, runLiteralCopy } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -128,7 +128,7 @@ function res(data: any, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => data, text: async () => (typeof data === 'string' ? data : JSON.stringify(data)) } as any;
 }
 type TableReply = any[] | ((url: string) => any);
-function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; snapshot?: any[] }) {
+function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; snapshot?: any[]; claudeStatus?: number }) {
   const calls: string[] = [];
   const claudeBodies: any[] = [];
   globalThis.fetch = (async (url: any, init?: any) => {
@@ -136,7 +136,7 @@ function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any;
     calls.push(u);
     if (u.includes('api.anthropic.com')) {
       try { claudeBodies.push(JSON.parse(init?.body ?? '{}')); } catch { /* ignore */ }
-      return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } });
+      return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } }, opts.claudeStatus ?? 200);
     }
     if (u.includes('unrlvl-context.vercel.app')) return res('', 404);
     if (u.includes('/rest/v1/')) {
@@ -2349,6 +2349,47 @@ async function run() {
       assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'y sin gastar la llamada a Claude');
       fx.restore();
     } finally { Math.random = realRandom; }
+  });
+
+  // ── CONTRATO DE FALLO PARA EL LIBRO MAYOR (2026-10-01) ──────────────────────────────────────
+  // El carril asienta el costo de una pieza fallida con lo que este cuerpo dice. Antes del contrato,
+  // un 500 era `{ error, status }` y el carril no distinguía «el proveedor rechazó y no cobró» de
+  // «no sabemos qué cobró» (15 filas así en 30 días, medido el 2026-10-01).
+  await test('FALLO·un rechazo del proveedor viaja con su código, sin consumo, y con el mismo mensaje de siempre', async () => {
+    const fx = installFetch({ claude: { type: 'error', error: { type: 'invalid_request_error' } }, claudeStatus: 429 });
+    const r = makeRes();
+    await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any);
+    fx.restore();
+    eq(r._out._status, 500, '500 como hasta hoy');
+    eq(r._out._json.error, 'Claude API error: 429', 'el mensaje que el carril y las alertas ya leen, intacto');
+    eq(r._out._json.provider_called, true, 'la llamada se hizo');
+    eq(r._out._json.provider_http_status, 429, 'el código, como dato');
+    eq(r._out._json.usage, null, 'un rechazo no trae consumo');
+  });
+
+  await test('FALLO·un fallo ANTES de llamar a Claude lo dice: provider_called=false', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: {} } });
+    const r = makeRes();
+    await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({ repair: { piece_text: PIEZA, violations: [] } }) }) } as any, r as any);
+    fx.restore();
+    eq(r._out._status, 500, 'encargo roto → 500');
+    eq(r._out._json.provider_called, false, 'no se llamó al proveedor');
+    eq(r._out._json.provider_http_status, null, 'sin código');
+    assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'y de verdad no se llamó');
+  });
+
+  await test('FALLO·pure failureLedgerFields: el consumo de una llamada que SÍ respondió no se pierde', () => {
+    const uso = { input_tokens: 5120, output_tokens: 840 };
+    const tras = failureLedgerFields(new Error('COPYLAB_POSTPROCESO_ROTO'), uso);
+    eq(tras.provider_called, true, 'hubo llamada');
+    eq(tras.provider_http_status, null, 'el fallo no fue del proveedor');
+    eq(JSON.stringify(tras.usage), JSON.stringify(uso), 'su consumo viaja');
+    const red = failureLedgerFields(new ProviderCallError('Claude API unreachable: x', null), null);
+    eq(red.provider_called, true, 'la petición salió');
+    eq(red.provider_http_status, null, 'sin respuesta');
+    eq(red.usage, null, 'sin consumo conocido');
+    const nada = failureLedgerFields(new Error('brand roto'), null);
+    eq(nada.provider_called, false, 'un Error a secas sin consumo no es una llamada');
   });
 
   const total = passed + xfails.length + failures.length;
