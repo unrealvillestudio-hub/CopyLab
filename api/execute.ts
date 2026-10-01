@@ -2753,33 +2753,85 @@ Generate now.`;
 
 interface ClaudeUsage { input_tokens: number; output_tokens: number; }
 
+// ── CONTRATO DE FALLO PARA EL LIBRO MAYOR (2026-10-01) ─────────────────────────────────────────
+// Un 500 de este endpoint ya no es sólo un texto: dice si la llamada paga se hizo, con qué código
+// respondió el proveedor y, si respondió 2xx, cuánto consumió. El carril (content-run-stage) lo
+// necesita para asentar el costo REAL de una pieza que falló.
+//
+// EL DEFECTO, medido el 2026-10-01 en `public.ops_generation_ledger` (30 días): 15 filas de copylab
+// `COPYLAB_EXEC_FAILED: HTTP 500: Claude API error: 400` asentadas en CEROS sin poder distinguir
+// «el proveedor rechazó y no cobró» de «no sabemos qué cobró». El código del proveedor viajaba sólo
+// dentro de la prosa del mensaje.
+//
+// Ninguna regla de facturación vive acá: este archivo informa lo que pasó; el asiento lo decide el
+// carril con la tarifa, que es dato.
+// ── FALLO:BEGIN ── bloque puro (sin red): lo ejerce `api/execute.test.ts`.
+export class ProviderCallError extends Error {
+  /** Código con el que respondió el proveedor; `null` si no hubo respuesta (red caída). */
+  readonly httpStatus: number | null;
+  constructor(message: string, httpStatus: number | null) {
+    super(message);
+    this.name = 'ProviderCallError';
+    this.httpStatus = httpStatus;
+  }
+}
+
+/** Los campos que un fallo añade a su cuerpo. `usage` es el consumo de una llamada que SÍ respondió
+ *  antes de que algo posterior fallara: esa llamada se cobró aunque la pieza no salga. */
+export function failureLedgerFields(err: unknown, usage: ClaudeUsage | null): {
+  provider_called: boolean; provider_http_status: number | null; usage: ClaudeUsage | null;
+} {
+  const fallo = err instanceof ProviderCallError ? err : null;
+  return {
+    provider_called: !!usage || !!fallo,
+    provider_http_status: fallo ? fallo.httpStatus : null,
+    usage: usage ?? null,
+  };
+}
+// ── FALLO:END ──
+
 export async function callClaude(
   system: string,
   user: string,
   maxTokens = 1600,
 ): Promise<{ text: string; usage: ClaudeUsage }> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANT_KEY(),
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
-      // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
-      max_tokens: maxTokens,
-      // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
-      // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
-      // any non-default sampling value with a 400.
-      thinking: { type: 'disabled' },
-      system,
-      messages: [{ role: 'user', content: user }],
-    }),
-  });
-  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
-  const data = await res.json();
+  // La clave se resuelve ANTES de la llamada: si falta, la llamada paga no se hizo, y el error
+  // sale como Error a secas (no ProviderCallError) — `provider_called: false`.
+  const apiKey = ANT_KEY();
+  let res: Response;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
+        // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
+        max_tokens: maxTokens,
+        // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
+        // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
+        // any non-default sampling value with a 400.
+        thinking: { type: 'disabled' },
+        system,
+        messages: [{ role: 'user', content: user }],
+      }),
+    });
+  } catch (err) {
+    // La petición salió y no hubo respuesta: no sabemos qué cobró el proveedor.
+    throw new ProviderCallError(`Claude API unreachable: ${err instanceof Error ? err.message : String(err)}`, null);
+  }
+  // El MISMO mensaje de siempre —el carril y las alertas lo leen—, ahora con el código como dato.
+  if (!res.ok) throw new ProviderCallError(`Claude API error: ${res.status}`, res.status);
+  let data: any;
+  try {
+    data = await res.json();
+  } catch (err) {
+    throw new ProviderCallError(`Claude API body unreadable: ${err instanceof Error ? err.message : String(err)}`, res.status);
+  }
   // usage is asserted by the carril to log real copylab cost (§4.1/§4.3) — it
   // was silently discarded before.
   const usage = data.usage ?? {};
@@ -2856,6 +2908,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // ── SYNC MODE v9.6 ────────────────────────────────────────────────────
+  // El consumo de la llamada, FUERA del try: si algo falla DESPUÉS de que Claude respondió, esa
+  // llamada ya se cobró y su consumo tiene que llegar al cuerpo del fallo.
+  let usoDeLaLlamada: ClaudeUsage | null = null;
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
@@ -2866,6 +2921,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
+    usoDeLaLlamada = usage;
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
     //    SIN estampar, usage real. El modo UI conserva su forma histórica.
@@ -2972,6 +3028,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[CopyLab /api/execute v9.6]', msg);
-    return res.status(500).json({ error: msg, status: 'error' });
+    return res.status(500).json({ error: msg, status: 'error', ...failureLedgerFields(err, usoDeLaLlamada) });
   }
 }
