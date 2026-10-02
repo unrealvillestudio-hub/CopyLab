@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -2347,6 +2347,162 @@ async function run() {
       eq(r._out._status, 500, 'encargo sin violaciones → 500');
       assert(String(r._out._json.error).startsWith('COPYLAB_REPAIR_VIOLATIONS_REQUIRED'), 'con el error nominal');
       assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'y sin gastar la llamada a Claude');
+      fx.restore();
+    } finally { Math.random = realRandom; }
+  });
+
+  // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ──────────────
+  // `builder_input.learned_corrections` le enseña al escritor, ANTES de escribir, cómo se corrigió
+  // el mismo error en esta voz. Estos tests fijan: ausente ⇒ byte-idéntico; presente ⇒ el bloque
+  // con cada código, antes y después; tope de 6; ítems malformados descartados sin cortar; tipo
+  // equivocado ⇒ corte nominal; eco en el meta; y el modo reparación intacto.
+  //
+  // Cero marcas: los códigos y fragmentos son inventados a propósito — el motor no los conoce.
+  const LC = (n: number) => ({ code: `XX-APR-${n}`, instruction: `instrucción ${n} en modo escritura`, before: `fragmento antes ${n}`, after: `fragmento después ${n}` });
+  const LC3 = [LC(1), LC(2), LC(3)];
+  const lcBI = (extra: any) => rpBI({ rules: [{ code: 'XX-REGLA-1', kind: 'prohibition', statement: 'una regla imperativa' }], ...extra });
+
+  await test('APRENDIZAJE·pure normalizeLearnedCorrections: ausencia vacía, tipo equivocado CORTA, ítems rotos se descartan', () => {
+    for (const ausente of [null, undefined, []]) {
+      const r = PURE.normalizeLearnedCorrections(ausente);
+      eq(r.items.length, 0, `${JSON.stringify(ausente)} → sin correcciones`);
+      eq(r.skipped, 0, 'nada descartado');
+    }
+    const lanza = (raw: any) => {
+      let msg = '';
+      try { PURE.normalizeLearnedCorrections(raw); } catch (e) { msg = e instanceof Error ? e.message : String(e); }
+      assert(msg.startsWith('COPYLAB_LEARNED_CORRECTIONS_MALFORMED'), `${JSON.stringify(raw)} → corte nominal; obtenido "${msg || '(no lanzó)'}"`);
+    };
+    lanza('una corrección'); lanza({ code: 'x' }); lanza(7); lanza(true);
+    const r = PURE.normalizeLearnedCorrections([
+      LC(1),
+      'no soy objeto',
+      null,
+      [LC(2)],
+      { ...LC(3), code: '  ' },                 // sin código
+      { ...LC(4), instruction: '' },            // sin instrucción
+      { ...LC(5), before: 42 },                 // antes no es texto
+      { ...LC(6), after: undefined },           // sin después
+      { ...LC(7), after: LC(7).before },        // antes = después: no enseña nada
+      LC(8),
+    ]);
+    eq(r.items.length, 2, 'quedan las dos bien formadas');
+    eq(r.skipped, 8, 'las ocho rotas se descartan');
+    eq(r.items.map((c: any) => c.code).join(','), 'XX-APR-1,XX-APR-8', 'en el orden en que llegaron');
+  });
+
+  await test('APRENDIZAJE·pure tope de 6 y fragmentos recortados', () => {
+    const ocho = [1, 2, 3, 4, 5, 6, 7, 8].map(LC);
+    const r = PURE.normalizeLearnedCorrections(ocho);
+    eq(r.items.length, 6, 'tope de 6');
+    eq(r.capped, 2, 'dos quedan fuera');
+    eq(r.items[5].code, 'XX-APR-6', 'las primeras, en el orden del carril');
+    // El tope cuenta VÁLIDAS: un ítem roto no ocupa lugar.
+    eq(PURE.normalizeLearnedCorrections([null, ...ocho]).items[0].code, 'XX-APR-1', 'el roto no consume cupo');
+    const largo = 'a'.repeat(900);
+    const c = PURE.normalizeLearnedCorrections([{ ...LC(1), before: largo, after: `línea uno\n\n   línea dos ${largo}` }]).items[0];
+    eq(Array.from(c.before).length, 601, '600 caracteres + la elipsis');
+    assert(c.before.endsWith('…'), 'el recorte se marca');
+    assert(c.after.startsWith('línea uno línea dos'), 'los saltos y espacios se colapsan');
+    eq(Array.from(c.after).length, 601, 'el después también se recorta');
+  });
+
+  await test('APRENDIZAJE·pure buildLearnedCorrectionsBlock: cada regla con su antes y su después, y las tres órdenes', () => {
+    eq(PURE.buildLearnedCorrectionsBlock([]), null, 'sin correcciones → sin bloque');
+    eq(PURE.buildLearnedCorrectionsBlock(null), null, 'null idem');
+    const b = String(PURE.buildLearnedCorrectionsBlock(PURE.normalizeLearnedCorrections(LC3).items));
+    assertOrdered(b, ['CORRECCIONES APRENDIDAS DE ESTA VOZ (3)', 'validadas por una persona',
+      '[XX-APR-1]', LC(1).instruction, `«${LC(1).before}»`, `«${LC(1).after}»`,
+      '[XX-APR-2]', `«${LC(2).before}»`, `«${LC(2).after}»`,
+      '[XX-APR-3]', `«${LC(3).before}»`, `«${LC(3).after}»`]);
+    assert(b.includes('evita esos errores desde el principio'), 'evitar el error, no esperar a corregirlo');
+    assert(b.includes('No copies los ejemplos literalmente'), 'no copiar');
+    assert(b.includes('no son material para esta pieza'), 'no reutilizar sus datos');
+    for (const nombre of ['meta_fb', 'linkedin', 'ForumPHs', 'NeuroneSCF', 'LucienSael', 'HR-GEN-01', 'v1']) {
+      assert(!b.includes(nombre), `el bloque no nombra ${nombre}`);
+    }
+  });
+
+  await test('APRENDIZAJE·cableado: sin la clave (ausente, null o vacía) el prompt es byte-idéntico', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const base = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({}) }));
+      eq(base.learned_corrections_count, 0, 'sin la clave → 0');
+      assert(!base.system.includes('CORRECCIONES APRENDIDAS'), 'sin la clave → sin bloque');
+      for (const vacio of [null, []]) {
+        const otro = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: vacio }) }));
+        eq(otro.system, base.system, `${JSON.stringify(vacio)} → system byte-idéntico`);
+        eq(otro.user, base.user, `${JSON.stringify(vacio)} → user byte-idéntico`);
+        eq(otro.learned_corrections_count, 0, 'y el eco en 0');
+      }
+      // Todo descartado equivale a ausente: ningún encabezado vacío.
+      const rotas = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: [null, { code: 'x' }] }) }));
+      eq(rotas.system, base.system, 'todas malformadas → system byte-idéntico');
+      eq(rotas.learned_corrections_count, 0, 'y 0 inyectadas');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  await test('APRENDIZAJE·cableado: presente → bloque en el system tras las reglas del Watcher; la tarea no cambia', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    const fx = installFetch({});
+    try {
+      const base = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({}) }));
+      const con = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: LC3 }) }));
+      eq(con.learned_corrections_count, 3, 'las tres inyectadas');
+      assertOrdered(con.system, ['REGLAS DEL WATCHER', 'XX-REGLA-1', 'CORRECCIONES APRENDIDAS DE ESTA VOZ (3)',
+        'XX-APR-1', LC(1).before, LC(1).after, 'XX-APR-2', LC(2).before, LC(2).after, 'XX-APR-3', LC(3).before, LC(3).after]);
+      eq(con.user, base.user, 'la instrucción de usuario no cambia: el bloque vive en el system');
+      // Lo único que se agrega es el bloque y su separador: quitarlo devuelve el system de antes.
+      const bloque = String(PURE.buildLearnedCorrectionsBlock(PURE.normalizeLearnedCorrections(LC3).items));
+      eq(con.system.replace(`\n\n---\n\n${bloque}`, ''), base.system, 'el bloque es la única diferencia');
+
+      const muchas = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: [null, ...[1, 2, 3, 4, 5, 6, 7, 8].map(LC), 'roto'] }) }));
+      eq(muchas.learned_corrections_count, 6, 'tope de 6 con rotas descartadas');
+      assert(muchas.system.includes('XX-APR-6') && !muchas.system.includes('XX-APR-7'), 'la séptima no entra');
+
+      await assertThrows(() => buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: { code: 'x' } }) })), 'COPYLAB_LEARNED_CORRECTIONS_MALFORMED');
+      assert(!fx.calls.some(u => u.includes('api.anthropic.com')), 'el corte es previo a la llamada a Claude');
+
+      // El modo UI no tiene builder_input: no hay nada que leer.
+      eq((await buildPrompt(reqWith(RP_BCTX))).learned_corrections_count, 0, 'modo UI → 0');
+    } finally { fx.restore(); Math.random = realRandom; }
+  });
+
+  await test('APRENDIZAJE·reparación: el bloque también ayuda al reparador y el contrato de G2-F sigue intacto', async () => {
+    const realRandom = Math.random; Math.random = () => 0;
+    try {
+      let fx = installFetch({});
+      const gen = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: LC3 }) }));
+      const rep = await buildPrompt(reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: LC3, repair: REPARACION }) }));
+      eq(rep.system, gen.system, 'el system de la reparación sigue siendo el de generación, byte a byte — bloque incluido');
+      assert(rep.system.includes('CORRECCIONES APRENDIDAS DE ESTA VOZ (3)'), 'el reparador ve las correcciones');
+      assertOrdered(rep.user, ['REPARACIÓN DIRIGIDA', PIEZA, 'HR-GEN-01', 'HR-UNRLVL-03']);
+      eq(rep.learned_corrections_count, 3, 'el eco también en reparación');
+      fx.restore();
+
+      fx = installFetch({ claude: { content: [{ text: 'El cuerpo corregido, cerrado.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+      let r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: LC3, repair: REPARACION }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.meta.repair, true, 'meta.repair intacto');
+      eq(JSON.stringify(r._out._json.meta.repair_codes), JSON.stringify(['HR-GEN-01', 'HR-UNRLVL-03']), 'meta.repair_codes intacto');
+      eq(r._out._json.meta.learned_corrections_count, 3, 'meta.learned_corrections_count');
+      fx.restore();
+
+      fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: {} } });
+      r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: lcBI({}) }) } as any, r as any);
+      eq(r._out._json.meta.learned_corrections_count, 0, 'sin la clave el eco dice 0');
+      eq('repair' in r._out._json.meta, false, 'y el meta de generación sigue sin bandera de reparación');
+      fx.restore();
+
+      fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: {} } });
+      r = makeRes();
+      await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: lcBI({ learned_corrections: 'roto' }) }) } as any, r as any);
+      eq(r._out._status, 500, 'tipo equivocado → 500');
+      assert(String(r._out._json.error).startsWith('COPYLAB_LEARNED_CORRECTIONS_MALFORMED'), 'con el error nominal');
+      eq(r._out._json.provider_called, false, 'y sin gastar la llamada a Claude');
       fx.restore();
     } finally { Math.random = realRandom; }
   });
