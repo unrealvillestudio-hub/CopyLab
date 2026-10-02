@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1300,6 +1300,75 @@ async function run() {
       const sinClave = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({}) }));
       eq(sinClave.body_format, 'plain', 'sin clave, plain');
       eq(sinClave.user, social.user, 'social con o sin la clave: el mismo user, byte a byte');
+    } finally { fx.restore(); }
+  });
+
+  // ── F1 · PASADA DE FORMATO (Sam, 2026-10-02, opción a) — una pieza ya escrita, sólo estructura ──
+  const FP_PIECE = 'Entrada de la pieza.\n\nSegundo párrafo con una frase que retener.\n\n  \n\nTercer párrafo.\n\nCuarto párrafo y cierre.';
+  await test('F1·FORMATO·pure normalizeFormatPass: ausente = null; presente roto corta con nombre propio', () => {
+    eq(PURE.normalizeFormatPass(undefined), null, 'ausente');
+    eq(PURE.normalizeFormatPass(null), null, 'null');
+    eq(PURE.normalizeFormatPass({ piece_text: ' x ' }).piece_text, 'x', 'recorta');
+    for (const [v, code] of [[[], 'MALFORMED'], ['texto', 'MALFORMED'], [{}, 'PIECE_REQUIRED'], [{ piece_text: '   ' }, 'PIECE_REQUIRED']] as any[]) {
+      let msg = ''; try { PURE.normalizeFormatPass(v); } catch (e: any) { msg = e.message; }
+      assert(msg.includes(`COPYLAB_FORMAT_PASS_${code}`), `${JSON.stringify(v)} ⇒ ${code} (${msg})`);
+    }
+  });
+
+  await test('F1·FORMATO·pure la instrucción numera los párrafos con el mismo corte que el carril y pide sólo JSON', () => {
+    const ps = PURE.splitPieceParagraphs(FP_PIECE);
+    eq(ps.length, 4, 'un párrafo vacío entre dos saltos no cuenta');
+    const u = String(PURE.buildFormatPassInstruction(FP_PIECE, 'English'));
+    assert(u.includes('[0] Entrada de la pieza.') && u.includes('[3] Cuarto párrafo y cierre.'), 'párrafos numerados desde 0');
+    assert(u.includes('"sections"') && u.includes('"bold"') && u.includes('"quote"'), 'el esquema del plan');
+    assert(u.includes('(English)'), 'el idioma de la pieza');
+    assert(/nunca 0/.test(u) && /de 2 a 4/.test(u), 'la entrada va antes del primer subtítulo; de 2 a 4 secciones');
+    assert(!/MATERIA PRIMA/.test(u), 'no es una generación: no hay materia prima');
+    assert(!/\b(Devolvé|devolvelo|Cerrala|Respondé|escribí)\b/.test(u), 'sin voseo');
+  });
+
+  await test('F1·FORMATO·pure extractJsonObject: objeto suelto o en bloque de código; lo demás, null', () => {
+    eq(JSON.stringify(PURE.extractJsonObject('{"a":1}')), '{"a":1}', 'objeto suelto');
+    eq(JSON.stringify(PURE.extractJsonObject('```json\n{"a":1}\n```')), '{"a":1}', 'en bloque de código');
+    eq(PURE.extractJsonObject('no hay json'), null, 'sin json');
+    eq(PURE.extractJsonObject('[1,2]'), null, 'un array no es un plan');
+    eq(PURE.extractJsonObject('{roto'), null, 'roto');
+  });
+
+  await test('F1·FORMATO·cableado: la respuesta es el plan, con su techo propio y el eco format_pass', async () => {
+    const plan = { sections: [{ before: 1, title: 'Lo que el texto demuestra' }, { before: 3, title: 'Lo que queda abierto' }], bold: [], quote: null };
+    const fx = installFetch({ claude: { content: [{ text: JSON.stringify(plan) }], usage: { input_tokens: 10, output_tokens: 20 } } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', format_pass: { piece_text: FP_PIECE } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(JSON.stringify(r._out._json.format_plan), JSON.stringify(plan), 'el plan, tal cual');
+      eq(r._out._json.meta.format_pass, true, 'el eco dice que fue una pasada de formato');
+      eq(r._out._json.usage.output_tokens, 20, 'el consumo viaja para que el carril lo asiente');
+      eq(fx.claudeBodies[0]?.max_tokens, PURE.FORMAT_PASS_MAX_TOKENS, 'el techo de la pasada, no el de generación');
+      const user = String(fx.claudeBodies[0]?.messages?.[0]?.content ?? '');
+      assert(user.includes('[1] Segundo párrafo') && !user.includes('MATERIA PRIMA'), 'el user es la pieza numerada, no el brief');
+    } finally { fx.restore(); }
+  });
+
+  await test('F1·FORMATO·cableado: sin JSON legible ⇒ 422 con nombre propio y con el consumo', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Aquí tienes el plan: …' }], usage: { input_tokens: 5, output_tokens: 6 } } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', format_pass: { piece_text: FP_PIECE } }) }) } as any, r as any);
+      eq(r._out._status, 422, 'HTTP 422');
+      eq(r._out._json.error, 'COPYLAB_FORMAT_PLAN_UNPARSABLE', 'nombre propio');
+      eq(r._out._json.usage.output_tokens, 6, 'y el consumo');
+    } finally { fx.restore(); }
+  });
+
+  await test('F1·FORMATO·cableado: format_pass y repair juntos cortan antes de gastar la llamada', async () => {
+    const fx = installFetch({});
+    try {
+      let msg = '';
+      try { await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', format_pass: { piece_text: FP_PIECE }, repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }) })); } catch (e: any) { msg = e.message; }
+      assert(msg.includes('COPYLAB_FORMAT_PASS_WITH_REPAIR'), msg);
+      eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
     } finally { fx.restore(); }
   });
 
