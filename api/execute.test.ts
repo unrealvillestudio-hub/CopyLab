@@ -1323,6 +1323,7 @@ async function run() {
     assert(u.includes('"sections"') && u.includes('"bold"') && u.includes('"quote"'), 'el esquema del plan');
     assert(u.includes('(English)'), 'el idioma de la pieza');
     assert(/nunca 0/.test(u) && /de 2 a 4/.test(u), 'la entrada va antes del primer subtítulo; de 2 a 4 secciones');
+    assert(/a DOS párrafos o más/.test(u) && /N-1, N ni N\+1/.test(u), 'la cita no va pegada a su párrafo de origen');
     assert(!/MATERIA PRIMA/.test(u), 'no es una generación: no hay materia prima');
     assert(!/\b(Devolvé|devolvelo|Cerrala|Respondé|escribí)\b/.test(u), 'sin voseo');
   });

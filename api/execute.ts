@@ -1088,7 +1088,9 @@ function buildFormatPassInstruction(pieceText: string, languageLabel: string): s
     + ' carácter por carácter, una frase de 3 a 12 palabras de ese párrafo: la que el lector tiene que'
     + ' retener. Nunca un párrafo entero.\n'
     + '- quote: opcional (null si ninguna oración lo merece). "text" copia LITERAL una oración completa'
-    + ' de la pieza, la más filosa; "after" es el párrafo tras el que se intercala, nunca el último.\n'
+    + ' de la pieza, la más filosa; "after" es el párrafo tras el que se intercala, nunca el último, y'
+    + ' a DOS párrafos o más de aquel donde aparece la oración (antes o después): pegada a su origen se'
+    + ' lee dos veces seguidas. Si la oración vive en el párrafo N, "after" no puede ser N-1, N ni N+1.\n'
     + '- No cambies, corrijas ni traduzcas ninguna palabra de la pieza. Todo lo que no sea un subtítulo'
     + ' tiene que existir ya, idéntico, en el texto.\n\n'
     + `PIEZA (párrafos numerados):\n${parrafos}`;
