@@ -201,6 +201,11 @@ interface BuilderInput {
   // Llega sólo como 'markdown_min' y sólo cuando el canal lo pinta; ausente o desconocido ⇒ el
   // cuerpo se escribe como siempre, sin marcas de bloque.
   body_format?: string | null;
+  // F1 · PASADA DE FORMATO (Sam, 2026-10-02, opción a) — una pieza YA ESCRITA, antes de F1, a la que
+  // su canal le pinta el formato. CopyLab no la reescribe: devuelve un PLAN en JSON (dónde van los
+  // subtítulos y cuáles son, qué frase va en negrita, qué oración es la cita) y el carril lo aplica
+  // y comprueba que ninguna palabra cambió. Ausente ⇒ nada de esto corre.
+  format_pass?: { piece_text: string } | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -1029,6 +1034,75 @@ function buildRepairInstruction(
     + ` cumplida:\n${bloques}`
     + '\n\nDevolvé SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
     + ' explicar qué cambiaste y sin nombrar los códigos dentro del texto.';
+}
+
+// ── F1 · PASADA DE FORMATO SOBRE UNA PIEZA YA ESCRITA ───────────────────────────────────────────
+//
+// POR QUÉ EXISTE (Sam, 2026-10-02, opción a): 69 piezas de blog se escribieron antes de F1 y salen
+// sin subtítulos, negrita ni cita aunque su canal los pinta. Reescribirlas sería otra pieza; lo que
+// se pide es ESTRUCTURARLAS sin cambiar una palabra.
+//
+// EL REPARTO, y por qué es así. Escribir los subtítulos es copy, y el copy es de CopyLab — en la
+// voz de la marca, con el mismo system que la generó. Pero el texto aprobado no vuelve a pasar por
+// el modelo: CopyLab devuelve un PLAN, y es el carril quien lo aplica de forma mecánica y comprueba
+// que, quitadas las marcas, el texto es idéntico byte a byte. Un modelo al que se le pide «copia
+// sin cambiar» cambia; un plan que sólo señala posiciones no puede.
+//
+// Los párrafos se numeran con la MISMA regla de corte que usa el carril (`splitPieceParagraphs`):
+// si las dos numeraciones divergieran, el plan apuntaría a otro párrafo.
+const FORMAT_PASS_MAX_TOKENS = 1200;
+
+function normalizeFormatPass(v: unknown): { piece_text: string } | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new Error(`COPYLAB_FORMAT_PASS_MALFORMED: builder_input.format_pass debe ser un objeto { piece_text } (recibido: ${JSON.stringify(v)})`);
+  }
+  const piece_text = String((v as any).piece_text ?? '').trim();
+  if (!piece_text) {
+    throw new Error('COPYLAB_FORMAT_PASS_PIECE_REQUIRED: builder_input.format_pass.piece_text es obligatorio — sin la pieza no hay nada que estructurar');
+  }
+  return { piece_text };
+}
+
+function splitPieceParagraphs(text: string): string[] {
+  return String(text ?? '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/).map(p => p.trim()).filter(Boolean);
+}
+
+function buildFormatPassInstruction(pieceText: string, languageLabel: string): string {
+  const parrafos = splitPieceParagraphs(pieceText).map((p, i) => `[${i}] ${p}`).join('\n\n');
+  return 'TAREA — ESTRUCTURA DE UNA PIEZA YA ESCRITA (no es una pieza nueva y no se reescribe):\n'
+    + 'La pieza de abajo ya está escrita palabra por palabra. Su canal pinta tres marcas: subtítulos de'
+    + ' sección, una negrita por sección y una cita destacada. Tu trabajo es proponer DÓNDE van y'
+    + ` escribir SOLO los subtítulos, en la voz de esta marca y en el idioma de la pieza (${languageLabel}).\n\n`
+    + 'Los párrafos van numerados [0], [1], … Responde SOLO con un objeto JSON, sin texto alrededor y'
+    + ' sin bloque de código:\n'
+    + '{"sections":[{"before":N,"title":"…"}],"bold":[{"paragraph":N,"phrase":"…"}],"quote":{"after":N,"text":"…"}}\n\n'
+    + 'REGLAS:\n'
+    + '- sections: de 2 a 4. "before" es el número del párrafo que ABRE la sección: nunca 0 (el párrafo'
+    + ' [0] es la entrada y va antes del primer subtítulo), en orden creciente, y cada sección con al'
+    + ' menos un párrafo.\n'
+    + '- title: una afirmación breve y concreta que dice lo que la sección demuestra (de 3 a 12'
+    + ' palabras), nunca un rótulo genérico («Introducción», «Conclusión», «Contexto»). Sin punto final,'
+    + ' sin comillas y sin marcas.\n'
+    + '- bold: como mucho una por sección (la entrada cuenta como sección). "phrase" copia LITERAL,'
+    + ' carácter por carácter, una frase de 3 a 12 palabras de ese párrafo: la que el lector tiene que'
+    + ' retener. Nunca un párrafo entero.\n'
+    + '- quote: opcional (null si ninguna oración lo merece). "text" copia LITERAL una oración completa'
+    + ' de la pieza, la más filosa; "after" es el párrafo tras el que se intercala, nunca el último.\n'
+    + '- No cambies, corrijas ni traduzcas ninguna palabra de la pieza. Todo lo que no sea un subtítulo'
+    + ' tiene que existir ya, idéntico, en el texto.\n\n'
+    + `PIEZA (párrafos numerados):\n${parrafos}`;
+}
+
+// El primer objeto JSON de la respuesta. Tolera un bloque de código alrededor; no tolera nada más.
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const t = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const i = t.indexOf('{'); const j = t.lastIndexOf('}');
+  if (i < 0 || j <= i) return null;
+  try {
+    const o = JSON.parse(t.slice(i, j + 1));
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+  } catch { return null; }
 }
 
 // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
@@ -2141,6 +2215,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   rules_by_instruction: string[];
   repair: { codes: string[]; original_title: string | null } | null;
   learned_corrections_count: number;
+  format_pass: boolean;
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -2156,6 +2231,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // Capa 2 del aprendizaje — se lee aquí por la misma razón: una lista con forma equivocada corta
   // antes de gastar queries y la llamada a Claude. Sin la clave, lista vacía y nada que inyectar.
   let learnedCorrections: LearnedCorrection[] = [];
+  // F1 · pasada de formato — se lee aquí por lo mismo que la reparación: un encargo roto corta antes
+  // de gastar queries y la llamada. No convive con la reparación: son dos tareas distintas.
+  let formatPass: { piece_text: string } | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -2171,6 +2249,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // materia prima con la que ya la escribió.
     repair = normalizeRepair(bi.repair);
     learnedCorrections = normalizeLearnedCorrections(bi.learned_corrections).items;
+    formatPass = normalizeFormatPass(bi.format_pass);
+    if (formatPass && repair) {
+      throw new Error('COPYLAB_FORMAT_PASS_WITH_REPAIR: builder_input trae format_pass y repair a la vez — son dos tareas distintas');
+    }
   }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
@@ -2685,7 +2767,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
     // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
-    userInstruction = repair
+    userInstruction = formatPass
+      ? buildFormatPassInstruction(formatPass.piece_text, languageDirective.label)
+      : repair
       ? buildRepairInstruction(fmt, repair, lengthBudgetChars)
       : `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
   }
@@ -2713,7 +2797,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // G1-D — lo que se le manda a la API: el techo declarado CON margen (red de seguridad), o el
     // default por destino exacto si nadie declaró. La pieza corta la garantiza el PRESUPUESTO del
     // prompt; esto es lo que evita que una pieza bien planificada muera a dos palabras del final.
-    max_tokens: apiMaxTokensFor(bi),
+    // F1 · pasada de formato — el plan es corto; el techo de generación no aplica.
+    max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
@@ -2760,6 +2845,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // Capa 2 del aprendizaje — cuántas correcciones llegaron de verdad al prompt (tras descartar las
     // malformadas y aplicar el tope). 0 = ninguna, sea porque no vino la clave o porque no quedó nada.
     learned_corrections_count: learnedCorrections.length,
+    format_pass: !!formatPass,
   };
 }
 
@@ -3086,6 +3172,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
     //    SIN estampar, usage real. El modo UI conserva su forma histórica.
+    // F1 · pasada de formato — la respuesta es un PLAN, no una pieza. Sin JSON legible se dice con
+    // nombre propio y con el consumo, para que el carril lo asiente igual.
+    if (carril && built.format_pass) {
+      const plan = extractJsonObject(output);
+      const metaFormato = { format_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language };
+      if (!plan) {
+        console.error(`[CopyLab][F1-FORMAT] COPYLAB_FORMAT_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_FORMAT_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaFormato });
+      }
+      return res.status(200).json({ status: 'ok', format_plan: plan, usage, meta: metaFormato });
+    }
     if (carril) {
       const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsePiece(output);
       // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
