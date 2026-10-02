@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1369,6 +1369,196 @@ async function run() {
       let msg = '';
       try { await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', format_pass: { piece_text: FP_PIECE }, repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }) })); } catch (e: any) { msg = e.message; }
       assert(msg.includes('COPYLAB_FORMAT_PASS_WITH_REPAIR'), msg);
+      eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
+    } finally { fx.restore(); }
+  });
+
+  // ── F2 · PASADA DE IMÁGENES (Sam, 2026-10-02) — hermana de format_pass: un plan, no una pieza ──
+  // Pieza de una marca inventada, de otro rubro y otro idioma: nada de esto conoce una marca real.
+  const IP_PIECE = [
+    'Le atelier ouvre à six heures.',                                  // [0]
+    'Les fours chauffent pendant que la pâte repose sur le marbre.',   // [1]
+    '## Le geste qui change tout',                                     // [2]
+    'Le boulanger plie la pâte trois fois, sans la écraser.',          // [3]
+    'Chaque pli enferme une couche de **beurre froid**.',              // [4]
+    '> La patience se goûte.',                                         // [5]
+    'Le premier client arrive avant le lever du soleil.',              // [6]
+    'Il repart avec deux croissants encore tièdes.',                   // [7]
+    'La vitrine se vide en une heure.',                                // [8]
+    'Demain, tout recommence.',                                        // [9]
+  ].join('\n\n');
+  const ALT = 'Mains de boulanger pliant une pâte sur un plan de marbre';
+  const plan = (images: any) => PURE.normalizeImagePlan({ images }, IP_PIECE, 3);
+
+  await test('F2·IMÁGENES·pure normalizeImagePass: ausente = null; roto o fuera de rango corta con nombre propio', () => {
+    eq(PURE.normalizeImagePass(undefined), null, 'ausente');
+    eq(PURE.normalizeImagePass(null), null, 'null');
+    const ok = PURE.normalizeImagePass({ piece_text: ' x ', max_images: 2 });
+    eq(ok.piece_text, 'x', 'recorta'); eq(ok.max_images, 2, 'max_images tal cual');
+    eq(PURE.INLINE_IMAGES_CONTRACT_MAX, 3, 'techo del contrato');
+    const casos: any[] = [
+      [[], 'MALFORMED'], ['texto', 'MALFORMED'],
+      [{ max_images: 1 }, 'PIECE_REQUIRED'], [{ piece_text: '   ', max_images: 1 }, 'PIECE_REQUIRED'],
+      [{ piece_text: 'x' }, 'MAX_IMAGES'], [{ piece_text: 'x', max_images: 0 }, 'MAX_IMAGES'],
+      [{ piece_text: 'x', max_images: 4 }, 'MAX_IMAGES'], [{ piece_text: 'x', max_images: 1.5 }, 'MAX_IMAGES'],
+      [{ piece_text: 'x', max_images: '2' }, 'MAX_IMAGES'], [{ piece_text: 'x', max_images: -1 }, 'MAX_IMAGES'],
+    ];
+    for (const [v, code] of casos) {
+      let msg = ''; let st: any = null;
+      try { PURE.normalizeImagePass(v); } catch (e: any) { msg = e.message; st = e.http_status; }
+      assert(msg.includes(`COPYLAB_IMAGE_PASS_${code}`), `${JSON.stringify(v)} ⇒ ${code} (${msg})`);
+      eq(st, 400, `${JSON.stringify(v)} es un error del emisor`);
+    }
+  });
+
+  await test('F2·IMÁGENES·pure la instrucción numera los bloques como format_pass y pide sólo JSON', () => {
+    const u = String(PURE.buildImagePassInstruction(IP_PIECE, 2, 'Français'));
+    const fp = String(PURE.buildFormatPassInstruction(IP_PIECE, 'Français'));
+    const numerados = PURE.splitPieceParagraphs(IP_PIECE).map((p: string, i: number) => `[${i}] ${p}`).join('\n\n');
+    assert(u.endsWith(numerados) && fp.endsWith(numerados), 'mismos bloques numerados que la pasada de formato');
+    assert(u.includes('{"images":[{"after":N,"focus":"…","alt":"…"}]}'), 'el esquema del plan');
+    assert(u.includes('de 1 a 2'), 'el tope que llegó, no el del contrato');
+    assert(u.includes('(Français)'), 'el alt en el idioma de la pieza');
+    assert(u.includes(`${PURE.IMAGE_ALT_MAX_CHARS} caracteres o menos`), 'el largo del alt');
+    assert(/último "after" válido es 8/.test(u), 'ni antes del primer bloque ni después del último');
+    assert(/3 bloques o más/.test(u) && /cita destacada/.test(u) && /subtítulo/.test(u), 'separación, cita y subtítulo');
+    assert(/LITERAL/.test(u), 'focus copiado literal');
+    assert(/mismas reglas de esta marca que gobiernan el título y el cuerpo/.test(u), 'las reglas de marca del system aplican al alt');
+    assert(!/MATERIA PRIMA/.test(u), 'no es una generación');
+    assert(!/\b(Devolvé|devolvelo|Cerrala|Respondé|escribí|Elegí|usá)\b/.test(u), 'sin voseo');
+    for (const nombre of ['ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'meta_fb', 'shopify', 'vercel'])
+      assert(!u.includes(nombre), `la instrucción no nombra ${nombre}`);
+  });
+
+  await test('F2·IMÁGENES·pure normalizeImagePlan: lo válido pasa ordenado; sin `images` es ilegible', () => {
+    eq(PURE.normalizeImagePlan(null, IP_PIECE, 3), null, 'sin objeto');
+    eq(PURE.normalizeImagePlan({ sections: [] }, IP_PIECE, 3), null, 'sin images');
+    eq(PURE.normalizeImagePlan({ images: 'x' }, IP_PIECE, 3), null, 'images no es lista');
+    const r = plan([
+      { after: 7, focus: 'Il repart avec deux croissants encore tièdes.', alt: 'Un client sort avec un sac en papier' },
+      { after: 1, focus: ' Les fours chauffent pendant que la pâte repose sur le marbre. ', alt: ` ${ALT} ` },
+    ]);
+    eq(JSON.stringify(r.plan.map((e: any) => e.after)), '[1,7]', 'ordenado por after');
+    eq(r.plan[0].focus, 'Les fours chauffent pendant que la pâte repose sur le marbre.', 'focus recortado');
+    eq(r.plan[0].alt, ALT, 'alt recortado');
+    eq(JSON.stringify(Object.keys(r.plan[0])), '["after","focus","alt"]', 'sólo las claves del contrato');
+    eq(r.dropped.length, 0, 'nada descartado');
+    eq(JSON.stringify(plan([]).plan), '[]', 'lista vacía: plan vacío, no ilegible');
+  });
+
+  await test('F2·IMÁGENES·pure normalizeImagePlan: cada regla del contrato descarta con su motivo', () => {
+    const F1 = 'Les fours chauffent pendant que la pâte repose sur le marbre.';
+    const casos: Array<[any, string]> = [
+      [null, 'SHAPE'], [{ after: '1', focus: F1, alt: ALT }, 'SHAPE'], [{ after: 1.5, focus: F1, alt: ALT }, 'SHAPE'],
+      [{ after: 1, focus: '', alt: ALT }, 'SHAPE'], [{ after: 1, focus: F1, alt: '  ' }, 'SHAPE'],
+      [{ after: 1, focus: F1, alt: 'x'.repeat(PURE.IMAGE_ALT_MAX_CHARS + 1) }, 'ALT_TOO_LONG'],
+      [{ after: -1, focus: F1, alt: ALT }, 'AFTER_OUT_OF_RANGE'],
+      [{ after: 9, focus: 'Demain, tout recommence.', alt: ALT }, 'AFTER_OUT_OF_RANGE'],   // tras el último
+      [{ after: 2, focus: F1, alt: ALT }, 'AFTER_HEADING'],
+      [{ after: 4, focus: F1, alt: ALT }, 'NEXT_TO_QUOTE'],                                // justo antes de la cita
+      [{ after: 5, focus: F1, alt: ALT }, 'NEXT_TO_QUOTE'],                                // justo después
+      [{ after: 1, focus: 'Une phrase qui n’existe pas dans la pièce.', alt: ALT }, 'FOCUS_NOT_LITERAL'],
+    ];
+    for (const [e, motivo] of casos) {
+      const r = plan([e]);
+      eq(r.plan.length, 0, `${JSON.stringify(e)} no pasa`);
+      eq(JSON.stringify(r.dropped), JSON.stringify([`#0: ${motivo}`]), `${JSON.stringify(e)} ⇒ ${motivo}`);
+    }
+    // El alt de exactamente el tope pasa; la negrita del texto no impide que el focus sea literal.
+    const borde = plan([{ after: 4, focus: 'Chaque pli enferme une couche de beurre froid.', alt: 'x'.repeat(PURE.IMAGE_ALT_MAX_CHARS) }]);
+    eq(borde.dropped.join(','), '#0: NEXT_TO_QUOTE', 'tope exacto del alt no es ALT_TOO_LONG');
+    const negrita = plan([{ after: 3, focus: 'Chaque pli enferme une couche de beurre froid.', alt: ALT }]);
+    eq(negrita.plan.length, 1, 'focus sin los ** del texto sigue siendo literal');
+  });
+
+  await test('F2·IMÁGENES·pure normalizeImagePlan: separación de 3 bloques y recorte a max_images', () => {
+    const e = (after: number) => ({ after, focus: PURE.splitPieceParagraphs(IP_PIECE)[after].replace(/\*\*/g, ''), alt: ALT });
+    const cerca = plan([e(1), e(3)]);
+    eq(JSON.stringify(cerca.plan.map((x: any) => x.after)), '[1]', 'la segunda, a 2 bloques, cae');
+    eq(cerca.dropped.join(','), '#1: TOO_CLOSE', 'con su motivo');
+    const repetida = plan([e(6), e(6)]);
+    eq(repetida.plan.length, 1, 'dos en el mismo hueco: una');
+    // Con 3 válidas y bien separadas, el tope manda: max_images = 2 deja las dos primeras.
+    const tres = PURE.normalizeImagePlan({ images: [e(6), e(0), e(3)] }, IP_PIECE, 2);
+    eq(JSON.stringify(tres.plan.map((x: any) => x.after)), '[0,3]', 'recorte a max_images, por orden de after');
+    eq(tres.dropped.join(','), '#0: OVER_MAX', 'lo recortado se dice');
+    eq(PURE.normalizeImagePlan({ images: [e(1), e(6), e(8)] }, IP_PIECE, 3).plan.length, 2, '6 y 8 están a 2 bloques: la 8 cae aunque sobre tope');
+  });
+
+  await test('F2·IMÁGENES·cableado: la respuesta es el plan normalizado, con su techo propio y el eco image_pass', async () => {
+    const crudo = { images: [
+      { after: 7, focus: 'Il repart avec deux croissants encore tièdes.', alt: 'Un client sort avec un sac en papier' },
+      { after: 1, focus: 'Les fours chauffent pendant que la pâte repose sur le marbre.', alt: ALT },
+      { after: 5, focus: 'La patience se goûte.', alt: ALT },
+    ] };
+    const fx = installFetch({ claude: { content: [{ text: '```json\n' + JSON.stringify(crudo) + '\n```' }], usage: { input_tokens: 11, output_tokens: 22 } } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', image_pass: { piece_text: IP_PIECE, max_images: 2 } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.status, 'ok', 'status ok');
+      eq(JSON.stringify(r._out._json.image_plan.map((x: any) => x.after)), '[1,7]', 'normalizado y ordenado');
+      eq(r._out._json.meta.image_pass, true, 'el eco dice que fue una pasada de imágenes');
+      eq(r._out._json.meta.max_images, 2, 'y con qué tope');
+      eq(JSON.stringify(r._out._json.meta.image_plan_dropped), '["#2: NEXT_TO_QUOTE"]', 'lo descartado viaja con su motivo');
+      eq(r._out._json.usage.output_tokens, 22, 'el consumo viaja para que el carril lo asiente');
+      assert(!('format_plan' in r._out._json) && !('body' in r._out._json), 'ni plan de formato ni pieza');
+      eq(fx.claudeBodies[0]?.max_tokens, PURE.IMAGE_PASS_MAX_TOKENS, 'el techo de la pasada, no el de generación');
+      assert(PURE.IMAGE_PASS_MAX_TOKENS <= PURE.FORMAT_PASS_MAX_TOKENS, 'un techo pequeño, como el de formato');
+      const user = String(fx.claudeBodies[0]?.messages?.[0]?.content ?? '');
+      assert(user.includes('[3] Le boulanger') && !user.includes('MATERIA PRIMA'), 'el user es la pieza numerada, no el brief');
+    } finally { fx.restore(); }
+  });
+
+  await test('F2·IMÁGENES·cableado: el alt hereda las reglas de marca del system, sin reglas nuevas', async () => {
+    const fx = installFetch({});
+    try {
+      const regla = { code: 'R-N1-01', kind: 'prohibition', statement: 'x', instruction: 'Nunca nombres la palabra zarzamora.' };
+      const img = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', rules: [regla], image_pass: { piece_text: IP_PIECE, max_images: 1 } }) }));
+      const gen = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', rules: [regla] }) }));
+      eq(img.system, gen.system, 'el MISMO system que la generación: voz, idioma, reglas y ## TÍTULO');
+      assert(img.system.includes('Nunca nombres la palabra zarzamora.'), 'la regla de marca está en el system');
+      assert(img.user.includes('mismas reglas de esta marca'), 'y la instrucción la extiende al alt');
+      assert(!img.user.includes('zarzamora'), 'sin copiarla en la instrucción');
+      eq(img.image_pass?.max_images, 1, 'el encargo ya leído');
+      eq(gen.image_pass, null, 'sin la clave, nada de F2 corre');
+      eq(img.format_pass, false, 'no es una pasada de formato');
+    } finally { fx.restore(); }
+  });
+
+  await test('F2·IMÁGENES·cableado: sin JSON legible ⇒ 422 COPYLAB_IMAGE_PLAN_UNPARSABLE con el consumo', async () => {
+    for (const texto of ['Voici le plan : …', '{"sections":[]}']) {
+      const fx = installFetch({ claude: { content: [{ text: texto }], usage: { input_tokens: 5, output_tokens: 6 } } });
+      try {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', image_pass: { piece_text: IP_PIECE, max_images: 1 } }) }) } as any, r as any);
+        eq(r._out._status, 422, `${texto} ⇒ HTTP 422`);
+        eq(r._out._json.error, 'COPYLAB_IMAGE_PLAN_UNPARSABLE', 'nombre propio');
+        eq(r._out._json.usage.output_tokens, 6, 'y el consumo');
+        eq(r._out._json.meta.image_pass, true, 'el eco también en el fallo');
+      } finally { fx.restore(); }
+    }
+  });
+
+  await test('F2·IMÁGENES·cableado: max_images fuera de rango ⇒ 400; con repair o con format_pass corta antes de la llamada', async () => {
+    const fx = installFetch({});
+    try {
+      for (const max_images of [0, 4, null]) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', image_pass: { piece_text: IP_PIECE, max_images } }) }) } as any, r as any);
+        eq(r._out._status, 400, `max_images=${max_images} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes('COPYLAB_IMAGE_PASS_MAX_IMAGES'), r._out._json.error);
+      }
+      const cruces: Array<[any, string]> = [
+        [{ repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }, 'COPYLAB_IMAGE_PASS_WITH_REPAIR'],
+        [{ format_pass: { piece_text: IP_PIECE } }, 'COPYLAB_IMAGE_PASS_WITH_FORMAT_PASS'],
+      ];
+      for (const [extra, code] of cruces) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', image_pass: { piece_text: IP_PIECE, max_images: 1 }, ...extra }) }) } as any, r as any);
+        eq(r._out._status, 400, `${code} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes(code), r._out._json.error);
+      }
       eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
     } finally { fx.restore(); }
   });

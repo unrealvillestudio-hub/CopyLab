@@ -206,6 +206,11 @@ interface BuilderInput {
   // subtítulos y cuáles son, qué frase va en negrita, qué oración es la cita) y el carril lo aplica
   // y comprueba que ninguna palabra cambió. Ausente ⇒ nada de esto corre.
   format_pass?: { piece_text: string } | null;
+  // F2 · PASADA DE IMÁGENES (Sam, 2026-10-02) — hermana de `format_pass`: una pieza YA ESCRITA y el
+  // tope de imágenes de su canal (`max_images`, 1..INLINE_IMAGES_CONTRACT_MAX), resuelto por el
+  // carril como dato. CopyLab no toca el texto: devuelve un PLAN (tras qué bloque va cada imagen, qué
+  // oración ilustra y su `alt`) y el carril lo aplica. Ausente ⇒ nada de esto corre.
+  image_pass?: { piece_text: string; max_images: number } | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -1105,6 +1110,136 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
     const o = JSON.parse(t.slice(i, j + 1));
     return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
   } catch { return null; }
+}
+
+// ── F2 · PASADA DE IMÁGENES SOBRE UNA PIEZA YA ESCRITA ──────────────────────────────────────────
+//
+// POR QUÉ EXISTE (Sam, 2026-10-02): cada artículo aprobado o agendado lleva entre 1 y N imágenes
+// dentro del cuerpo, donde N es el tope de su canal como DATO
+// (`intel.brand_publish_channels.config.inline_images_max`). Elegir dónde va una imagen y escribir
+// su `alt` es copy —en la voz y con las reglas de la marca—, y el copy es de CopyLab. Generar la
+// imagen y escribir la marca `![img-N]` en el texto es del carril.
+//
+// EL REPARTO es el mismo que en la pasada de formato: CopyLab devuelve un PLAN y no reescribe nada.
+// Los bloques se numeran con el MISMO corte (`splitPieceParagraphs`) y el plan se parsea con el
+// MISMO lector (`extractJsonObject`). A diferencia del plan de formato, éste se NORMALIZA acá
+// (`normalizeImagePlan`): la respuesta del contrato promete como mucho `max_images` entradas, y lo
+// que incumple una regla del contrato se descarta y se dice, para que el carril no tenga que
+// adivinar por qué llegó menos de lo pedido.
+//
+// LAS REGLAS DE MARCA DEL ALT no se escriben acá: el `alt` se publica, así que lo gobiernan las
+// mismas reglas inyectadas en el system que ya gobiernan el título y el cuerpo (idioma,
+// tratamiento, prohibiciones). La instrucción sólo lo declara, igual que `## TÍTULO`.
+//
+// El techo es del CONTRATO (eje), no de una marca: el tope de cada canal es dato y nunca lo supera.
+const INLINE_IMAGES_CONTRACT_MAX = 3;
+const IMAGE_PASS_MAX_TOKENS = 800;
+const IMAGE_ALT_MAX_CHARS = 125;
+// Entre dos imágenes, al menos este número de bloques: más juntas, la segunda repite a la primera.
+const IMAGE_MIN_GAP_BLOCKS = 3;
+
+// Un error del EMISOR (el encargo vino mal formado): HTTP 400, no 500. Lo distingue el handler.
+class CopyLabRequestError extends Error {
+  readonly http_status = 400;
+  constructor(message: string) { super(message); this.name = 'CopyLabRequestError'; }
+}
+
+interface ImagePassInput { piece_text: string; max_images: number }
+interface ImagePlanEntry { after: number; focus: string; alt: string }
+
+function normalizeImagePass(v: unknown): ImagePassInput | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_IMAGE_PASS_MALFORMED: builder_input.image_pass debe ser un objeto { piece_text, max_images } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const piece_text = String((v as any).piece_text ?? '').trim();
+  if (!piece_text) {
+    throw new CopyLabRequestError('COPYLAB_IMAGE_PASS_PIECE_REQUIRED: builder_input.image_pass.piece_text es obligatorio — sin la pieza no hay dónde poner imágenes');
+  }
+  const max = (v as any).max_images;
+  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > INLINE_IMAGES_CONTRACT_MAX) {
+    throw new CopyLabRequestError(`COPYLAB_IMAGE_PASS_MAX_IMAGES: builder_input.image_pass.max_images debe ser un entero de 1 a ${INLINE_IMAGES_CONTRACT_MAX} (recibido: ${JSON.stringify(max ?? null)}) — un canal con tope 0 no pide la pasada`);
+  }
+  return { piece_text, max_images: max };
+}
+
+const IMAGE_HEADING_BLOCK = /^#{1,3}\s/;
+function isQuoteBlock(block: string): boolean {
+  return block.split('\n').every(l => /^>/.test(l.trim()));
+}
+
+function buildImagePassInstruction(pieceText: string, maxImages: number, languageLabel: string): string {
+  const bloques = splitPieceParagraphs(pieceText);
+  const numerados = bloques.map((p, i) => `[${i}] ${p}`).join('\n\n');
+  const ultimoValido = Math.max(0, bloques.length - 2);
+  return 'TAREA — IMÁGENES DENTRO DE UNA PIEZA YA ESCRITA (no es una pieza nueva y no se reescribe):\n'
+    + `La pieza de abajo ya está escrita. Su canal admite hasta ${maxImages} imagen(es) dentro del cuerpo,`
+    + ' entre bloques. Tu trabajo es elegir DÓNDE va cada una y QUÉ muestra: una imagen sin texto que'
+    + ' acompaña un momento concreto de la pieza. No escribes ni cambias el texto de la pieza.\n\n'
+    + 'Los bloques van numerados [0], [1], … Responde SOLO con un objeto JSON, sin texto alrededor y'
+    + ' sin bloque de código:\n'
+    + '{"images":[{"after":N,"focus":"…","alt":"…"}]}\n\n'
+    + 'REGLAS:\n'
+    + `- images: de 1 a ${maxImages}, en orden creciente de "after". Sólo donde una imagen aporte: un cambio`
+    + ' de sección o una escena concreta. Menos imágenes bien puestas valen más que llegar al tope.\n'
+    + '- after: el número del bloque tras el que va la imagen. Nunca antes del primer bloque ni después'
+    + ` del último (el último "after" válido es ${ultimoValido}); nunca justo después de un subtítulo, que`
+    + ' quedaría separado de su sección; y nunca pegada a la cita destacada (el bloque que empieza por'
+    + ' ">"): ni justo antes ni justo después. Entre dos imágenes, '
+    + `${IMAGE_MIN_GAP_BLOCKS} bloques o más: si una va tras [N], la siguiente va tras [N+${IMAGE_MIN_GAP_BLOCKS}] o más adelante.\n`
+    + '- focus: copia LITERAL, carácter por carácter, una oración completa del bloque "after" o de la'
+    + ' sección que la imagen ilustra. Es lo que la imagen tiene que mostrar.\n'
+    + `- alt: el texto alternativo de la imagen, en el idioma de la pieza (${languageLabel}), de`
+    + ` ${IMAGE_ALT_MAX_CHARS} caracteres o menos. Describe la escena que se ve; no repite el título ni un`
+    + ' subtítulo, no afirma beneficios, resultados ni eficacia, y no menciona texto dentro de la imagen'
+    + ' (la imagen no lleva texto).\n'
+    + '- El alt se publica con la pieza: lo gobiernan las mismas reglas de esta marca que gobiernan el'
+    + ' título y el cuerpo —idioma, tratamiento, tono, prohibiciones—. Un alt que rompe una regla'
+    + ' invalida la imagen.\n'
+    + '- No cambies, corrijas ni traduzcas ninguna palabra de la pieza.\n\n'
+    + `PIEZA (bloques numerados):\n${numerados}`;
+}
+
+// Para comprobar que `focus` es literal: sin negritas y con los espacios colapsados en los dos lados.
+function literalKey(s: string): string {
+  return String(s ?? '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * El plan de imágenes tal como lo promete el contrato. `null` si la respuesta no trae la forma
+ * mínima (`images` como lista): eso es un plan ilegible, no un plan vacío. Cada entrada que
+ * incumple una regla se descarta con su motivo, en este orden: forma, alt, rango de `after`,
+ * subtítulo, cita, `focus` literal, separación y tope. Lo que queda va ordenado por `after`.
+ */
+function normalizeImagePlan(
+  raw: Record<string, unknown> | null, pieceText: string, maxImages: number,
+): { plan: ImagePlanEntry[]; dropped: string[] } | null {
+  if (!raw || !Array.isArray((raw as any).images)) return null;
+  const bloques = splitPieceParagraphs(pieceText);
+  const texto = literalKey(bloques.join(' '));
+  const dropped: string[] = [];
+  const validas: Array<ImagePlanEntry & { i: number }> = [];
+  ((raw as any).images as unknown[]).forEach((e, i) => {
+    const after = (e as any)?.after;
+    const focus = typeof (e as any)?.focus === 'string' ? (e as any).focus.trim() : '';
+    const alt = typeof (e as any)?.alt === 'string' ? (e as any).alt.trim() : '';
+    if (!e || typeof e !== 'object' || !Number.isInteger(after) || !focus || !alt) { dropped.push(`#${i}: SHAPE`); return; }
+    if (alt.length > IMAGE_ALT_MAX_CHARS) { dropped.push(`#${i}: ALT_TOO_LONG`); return; }
+    if (after < 0 || after > bloques.length - 2) { dropped.push(`#${i}: AFTER_OUT_OF_RANGE`); return; }
+    if (IMAGE_HEADING_BLOCK.test(bloques[after])) { dropped.push(`#${i}: AFTER_HEADING`); return; }
+    if (isQuoteBlock(bloques[after]) || isQuoteBlock(bloques[after + 1])) { dropped.push(`#${i}: NEXT_TO_QUOTE`); return; }
+    if (!texto.includes(literalKey(focus))) { dropped.push(`#${i}: FOCUS_NOT_LITERAL`); return; }
+    validas.push({ i, after, focus, alt });
+  });
+  const plan: ImagePlanEntry[] = [];
+  let previa: number | null = null;
+  for (const v of [...validas].sort((a, b) => a.after - b.after || a.i - b.i)) {
+    if (previa !== null && v.after - previa < IMAGE_MIN_GAP_BLOCKS) { dropped.push(`#${v.i}: TOO_CLOSE`); continue; }
+    if (plan.length >= maxImages) { dropped.push(`#${v.i}: OVER_MAX`); continue; }
+    plan.push({ after: v.after, focus: v.focus, alt: v.alt });
+    previa = v.after;
+  }
+  return { plan, dropped };
 }
 
 // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
@@ -2218,6 +2353,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   repair: { codes: string[]; original_title: string | null } | null;
   learned_corrections_count: number;
   format_pass: boolean;
+  image_pass: ImagePassInput | null;
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -2236,6 +2372,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // F1 · pasada de formato — se lee aquí por lo mismo que la reparación: un encargo roto corta antes
   // de gastar queries y la llamada. No convive con la reparación: son dos tareas distintas.
   let formatPass: { piece_text: string } | null = null;
+  // F2 · pasada de imágenes — misma lectura temprana, y tampoco convive con las otras dos tareas.
+  let imagePass: ImagePassInput | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -2254,6 +2392,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     formatPass = normalizeFormatPass(bi.format_pass);
     if (formatPass && repair) {
       throw new Error('COPYLAB_FORMAT_PASS_WITH_REPAIR: builder_input trae format_pass y repair a la vez — son dos tareas distintas');
+    }
+    imagePass = normalizeImagePass(bi.image_pass);
+    if (imagePass && formatPass) {
+      throw new CopyLabRequestError('COPYLAB_IMAGE_PASS_WITH_FORMAT_PASS: builder_input trae image_pass y format_pass a la vez — son dos tareas distintas');
+    }
+    if (imagePass && repair) {
+      throw new CopyLabRequestError('COPYLAB_IMAGE_PASS_WITH_REPAIR: builder_input trae image_pass y repair a la vez — son dos tareas distintas');
     }
   }
 
@@ -2771,6 +2916,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
     userInstruction = formatPass
       ? buildFormatPassInstruction(formatPass.piece_text, languageDirective.label)
+      : imagePass
+      ? buildImagePassInstruction(imagePass.piece_text, imagePass.max_images, languageDirective.label)
       : repair
       ? buildRepairInstruction(fmt, repair, lengthBudgetChars)
       : `${fmt}\n\nMATERIA PRIMA (IID BRIEF) — interprétala, NUNCA la copies textualmente:\n${bi.iid_brief}\n\nGenera ahora. Sin preámbulos.`;
@@ -2799,8 +2946,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // G1-D — lo que se le manda a la API: el techo declarado CON margen (red de seguridad), o el
     // default por destino exacto si nadie declaró. La pieza corta la garantiza el PRESUPUESTO del
     // prompt; esto es lo que evita que una pieza bien planificada muera a dos palabras del final.
-    // F1 · pasada de formato — el plan es corto; el techo de generación no aplica.
-    max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
+    // F1 · pasada de formato — el plan es corto; el techo de generación no aplica. Ídem F2.
+    max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : imagePass ? IMAGE_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
@@ -2848,6 +2995,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // malformadas y aplicar el tope). 0 = ninguna, sea porque no vino la clave o porque no quedó nada.
     learned_corrections_count: learnedCorrections.length,
     format_pass: !!formatPass,
+    image_pass: imagePass,
   };
 }
 
@@ -3168,7 +3316,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
     usoDeLaLlamada = usage;
 
@@ -3184,6 +3332,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(422).json({ status: 'error', error: 'COPYLAB_FORMAT_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaFormato });
       }
       return res.status(200).json({ status: 'ok', format_plan: plan, usage, meta: metaFormato });
+    }
+    // F2 · pasada de imágenes — mismo patrón: la respuesta es un PLAN, ya normalizado al contrato
+    // (como mucho `max_images` entradas). Lo descartado viaja en el meta con su motivo.
+    if (carril && built.image_pass) {
+      const metaImagen = {
+        image_pass: true, max_images: built.image_pass.max_images,
+        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      };
+      const normalizado = normalizeImagePlan(extractJsonObject(output), built.image_pass.piece_text, built.image_pass.max_images);
+      if (!normalizado) {
+        console.error(`[CopyLab][F2-IMAGES] COPYLAB_IMAGE_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_IMAGE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaImagen });
+      }
+      return res.status(200).json({
+        status: 'ok', image_plan: normalizado.plan, usage,
+        meta: { ...metaImagen, image_plan_dropped: normalizado.dropped },
+      });
     }
     if (carril) {
       const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsePiece(output);
@@ -3292,6 +3457,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[CopyLab /api/execute v9.6]', msg);
-    return res.status(500).json({ error: msg, status: 'error', ...failureLedgerFields(err, usoDeLaLlamada) });
+    // Un encargo mal formado es un error del emisor (400); lo demás, del servidor (500).
+    const httpStatus = err instanceof CopyLabRequestError ? err.http_status : 500;
+    return res.status(httpStatus).json({ error: msg, status: 'error', ...failureLedgerFields(err, usoDeLaLlamada) });
   }
 }
