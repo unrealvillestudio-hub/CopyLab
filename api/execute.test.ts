@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1263,6 +1263,43 @@ async function run() {
       const sin = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ max_tokens: 320, max_tokens_source: 'base_platform' }) }));
       eq(sin.format_instruction_chars, 0, 'sin instrucción, cero');
       eq(sin.format_instruction_source, null, 'y sin procedencia que declarar');
+    } finally { fx.restore(); }
+  });
+
+  // ── F1 (Sam, 2026-10-02: «markdown mínimo») — el formato del cuerpo, sólo si el canal lo pinta ──
+  await test('F1·pure readBodyFormat: sólo markdown_min se obedece; plain, vacío o desconocido ⇒ null', () => {
+    eq(PURE.readBodyFormat('markdown_min'), 'markdown_min', 'el valor del contrato');
+    eq(PURE.readBodyFormat('  MARKDOWN_MIN '), 'markdown_min', 'tolera borde y mayúsculas');
+    for (const v of [null, undefined, '', 'plain', 'html', 'markdown', 7]) eq(PURE.readBodyFormat(v), null, JSON.stringify(v ?? null));
+  });
+
+  await test('F1·pure sin body_format el bloque FORMATO es byte-idéntico al de antes, en los dos destinos y los dos modos', () => {
+    for (const destino of ['editorial', 'social']) for (const modo of ['echo', 'dialogue']) {
+      eq(String(PURE.buildCarrilFormatBlock(destino, modo)), String(PURE.buildCarrilFormatBlock(destino, modo, null)), `${destino}/${modo}`);
+    }
+  });
+
+  await test('F1·pure con markdown_min, editorial pide ## y > y nada más; social no cambia', () => {
+    const con = String(PURE.buildCarrilFormatBlock('editorial', 'echo', 'markdown_min'));
+    const sin = String(PURE.buildCarrilFormatBlock('editorial', 'echo'));
+    assert(con.startsWith(sin + '\n'), 'el bloque de siempre queda intacto y el contrato va DESPUÉS');
+    assert(con.includes('"## "') && con.includes('2 a 4 secciones'), 'pide de 2 a 4 subtítulos con ##');
+    assert(con.includes('"> "') && /como mucho una/i.test(con), 'cita opcional, como mucho una');
+    assert(/UNA por sección/.test(con) && con.includes('**así**'), 'negrita: como mucho una por sección');
+    assert(/sin listas, viñetas, tablas, enlaces/.test(con), 'ninguna otra marca');
+    eq(String(PURE.buildCarrilFormatBlock('social', 'echo', 'markdown_min')), String(PURE.buildCarrilFormatBlock('social', 'echo')),
+      'social nunca recibe marcas de bloque, aunque llegue la clave');
+  });
+
+  await test('F1·cableado: body_format llega al FORMATO del user y el meta lo dice', async () => {
+    const fx = installFetch({});
+    try {
+      const social = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({ body_format: 'markdown_min' }) }));
+      assert(!social.user.includes('ESTRUCTURA DEL CUERPO'), 'social: sin contrato aunque llegue la clave');
+      eq(social.body_format, 'plain', 'y el eco dice plain');
+      const sinClave = await buildPrompt(reqWith(LB_BCTX, { builder_input: lbBI({}) }));
+      eq(sinClave.body_format, 'plain', 'sin clave, plain');
+      eq(sinClave.user, social.user, 'social con o sin la clave: el mismo user, byte a byte');
     } finally { fx.restore(); }
   });
 
