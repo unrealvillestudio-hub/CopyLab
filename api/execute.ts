@@ -3,6 +3,15 @@ export const maxDuration = 300;
 /**
  * CopyLab – POST /api/execute  v9.7
  *
+ * CAPA 2 DEL APRENDIZAJE (2026-10-02) — el escritor aprende ANTES de escribir. El auto-fix del
+ *   carril repara después; esta capa le muestra al escritor cómo se corrigió antes el mismo error
+ *   en esta misma voz, con correcciones que una persona validó. `builder_input.learned_corrections`
+ *   (opcional; lista de { code, instruction, before, after }, tope 6, fragmentos de hasta 600
+ *   caracteres) se vuelve un bloque del system, después de las reglas del Watcher, que vale para la
+ *   escritura y para la reparación. Ausente o vacía ⇒ prompt byte-idéntico; con un tipo que no es
+ *   lista ⇒ COPYLAB_LEARNED_CORRECTIONS_MALFORMED; ítem malformado ⇒ se descarta con aviso. El meta
+ *   del carril gana `learned_corrections_count` (inyectadas de verdad; 0 sin la clave).
+ *
  * G2-F (2026-08-21) — una pieza con 1–2 fallos se REPARA, no se tira. Corrida G2-E del 21-ago con
  *   el juez v84 y su filtro de aplicabilidad vivo: muerto el ruido condicional, lo que queda es
  *   cola larga — 10 reglas distintas, 1–3 disparos cada una, y la mayoría de los REJECT con UNA o
@@ -245,6 +254,13 @@ interface BuilderInput {
   // su AUSENCIA deja el carril de generación byte-idéntico. Opcional a propósito: un emisor que
   // no la manda no cambia de comportamiento. Ver la sección G2-F del bloque puro.
   repair?: { piece_text: string; violations: Array<{ code: string; instruction: string }> } | null;
+  // CAPA 2 DEL APRENDIZAJE (2026-10-02) — CORRECCIONES APRENDIDAS DE ESTA VOZ. Correcciones reales
+  // de piezas anteriores escritas en la misma voz, ya validadas por una persona: la regla que se
+  // incumplió (código + instrucción) y el fragmento antes y después de corregirlo. Las selecciona el
+  // carril; aquí solo se le enseñan al escritor ANTES de escribir, para que no repita el error.
+  // Opcional: su ausencia (o una lista vacía) deja el prompt byte-idéntico. Ver
+  // `normalizeLearnedCorrections` en el bloque puro.
+  learned_corrections?: Array<{ code: string; instruction: string; before: string; after: string }> | null;
 }
 
 interface ExecuteRequest {
@@ -973,6 +989,94 @@ function buildRepairInstruction(
     + ` cumplida:\n${bloques}`
     + '\n\nDevolvé SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
     + ' explicar qué cambiaste y sin nombrar los códigos dentro del texto.';
+}
+
+// ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
+// El auto-fix del carril repara piezas con avisos del Watcher DESPUÉS de escritas. Esta capa es la
+// anterior: le enseña al ESCRITOR, antes de escribir, cómo se corrigió el mismo error en esta misma
+// voz, con correcciones que una persona ya validó. `builder_input.learned_corrections` trae, por
+// ítem, la regla (código + instrucción) y el fragmento antes y después.
+//
+// Contrato de lectura, mismo estilo que el resto de `builder_input`:
+//   · AUSENTE, `null` o lista vacía ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy.
+//   · PRESENTE con un tipo que no es lista ⇒ CORTA con nombre propio
+//     (COPYLAB_LEARNED_CORRECTIONS_MALFORMED), igual que `normalizeRepair`: un emisor que manda la
+//     clave con la forma equivocada tiene un error, y callarlo dejaría la capa apagada sin que
+//     nadie lo vea.
+//   · Un ÍTEM malformado (no es objeto, o le falta código, instrucción, antes o después como texto
+//     no vacío, o antes y después son iguales) se DESCARTA con aviso y se sigue: una corrección
+//     rota no justifica perder la pieza.
+//   · Tope de LEARNED_CORRECTIONS_MAX_ITEMS ítems válidos (los primeros, en el orden en que llegan:
+//     la prioridad la decide el carril) y de LEARNED_CORRECTIONS_MAX_EXCERPT_CHARS caracteres por
+//     fragmento. Recortar es defensa del presupuesto del prompt, no criterio editorial.
+//
+// Cero marcas, cero voces y cero códigos de regla aquí: todo llega como dato del payload.
+interface LearnedCorrection { code: string; instruction: string; before: string; after: string }
+
+const LEARNED_CORRECTIONS_MAX_ITEMS = 6;
+const LEARNED_CORRECTIONS_MAX_EXCERPT_CHARS = 600;
+const LEARNED_CORRECTIONS_MAX_CODE_CHARS = 80;
+
+// Texto compacto y acotado: colapsa saltos y espacios (el fragmento es un ejemplo, no la pieza) y
+// recorta por puntos de código —no por unidades UTF-16— para no partir un carácter compuesto.
+function clipLearnedText(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  const flat = value.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(flat);
+  return chars.length > max ? `${chars.slice(0, max).join('').trimEnd()}…` : flat;
+}
+
+function normalizeLearnedCorrections(raw: unknown): { items: LearnedCorrection[]; skipped: number; capped: number } {
+  if (raw === null || raw === undefined) return { items: [], skipped: 0, capped: 0 };
+  if (!Array.isArray(raw)) {
+    throw new Error(`COPYLAB_LEARNED_CORRECTIONS_MALFORMED: builder_input.learned_corrections debe ser una lista de { code, instruction, before, after } (recibido: ${String(JSON.stringify(raw)).slice(0, 200)})`);
+  }
+  const valid: LearnedCorrection[] = [];
+  let skipped = 0;
+  raw.forEach((entry: unknown, i: number) => {
+    const e = (entry && typeof entry === 'object' && !Array.isArray(entry)) ? entry as Record<string, unknown> : null;
+    const item = e ? {
+      code: clipLearnedText(e.code, LEARNED_CORRECTIONS_MAX_CODE_CHARS),
+      instruction: clipLearnedText(e.instruction, LEARNED_CORRECTIONS_MAX_EXCERPT_CHARS),
+      before: clipLearnedText(e.before, LEARNED_CORRECTIONS_MAX_EXCERPT_CHARS),
+      after: clipLearnedText(e.after, LEARNED_CORRECTIONS_MAX_EXCERPT_CHARS),
+    } : null;
+    if (!item || !item.code || !item.instruction || !item.before || !item.after || item.before === item.after) {
+      skipped++;
+      console.warn(`[CopyLab][learned_corrections] ítem ${i} descartado: necesita code, instruction, before y after como texto no vacío, con before distinto de after`);
+      return;
+    }
+    valid.push(item);
+  });
+  const capped = Math.max(0, valid.length - LEARNED_CORRECTIONS_MAX_ITEMS);
+  if (capped) {
+    console.warn(`[CopyLab][learned_corrections] ${valid.length} correcciones válidas — se inyectan las primeras ${LEARNED_CORRECTIONS_MAX_ITEMS}, ${capped} quedan fuera`);
+  }
+  return { items: valid.slice(0, LEARNED_CORRECTIONS_MAX_ITEMS), skipped, capped };
+}
+
+// El bloque. Va en el SYSTEM, junto a las reglas del Watcher que estas correcciones ilustran, así
+// que vale igual para la primera pasada y para la reparación (el system de las dos es el mismo,
+// contrato de G2-F). Tres órdenes, cada una contra un fallo concreto:
+//   · EVITAR DESDE EL PRINCIPIO — la capa existe para que el error no llegue al auto-fix.
+//   · NO COPIAR — el ejemplo enseña el criterio; copiado, la voz se vuelve fórmula.
+//   · NO ES MATERIAL — los fragmentos vienen de OTRAS piezas: un dato suyo en esta pieza sería un
+//     dato sin procedencia en este encargo.
+function buildLearnedCorrectionsBlock(items: LearnedCorrection[] | null | undefined): string | null {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  const entries = list
+    .map((c, i) => `${i + 1}. [${c.code}] ${c.instruction}\n   Antes: «${c.before}»\n   Después: «${c.after}»`)
+    .join('\n\n');
+  return `CORRECCIONES APRENDIDAS DE ESTA VOZ (${list.length}) — correcciones reales de piezas`
+    + ' anteriores escritas en esta misma voz, validadas por una persona. Cada una trae la regla que'
+    + ' se incumplió y el fragmento antes y después de corregirlo:\n\n'
+    + entries
+    + '\n\nCómo usarlas: evita esos errores desde el principio, para que la pieza que entregues no'
+    + ' necesite la misma corrección. No copies los ejemplos literalmente: enseñan el criterio, no la'
+    + ' frase. Y no son material para esta pieza: ningún dato, cifra, nombre, caso ni afirmación de'
+    + ' estos fragmentos puede reaparecer en lo que escribas — el material de esta pieza es solo el'
+    + ' que trae este encargo.';
 }
 
 // ── B2 · el mapa del carril ─────────────────────────────────────────────────
@@ -1995,6 +2099,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   rules_skipped: string[];
   rules_by_instruction: string[];
   repair: { codes: string[]; original_title: string | null } | null;
+  learned_corrections_count: number;
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -2007,6 +2112,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // encargo roto tiene que cortar antes de gastar queries y una llamada a Claude. `null` = modo
   // generación, y entonces nada de G2-F corre.
   let repair: RepairInput | null = null;
+  // Capa 2 del aprendizaje — se lee aquí por la misma razón: una lista con forma equivocada corta
+  // antes de gastar queries y la llamada a Claude. Sin la clave, lista vacía y nada que inyectar.
+  let learnedCorrections: LearnedCorrection[] = [];
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -2021,6 +2129,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // aunque en esa pasada NO llegue al prompt: lo que se le da al escritor es la pieza, no la
     // materia prima con la que ya la escribió.
     repair = normalizeRepair(bi.repair);
+    learnedCorrections = normalizeLearnedCorrections(bi.learned_corrections).items;
   }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
@@ -2289,6 +2398,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
   }
 
+  // Capa 2 del aprendizaje — cómo se corrigió antes, en esta voz, lo que esas reglas piden. Ausente
+  // o vacía → null → sin bloque, y el prompt queda byte-idéntico al de hoy.
+  const learnedCorrectionsBlock = buildLearnedCorrectionsBlock(learnedCorrections);
+
   // claims → bloque citable de CIFRAS (A1·CAMBIO 8). Ausente / vacío → null → sin bloque.
   const claimsBlock = buildClaimsBlock(bi?.claims);
 
@@ -2388,6 +2501,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (voiceLayer) layers.push(voiceLayer);                           // L1.5 genoma — override de ADN, DESPUÉS del copy profile
 
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
+  if (learnedCorrectionsBlock) layers.push(learnedCorrectionsBlock);   // cómo se corrigieron antes, en esta voz
   if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
   if (writingMaterialBlock) layers.push(writingMaterialBlock);   // y con qué desarrollarlas
   if (offerBlock) layers.push(offerBlock);                       // y hacia qué llevarlas
@@ -2599,6 +2713,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     repair: repair
       ? { codes: repair.violations.map(v => v.code), original_title: parsePiece(repair.piece_text).title }
       : null,
+    // Capa 2 del aprendizaje — cuántas correcciones llegaron de verdad al prompt (tras descartar las
+    // malformadas y aplicar el tope). 0 = ninguna, sea porque no vino la clave o porque no quedó nada.
+    learned_corrections_count: learnedCorrections.length,
   };
 }
 
@@ -2919,7 +3036,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} — calling Claude`);
     const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
     usoDeLaLlamada = usage;
 
@@ -2963,6 +3080,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // G2-F — la marca de la segunda pasada, y qué códigos se mandaron a reparar. Sólo viajan
           // en modo reparación: sin `builder_input.repair` el meta queda como hoy, clave por clave.
           ...(built.repair ? { repair: true, repair_codes: built.repair.codes } : {}),
+          // Capa 2 del aprendizaje — cuántas correcciones aprendidas se INYECTARON (no cuántas se
+          // mandaron): el carril lo compara con lo que envió y ve descartes y topes. Viaja siempre,
+          // con 0 cuando no hubo ninguna, igual que `rules_count`.
+          learned_corrections_count: built.learned_corrections_count,
           // G1-C — el techo que CopyLab APLICÓ de verdad, y el nivel que lo declaró. El carril ya
           // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
           // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar
