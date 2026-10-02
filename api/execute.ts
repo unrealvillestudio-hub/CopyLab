@@ -196,6 +196,11 @@ interface BuilderInput {
   // contrato que `title_budget_chars` y `max_tokens`: el carril resuelve, CopyLab obedece. Ausente
   // o desconocido ⇒ el modo que REPITE, que es el comportamiento vigente.
   image_title_mode?: string | null;
+  // F1 (Sam, 2026-10-02: «markdown mínimo») — el FORMATO DEL CUERPO que pinta el canal de ESTA
+  // pieza, resuelto por el carril contra el proveedor del canal en `intel.brand_publish_channels`.
+  // Llega sólo como 'markdown_min' y sólo cuando el canal lo pinta; ausente o desconocido ⇒ el
+  // cuerpo se escribe como siempre, sin marcas de bloque.
+  body_format?: string | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -823,12 +828,45 @@ function buildTitleBlock(
     + publicacion;
 }
 
+// ── F1 · EL FORMATO MÍNIMO DEL CUERPO ─────────────────────────────────────────────────────────────
+//
+// QUÉ ES. El contrato que pintan los publicadores de los canales editoriales —los `api/_inline.js`
+// de cada sitio, `blog-promoter` y la vista previa del Orchestrator—: `## Subtítulo` y `> Cita` al
+// principio de su propio párrafo, y `**negrita**`. Nada más: ni listas, ni tablas, ni enlaces.
+//
+// CUÁNDO. Sólo cuando el carril declara `body_format: 'markdown_min'`, que hace únicamente para un
+// canal cuyo publicador lo pinta. El mismo artefacto editorial sale también por canales de texto
+// plano (LinkedIn, TikTok), donde un `##` se publicaría tal cual: por eso la decisión es del canal y
+// no de este archivo. Cero marcas y cero plataformas acá.
+//
+// SIN la clave, `buildCarrilFormatBlock` devuelve el bloque de siempre, byte a byte.
+type BodyFormat = 'markdown_min';
+function readBodyFormat(v: unknown): BodyFormat | null {
+  const t = String(v ?? '').trim().toLowerCase();
+  if (t === 'markdown_min') return 'markdown_min';
+  if (t && t !== 'plain') console.warn(`[CopyLab][F1] builder_input.body_format desconocido (${JSON.stringify(v)}) — se escribe sin marcas de bloque`);
+  return null;
+}
+
+const BODY_FORMAT_MARKDOWN_MIN =
+  '- ESTRUCTURA DEL CUERPO (este canal la pinta): divídelo en 2 a 4 secciones. Cada sección abre con'
+  + ' un párrafo propio de UNA línea: "## " seguido del subtítulo — una afirmación breve y concreta'
+  + ' que dice lo que la sección demuestra, nunca un rótulo genérico ("Introducción", "Conclusión").'
+  + ' Sin punto final y sin negrita en el subtítulo. El primer párrafo del cuerpo va ANTES del primer'
+  + ' subtítulo: es la entrada de la pieza.\n'
+  + '- NEGRITA: como mucho UNA por sección, con **así**: la frase que el lector tiene que retener'
+  + ' (de 3 a 12 palabras), nunca una palabra suelta ni un párrafo entero.\n'
+  + '- CITA DESTACADA (opcional, como mucho una): un párrafo propio que empieza con "> " y repite,'
+  + ' textual o casi, la frase más filosa de la pieza.\n'
+  + '- Ninguna otra marca: sin listas, viñetas, tablas, enlaces, "#" sueltos ni "###".';
+
 // El bloque FORMATO de la instrucción de usuario. Función pura del destino — el ternario que vivía
 // suelto dentro de buildPrompt, ahora testeable y con el título obligatorio en las DOS ramas.
 // Lo único que separa a los destinos es DÓNDE vive el título: en editorial encabeza la pieza
 // publicada; en social es sólo el texto del overlay y el cuerpo se publica sin él.
 function buildCarrilFormatBlock(
   destination: string | null | undefined, mode: ImageTitleMode = 'echo',
+  bodyFormat: BodyFormat | null = null,
 ): string {
   // En diálogo la salida trae TRES cadenas antes del cuerpo, cada una en su centinela. El apoyo es
   // el único omitible: si no matiza el gancho, su línea no se escribe (ver ## IMAGEN Y TÍTULO).
@@ -844,6 +882,8 @@ function buildCarrilFormatBlock(
     ? 'FORMATO (editorial):\n'
       + primeraLinea
       + '- El cuerpo termina en su última frase de contenido: sin repetir el título, sin H1, sin CTA final, sin firma.'
+      // F1 — sólo si el canal pinta el formato. Sin él, el bloque queda byte a byte como antes.
+      + (bodyFormat === 'markdown_min' ? '\n' + BODY_FORMAT_MARKDOWN_MIN : '')
     : 'FORMATO (social):\n'
       + primeraLinea
       + '- El cuerpo NO repite el título ni lo cita: arranca con su propia apertura.\n'
@@ -2086,6 +2126,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   title_budget_chars: number | null;
   title_budget_source: string | null;
   image_title_mode: ImageTitleMode;
+  body_format: 'markdown_min' | 'plain';
   audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
   psycho_preset: string | null;
@@ -2640,7 +2681,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // literalmente «Sin título, sin la etiqueta "TÍTULO:"»: el overlay no tenía qué componer porque
     // el escritor tenía prohibido escribirlo. Ahora lo que cambia entre destinos es DÓNDE vive el
     // título, no si existe.
-    const fmt = buildCarrilFormatBlock(bi.destination, imageTitleMode);
+    const fmt = buildCarrilFormatBlock(bi.destination, imageTitleMode, readBodyFormat(bi.body_format));
     // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
     // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
@@ -2693,6 +2734,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // BRIEF-04 — el modo con el que se ESCRIBIÓ, para que el eco diga en qué régimen salió la pieza
     // y no haya que deducirlo de si vinieron las cadenas.
     image_title_mode: imageTitleMode,
+    // F1 — el formato con el que se ESCRIBIÓ el cuerpo. 'plain' también para social: el bloque sólo
+    // se aplica en editorial, y el eco dice lo que se pidió de verdad.
+    body_format: (bi && String(bi.destination ?? '').trim() === 'editorial' && readBodyFormat(bi.body_format)) ? 'markdown_min' : 'plain',
     // G2-C — QUÉ política de CTA se aplicó de verdad ('none' = frente no declarado). Misma lección
     // que max_tokens_applied: sin el eco, la próxima migración del eje vuelve a ser invisible.
     audience_cta_applied: audienceCtaApplied,
