@@ -1652,7 +1652,6 @@ async function run() {
     for (const nombre of MARCAS) assert(!u.includes(nombre), `la instrucción no nombra ${nombre}`);
   });
 
-
   await test('F3·ALT·pure normalizeAltPass: ausente = null; sin URL https corta con 400 y nombre propio', () => {
     eq(PURE.normalizeAltPass(undefined), null, 'ausente');
     eq(PURE.normalizeAltPass(null), null, 'null');
@@ -1727,6 +1726,8 @@ async function run() {
       eq(r._out._json.meta.alt_source, 'image', 'con visión, la imagen es la fuente');
       eq(r._out._json.meta.alt_chars, 53, 'el largo del alt, en caracteres');
       eq(r._out._json.usage.input_tokens, 900, 'el consumo viaja para que el carril lo asiente');
+      eq(r._out._json.meta.system_chars, fx.claudeBodies[0]?.system?.length, 'el tamaño del system que se pagó');
+      assert(Number.isInteger(r._out._json.meta.layers_omitted), 'y cuántas capas de contenido no viajaron');
       assert(!('body' in r._out._json) && !('image_plan' in r._out._json), 'ni pieza ni plan');
       const body = fx.claudeBodies[0];
       eq(body?.max_tokens, PURE.ALT_PASS_MAX_TOKENS, 'el techo de la pasada');
@@ -1737,14 +1738,54 @@ async function run() {
     } finally { fx.restore(); }
   });
 
-  await test('F3·ALT·cableado: el MISMO system que la generación; sin la clave, el user sigue siendo texto', async () => {
+  // F2/F3 · costo del alt (2026-10-03): el system del alt es el de la generación SIN las capas que sólo
+  // sirven para escribir. Toda capa que trae una regla de marca sigue, íntegra y en el mismo orden.
+  const VM_FULL_BCTX = { brandContext: {
+    ...VM_BCTX.brandContext,
+    humanize_profiles: [{ tone: 'acolhedor', personality: 'calma', authenticity_rules: 'sem exageros', anti_patterns: ['alarmismo'] }],
+    brand_goals: [{ goal_text: 'Dobrar as consultas preventivas', priority: 1 }],
+    brand_personas: [{ label: 'Tutora de primeira viagem', pain_points: ['medo'], copy_hooks: ['gancho'], avoid: ['Prometer cura'] }],
+    compliance_rules: [{ rule_text: 'Nunca indicar medicamento sem consulta.', severity: 'hard' }],
+    keywords: [{ keyword: 'vacina para cães', prioridad: 1, grupo_3: 'g3' }],
+    brand_copy_profiles: [{ id: 'cp-vm', voice_tone_primary: 'acolhedor', compliance_prohibited_words: ['milagroso'] }],
+    creative_vectors: [{ id: 'VEC-VM', category: 'c', label: 'L', instruction: 'vetor-de-abertura', aggro_min: 1, aggro_max: 5 }],
+    tension_architectures: [{ id: 'TEN-VM', label: 'TL', instruction: 'curva-de-tensao', curve: 'cu' }],
+    aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'AL', instruction: 'aggro-vm', anti_hedging: 'ah' }],
+  } };
+  const vmFullBI = (extra: any) => vmBI({
+    destination: 'editorial', platform: 'blog', max_tokens: 4000, max_tokens_source: 'channel', title_budget_chars: 90,
+    rules: [{ code: 'R-N1-02', kind: 'prohibition', statement: 'x', instruction: 'Nunca use a palavra garantido.' }],
+    angle: 'eixo-da-peca', audience_frame: 'influye', mechanism: 'mecanismo-da-vacina',
+    claims: [{ claim: 'Cães vacinados', value: '9 em 10', source_url: 'https://fonte.example/a', source_name: 'Fonte VM' }],
+    offer_catalog: { items: [{ name: 'Plano Filhote', avoid_claims: ['Imunidade total'] }] },
+    ...extra,
+  });
+
+  await test('F3·ALT·cableado: el system del alt es el de la generación sin las capas de contenido; toda regla de marca sigue', async () => {
     const fx = vmFetch();
     try {
-      const regla = { code: 'R-N1-02', kind: 'prohibition', statement: 'x', instruction: 'Nunca use a palavra garantido.' };
-      const alt = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla], alt_pass: { image_url: VM_IMG } }) }));
-      const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla] }) }));
-      eq(alt.system, gen.system, 'mismo system: voz, idioma y reglas de la marca gobiernan el alt');
-      assert(alt.system.includes('Nunca use a palavra garantido.') && !alt.user.includes('garantido'), 'la regla está en el system, no copiada');
+      const alt = await buildPrompt(reqWith(VM_FULL_BCTX, { brandId: 'VetMar', builder_input: vmFullBI({ alt_pass: { image_url: VM_IMG } }) }));
+      const gen = await buildPrompt(reqWith(VM_FULL_BCTX, { brandId: 'VetMar', builder_input: vmFullBI({}) }));
+      const capas = (s: string) => s.split('\n\n---\n\n');
+      const deAlt = new Set(capas(alt.system));
+      // Las del alt son las de la generación, en el mismo orden: no hay ninguna capa nueva ni reordenada.
+      eq(JSON.stringify(capas(alt.system)), JSON.stringify(capas(gen.system).filter(c => deAlt.has(c))), 'subsecuencia ordenada');
+      const omitidas = capas(gen.system).filter(c => !deAlt.has(c));
+      eq(alt.alt_pass?.layers_omitted, omitidas.length, 'el eco dice cuántas no viajaron');
+      // Lo que sólo sirve para escribir no viaja.
+      for (const marca of ['OBJETIVOS ESTRATÉGICOS', '## KEYWORDS', '## CTA ACTIVO', 'mecanismo-da-vacina', 'eixo-da-peca',
+        'vetor-de-abertura', 'curva-de-tensao', 'aggro-vm', '## PRESUPUESTO DE LONGITUD', '## TÍTULO']) {
+        assert(gen.system.includes(marca), `la generación sí lleva ${marca}`);
+        assert(!alt.system.includes(marca), `el alt no lleva ${marca}`);
+      }
+      // Toda regla de marca sigue gobernando el alt: idioma (apertura y cierre), voz, compliance,
+      // copy profile, genoma, Watcher, audiencia, cifras, oferta y política de CTA.
+      eq(alt.system.split('## IDIOMA DE SAÍDA').length - 1, 2, 'idioma al abrir y al cerrar');
+      for (const regla of ['Nunca use a palavra garantido.', 'Nunca indicar medicamento sem consulta.', 'milagroso', 'prohibida-1',
+        'reg-prohibido', 'alarmismo', 'Prometer cura', '9 em 10', 'Imunidade total', 'PROHIBIDO todo CTA', '## MARCA: VetMar']) {
+        assert(alt.system.includes(regla), `el alt conserva «${regla}»`);
+      }
+      assert(!alt.user.includes('garantido'), 'la regla está en el system, no copiada en la tarea');
       eq(alt.user_image_url, VM_IMG, 'la imagen acompaña al user');
       eq(gen.user_image_url, null, 'sin la clave, nada de imagen');
       eq(gen.alt_pass, null, 'ni encargo');

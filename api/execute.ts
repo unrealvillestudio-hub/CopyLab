@@ -1319,8 +1319,10 @@ function normalizeImagePlan(
 // escena con la que se generó (`scene`) es la mejor aproximación disponible, y el meta lo dice
 // (`alt_source`) para que nadie confunda un alt deducido de la escena con uno mirado.
 //
-// Mismo reparto que las otras pasadas: MISMO system que la generación (las reglas de marca gobiernan
-// el alt sin copiarlas aquí), techo propio y respuesta en JSON leída con `extractJsonObject`.
+// Mismo reparto que las otras pasadas: el system de la generación (las reglas de marca gobiernan el
+// alt sin copiarlas aquí), techo propio y respuesta en JSON leída con `extractJsonObject`. Desde el
+// 2026-10-03 ese system viaja SIN las capas que sólo sirven para escribir (ver `capaDeContenido`
+// en buildPrompt): toda capa que trae una regla de marca sigue, íntegra y en el mismo orden.
 const ALT_PASS_MAX_TOKENS = 300;
 // La escena es el prompt completo del generador de imagen: puede ser larga y sólo es contexto.
 const ALT_PASS_SCENE_MAX_CHARS = 2000;
@@ -2811,7 +2813,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   learned_corrections_count: number;
   format_pass: boolean;
   image_pass: ImagePassInput | null;
-  alt_pass: { source: AltSource; image_url: string } | null;
+  // `layers_omitted`: cuántas capas de contenido NO viajaron en el system del alt (ver `capaDeContenido`).
+  alt_pass: { source: AltSource; image_url: string; layers_omitted: number } | null;
   slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
   // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
   user_image_url: string | null;
@@ -3176,6 +3179,19 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // A2·b — orden de capas alineado con buildCopyPrompt (una sola gramática):
   //   contexto → restricciones → ángulo creativo → forma de salida → instrucción.
   const layers: string[] = [];
+  // F2/F3 · COSTO DEL ALT (2026-10-03). Medido en `public.ops_generation_ledger`: la pasada del alt
+  // mandaba el system COMPLETO de la generación, y su entrada media (≈18,6 mil tokens, 42 llamadas)
+  // era casi la del plan de imágenes; la salida, ≈47 tokens. Lo caro no era el alt: era el system.
+  // Las capas que aquí entran con `capaDeContenido` sólo sirven para ESCRIBIR una pieza (objetivos,
+  // geo, keywords, CTA activo, mecanismo y casos, salidas anteriores, psico-estímulo, eje, motor
+  // creativo y forma de salida) y no traen ninguna prohibición. En la pasada del alt no se envían.
+  // Toda capa que trae una regla de marca sigue yendo íntegra y en el mismo orden, aunque también
+  // sirva para escribir: idioma, marca, audiencia (sus «Evitar»), canal, voz, compliance, copy
+  // profile, genoma, reglas del Watcher, correcciones aprendidas, cifras citables (lista cerrada),
+  // oferta (sus «No afirmar») y política de CTA. En cualquier otra tarea, el system queda byte a
+  // byte como antes.
+  const capasDeContenido = new Set<number>();
+  const capaDeContenido = (capa: string) => { capasDeContenido.add(layers.length); layers.push(capa); };
 
   // ── IDIOMA — PRIMERO Y ÚLTIMO ─────────────────────────────────────────────
   // FIX-LANG-01. Antes esta capa era la 4.ª de ~28 y las ~24 que la seguían están
@@ -3193,7 +3209,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   layers.push(buildBrandBlock(brand));                                  // ## MARCA
 
   const goalsBlock = buildGoalsBlock(goalsList as any[]);
-  if (goalsBlock) layers.push(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
+  if (goalsBlock) capaDeContenido(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
 
   const personasBlock = buildPersonasBlock(personasList as any[]);
   if (personasBlock) layers.push(personasBlock);                       // ## SEGMENTOS OBJETIVO (ICP)
@@ -3230,10 +3246,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   }
 
   const geomixBlock = buildGeomixBlock(geomixRow);
-  if (geomixBlock) layers.push(geomixBlock);                          // ## GEOMIX (omitido si no hay fila)
+  if (geomixBlock) capaDeContenido(geomixBlock);                          // ## GEOMIX (omitido si no hay fila)
 
   const keywordsBlock = buildKeywordsBlock(kwList as any[]);
-  if (keywordsBlock) layers.push(keywordsBlock);                      // ## KEYWORDS (prioridad≤3 + grupo_3)
+  if (keywordsBlock) capaDeContenido(keywordsBlock);                      // ## KEYWORDS (prioridad≤3 + grupo_3)
 
   // ── RESTRICCIONES ─────────────────────────────────────────────────────────
   // CTA por canal_block_id (A2·a). UI / sin canal → cta_smpc. cta_ads sale de aquí.
@@ -3243,7 +3259,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // (`ctas` + `brands.cta_base`), con la columna de la superficie de esta pieza primero. Sólo se
   // calculan cuando hay pasada de láminas: sin ella, nada cambia.
   const slideCtaOptions = slidePass ? collectCtaOptions(ctaList as any[], ctaField, brand?.cta_base, idioma) : [];
-  if (ctaActive) layers.push(`## CTA ACTIVO\n${ctaActive}`);
+  if (ctaActive) capaDeContenido(`## CTA ACTIVO\n${ctaActive}`);
 
   if (complianceRules.length) {                                       // ## COMPLIANCE (hard primero, numerado)
     layers.push(`## COMPLIANCE — REGLAS OBLIGATORIAS\n` + complianceRules.map((r, i) => `${i + 1}. ${r}`).join('\n'));
@@ -3257,7 +3273,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (learnedCorrectionsBlock) layers.push(learnedCorrectionsBlock);   // cómo se corrigieron antes, en esta voz
   if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
-  if (writingMaterialBlock) layers.push(writingMaterialBlock);   // y con qué desarrollarlas
+  if (writingMaterialBlock) capaDeContenido(writingMaterialBlock);   // y con qué desarrollarlas
   if (offerBlock) layers.push(offerBlock);                       // y hacia qué llevarlas
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
@@ -3268,7 +3284,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     ([lab]) => !['brandContext', 'last_creative_vector', 'sp_pool'].includes(lab)
   );
   if (prevEntries.length) {
-    layers.push(`OUTPUTS ANTERIORES:\n${prevEntries.map(([l, o]) => `[${l.toUpperCase()}]: ${String(o).slice(0, 300)}`).join('\n')}`);
+    capaDeContenido(`OUTPUTS ANTERIORES:\n${prevEntries.map(([l, o]) => `[${l.toUpperCase()}]: ${String(o).slice(0, 300)}`).join('\n')}`);
   }
 
   if (isEmailSeq && seqContext) {
@@ -3282,20 +3298,20 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
     if (seqContext.spPool) seqLayers.push(seqContext.spPool);
     if (meta.psycho_presets?.length) seqLayers.push(`PSYCHO PRESETS (en arquitectura, no en copy): ${meta.psycho_presets.join(', ')}`);
-    layers.push(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
+    capaDeContenido(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
   }
 
   if (psychoInjection) {
-    layers.push(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
+    capaDeContenido(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
   }
 
   // ── ÁNGULO CREATIVO ───────────────────────────────────────────────────────
   if (bi && bi.angle && bi.angle.trim()) {
-    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
+    capaDeContenido(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
   }
-  if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
-  if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
-  if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
+  if (vector) capaDeContenido(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
+  if (tension) capaDeContenido(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
+  if (aggro)   capaDeContenido(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
   // ── FORMA DE SALIDA (último bloque antes de la instrucción) ────────────────
   // G1-D — cuánto ESPACIO tiene la pieza es forma de salida, igual que el template: va en esta
@@ -3305,12 +3321,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // La FORMA declarada por la marca va primero; el presupuesto, que es quien manda sobre el espacio,
   // va después. Ver `buildFormatInstructionBlock` sobre por qué el orden no es indiferente.
   const formatInstructionBlock = bi ? buildFormatInstructionBlock(bi.format_instruction) : null;
-  if (formatInstructionBlock) layers.push(formatInstructionBlock);    // ## FORMATO DECLARADO
+  if (formatInstructionBlock) capaDeContenido(formatInstructionBlock);    // ## FORMATO DECLARADO
 
   const declaredCeiling = readDeclaredMaxTokens(bi?.max_tokens);
   const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling);
   const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
-  if (lengthBudgetBlock) layers.push(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
+  if (lengthBudgetBlock) capaDeContenido(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
 
   // BRIEF 8 · A — la sección ## TÍTULO va en la misma banda de FORMA DE SALIDA y DESPUÉS del
   // presupuesto de longitud: primero cuánto espacio tiene la pieza, después qué clase de frase la
@@ -3321,9 +3337,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // prompt de siempre, byte a byte: el bloque de diálogo no se empuja y el de título no cambia.
   const imageTitleMode = bi ? readImageTitleMode(bi.image_title_mode) : 'echo';
   if (bi && imageTitleMode === 'dialogue') {
-    layers.push(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
+    capaDeContenido(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
   }
-  if (bi) layers.push(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
+  if (bi) capaDeContenido(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
 
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
@@ -3349,13 +3365,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     if (templateVarsUnresolvedCompliance.length) {
       console.error(`[CopyLab][COMPLIANCE] template ${outputTemplate.id} (${outputTemplate.name}) — variable(s) de cumplimiento SIN valor, se inyectan vacías (${brandId} no las tiene): ${templateVarsUnresolvedCompliance.join(', ')}`);
     }
-    layers.push(`## TEMPLATE DE OUTPUT [${outputTemplate.name}]\n${filledTemplate}`);
+    capaDeContenido(`## TEMPLATE DE OUTPUT [${outputTemplate.name}]\n${filledTemplate}`);
   }
 
   const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
     : bcShape === 'context_json' ? 'context_json_per_slice'
     : 'no_cache';
-  const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
+  const capasDelSystem = altPass ? layers.filter((_, i) => !capasDeContenido.has(i)) : layers;
+  const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${capasDelSystem.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
   if (isEmailSeq) {
@@ -3485,7 +3502,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     learned_corrections_count: learnedCorrections.length,
     format_pass: !!formatPass,
     image_pass: imagePass,
-    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url } : null,
+    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size } : null,
     slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
     user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
@@ -3856,6 +3873,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const metaAlt = {
         alt_pass: true, alt_source: built.alt_pass.source,
         voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+        // El tamaño del system que se pagó, y cuántas capas de contenido no viajaron: sin los dos, el
+        // ahorro no se puede leer contra el ledger (`inline_image_alt` frente a `inline_image_plan`).
+        system_chars: built.system.length, layers_omitted: built.alt_pass.layers_omitted,
       };
       const { alt, reason } = normalizeAltResult(extractJsonObject(output));
       if (!alt) {
