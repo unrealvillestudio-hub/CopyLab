@@ -125,6 +125,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 declare const process: { env: Record<string, string | undefined> };
 
 const CLAUDE_MODEL = 'claude-sonnet-5';
+// F2/F3 · pasada del alt — el modelo de arriba ADMITE IMÁGENES como entrada (visión) en la API de
+// Mensajes, por URL (`source: { type: 'url' }`) o en base64. Es una capacidad del PROVEEDOR, no de
+// una marca, y vive al lado del modelo: si el modelo cambia por uno sin visión, esto pasa a `false`
+// y `alt_pass` cae a la escena (`meta.alt_source = 'scene'`) sin tocar nada más.
+const COPYLAB_PROVIDER_ACCEPTS_IMAGES = true;
 
 // Normalize SUPABASE_URL — same defensive parse as ImageLab. Tolerates three
 // shapes commonly pasted into Vercel env panels:
@@ -211,6 +216,18 @@ interface BuilderInput {
   // carril como dato. CopyLab no toca el texto: devuelve un PLAN (tras qué bloque va cada imagen, qué
   // oración ilustra y su `alt`) y el carril lo aplica. Ausente ⇒ nada de esto corre.
   image_pass?: { piece_text: string; max_images: number } | null;
+  // F2/F3 · PASADA DEL ALT (contrato (3), Sam, 2026-10-03) — hermana de `image_pass`, pero DESPUÉS de
+  // generar la imagen: la URL pública de la imagen ya generada, la escena con la que se generó
+  // (`scene`, el prompt completo del generador) y lo que debía ilustrar (`focus`). CopyLab devuelve
+  // el alt de lo que se VE. Ausente ⇒ nada de esto corre.
+  alt_pass?: { image_url: string; scene?: string | null; focus?: string | null } | null;
+  // F2/F3 · PASADA DE LÁMINAS (contrato (5), Sam, 2026-10-03) — un carrusel ya planificado (sus
+  // láminas con rol y titular) y el texto de la pieza. CopyLab propone por lámina eyebrow, keyword,
+  // figure, steps y cta; nunca cambia un titular. Ausente ⇒ nada de esto corre.
+  slide_pass?: {
+    piece_text: string;
+    slides: Array<{ n: number; role: 'cover' | 'body' | 'closing'; headline: string; subheadline?: string | null }>;
+  } | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -1029,15 +1046,15 @@ function buildRepairInstruction(
   const bloques = repair.violations.map(v => `[${v.code}]\n${v.instruction}`).join('\n\n');
   return `${formatBlock}\n\n`
     + 'TAREA — REPARACIÓN DIRIGIDA (no es una pieza nueva):\n'
-    + 'Esta pieza ya está escrita y cumple todo salvo lo listado. Devolvé la pieza COMPLETA'
+    + 'Esta pieza ya está escrita y cumple todo salvo lo listado. Devuelve la pieza COMPLETA'
     + ' corregida, cambiando lo MÍNIMO necesario para cumplir cada código listado. No reescribas lo'
-    + ' que ya cumple. Cerrala completa.'
+    + ' que ya cumple. Ciérrala completa.'
     + tituloRegla
     + presupuesto
     + `\n\nPIEZA A REPARAR (íntegra, tal como se publicaría):\n${repair.piece_text}`
     + `\n\nQUÉ INCUMPLE (${repair.violations.length}) — una por bloque, cada una tiene que quedar`
     + ` cumplida:\n${bloques}`
-    + '\n\nDevolvé SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
+    + '\n\nDevuelve SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
     + ' explicar qué cambiaste y sin nombrar los códigos dentro del texto.';
 }
 
@@ -1240,6 +1257,363 @@ function normalizeImagePlan(
     previa = v.after;
   }
   return { plan, dropped };
+}
+
+// ── F2/F3 · PASADA DEL ALT SOBRE UNA IMAGEN YA GENERADA (contrato (3), Sam, 2026-10-03) ─────────
+//
+// POR QUÉ EXISTE: el alt que escribe `image_pass` se escribe ANTES de que la imagen exista, a partir
+// de lo que la imagen DEBÍA mostrar. Medido en una pieza: el alt describía una silla vacía frente a
+// un panel y la imagen mostraba a una persona frente a un holograma. El alt se publica como la
+// descripción de lo que se ve, así que tiene que escribirse DESPUÉS, mirando la imagen real.
+//
+// LA FUENTE DE VERDAD es la imagen cuando el proveedor de CopyLab admite imágenes como entrada (la
+// capacidad la declara quien llama, fuera del bloque puro, junto al modelo). Sin esa capacidad, la
+// escena con la que se generó (`scene`) es la mejor aproximación disponible, y el meta lo dice
+// (`alt_source`) para que nadie confunda un alt deducido de la escena con uno mirado.
+//
+// Mismo reparto que las otras pasadas: MISMO system que la generación (las reglas de marca gobiernan
+// el alt sin copiarlas aquí), techo propio y respuesta en JSON leída con `extractJsonObject`.
+const ALT_PASS_MAX_TOKENS = 300;
+// La escena es el prompt completo del generador de imagen: puede ser larga y sólo es contexto.
+const ALT_PASS_SCENE_MAX_CHARS = 2000;
+const ALT_PASS_FOCUS_MAX_CHARS = 400;
+
+type AltSource = 'image' | 'scene';
+interface AltPassInput { image_url: string; scene: string | null; focus: string | null }
+
+function clipPlain(value: unknown, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  const flat = value.replace(/\s+/g, ' ').trim();
+  if (!flat) return null;
+  const chars = Array.from(flat);
+  return chars.length > max ? `${chars.slice(0, max).join('').trimEnd()}…` : flat;
+}
+
+function normalizeAltPass(v: unknown): AltPassInput | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_ALT_PASS_MALFORMED: builder_input.alt_pass debe ser un objeto { image_url, scene?, focus? } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const raw = (v as any).image_url;
+  const image_url = typeof raw === 'string' ? raw.trim() : '';
+  let valida = false;
+  try { valida = /^https:\/\//i.test(image_url) && !!new URL(image_url).hostname; } catch { valida = false; }
+  if (!valida) {
+    throw new CopyLabRequestError(`COPYLAB_ALT_PASS_IMAGE_REQUIRED: builder_input.alt_pass.image_url debe ser una URL https de la imagen ya generada (recibido: ${JSON.stringify(raw ?? null)}) — sin imagen no hay nada que describir`);
+  }
+  return {
+    image_url,
+    scene: clipPlain((v as any).scene, ALT_PASS_SCENE_MAX_CHARS),
+    focus: clipPlain((v as any).focus, ALT_PASS_FOCUS_MAX_CHARS),
+  };
+}
+
+// De dónde sale el alt. `acceptsImages` es una capacidad del PROVEEDOR (eje), no de una marca.
+function resolveAltSource(acceptsImages: boolean, input: AltPassInput): AltSource {
+  if (acceptsImages) return 'image';
+  if (input.scene) return 'scene';
+  throw new CopyLabRequestError('COPYLAB_ALT_PASS_SCENE_REQUIRED: el proveedor de CopyLab no admite imágenes como entrada y builder_input.alt_pass.scene no llegó — sin imagen ni escena no hay de qué escribir el alt');
+}
+
+function buildAltPassInstruction(input: AltPassInput, source: AltSource, languageLabel: string): string {
+  const fuente = source === 'image'
+    ? 'La imagen va adjunta en este mensaje. Describe SOLO lo que se ve en ella: la imagen es la fuente'
+      + ' de verdad. Si algo de lo que acompaña a esta tarea no coincide con lo que se ve, manda la imagen.\n\n'
+    : 'La imagen no se puede ver en esta pasada. Describe la escena con la que se generó, que va abajo,'
+      + ' y sólo lo que esa escena pone a la vista: no añadas nada que no esté en ella.\n\n';
+  return 'TAREA — TEXTO ALTERNATIVO DE UNA IMAGEN YA GENERADA (no es una pieza nueva):\n'
+    + fuente
+    + 'Responde SOLO con un objeto JSON, sin texto alrededor y sin bloque de código:\n'
+    + '{"alt":"…"}\n\n'
+    + 'REGLAS:\n'
+    + `- alt: una sola línea, de ${IMAGE_ALT_MAX_CHARS} caracteres o menos, en el idioma de la marca (${languageLabel}).\n`
+    + '- Describe lo que se ve: las personas (cuántas y qué hacen), el lugar y la acción principal.'
+    + ' Concreto y literal, sin interpretar intenciones ni emociones que no se vean.\n'
+    + '- No empieza con una fórmula del tipo «imagen de» o «foto de»: el lector de pantalla ya anuncia'
+    + ' que es una imagen.\n'
+    + '- No afirma beneficios, resultados, eficacia ni promesas, y no menciona texto, letras ni'
+    + ' logotipos dentro de la imagen.\n'
+    + '- El alt se publica con la pieza: lo gobiernan las mismas reglas de esta marca que gobiernan el'
+    + ' título y el cuerpo —idioma, tratamiento, tono, prohibiciones—.'
+    + (input.focus ? `\n\nQUÉ DEBÍA ILUSTRAR (contexto, no se copia):\n${input.focus}` : '')
+    + (source === 'scene' && input.scene ? `\n\nESCENA CON LA QUE SE GENERÓ:\n${input.scene}` : '');
+}
+
+/**
+ * El alt tal como lo promete el contrato: una línea, sin comillas alrededor, de
+ * IMAGE_ALT_MAX_CHARS caracteres o menos. `alt: null` con su motivo cuando no sirve; el handler lo
+ * convierte en 422 COPYLAB_ALT_UNUSABLE. Nunca se recorta: un alt cortado a media frase es peor
+ * que el del plan, que el carril conserva.
+ */
+function normalizeAltResult(raw: Record<string, unknown> | null): { alt: string | null; reason: 'UNPARSABLE' | 'EMPTY' | 'TOO_LONG' | null } {
+  if (!raw || !('alt' in raw)) return { alt: null, reason: 'UNPARSABLE' };
+  const texto = typeof raw.alt === 'string' ? raw.alt : '';
+  const alt = texto.replace(/\s+/g, ' ').trim().replace(/^["'«“]+|["'»”]+$/g, '').trim();
+  if (!alt) return { alt: null, reason: 'EMPTY' };
+  if (Array.from(alt).length > IMAGE_ALT_MAX_CHARS) return { alt: null, reason: 'TOO_LONG' };
+  return { alt, reason: null };
+}
+
+// ── F2/F3 · PASADA DE LÁMINAS DE UN CARRUSEL (contrato (5), Sam, 2026-10-03) ──────────────────────
+//
+// POR QUÉ EXISTE: el diseño de las láminas sabe pintar una etiqueta de función (`eyebrow`), una
+// palabra resaltada (`keyword`), una cifra con su fuente (`figure`), una secuencia de pasos
+// (`steps`) y la llamada a la acción del cierre (`cta`), pero nadie los escribía. Es copy —en la voz
+// y con las reglas de la marca—, y el copy es de CopyLab. Componer la lámina es del carril.
+//
+// EL REPARTO es el de las otras pasadas: CopyLab no toca titulares ni subtitulares; devuelve un PLAN
+// por lámina y lo NORMALIZA aquí contra el contrato. Lo que incumple se poda y se dice en `dropped`,
+// y el carril lo revalida con sus propios validadores.
+//
+// EL CTA NO SE ESCRIBE: se ELIGE entre las opciones de CTA de la marca, que llegan como DATO
+// (`public.ctas` y `brands.cta_base`, las mismas fuentes del `## CTA ACTIVO`). Sin opciones, null.
+const SLIDE_PASS_MAX_TOKENS = 1600;
+// Techo del CONTRATO (eje): un carrusel con más láminas que esto es un encargo mal formado.
+const SLIDE_PASS_CONTRACT_MAX_SLIDES = 20;
+const SLIDE_ROLES = ['cover', 'body', 'closing'] as const;
+type SlideRole = typeof SLIDE_ROLES[number];
+const SLIDE_EYEBROW_MAX_CHARS = 28;
+const SLIDE_KEYWORD_MAX_WORDS = 4;
+const SLIDE_STEPS_MIN = 2;
+const SLIDE_STEPS_MAX = 5;
+// Las columnas de texto de `public.ctas` (esquema medido el 2026-10-03). Son el EJE —qué superficie
+// pide la llamada a la acción—, no el vocabulario de una marca: el texto de cada una es dato.
+const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_story', 'cta_seo', 'cta_ultrashort', 'cta_ads', 'cta_spot', 'cta_ab1', 'cta_ab2'];
+const CTA_OPTIONS_MAX = 8;
+
+interface SlidePassSlide { n: number; role: SlideRole; headline: string; subheadline: string | null }
+interface SlidePassInput { piece_text: string; slides: SlidePassSlide[] }
+interface SlideFigure { value: string; bar: { from: number; to: number } | null; source: string }
+interface SlideStep { text: string; critical: boolean }
+interface SlidePlanEntry {
+  n: number; eyebrow: string | null; keyword: string | null; figure: SlideFigure | null;
+  steps: SlideStep[] | null; cta: string | null;
+}
+
+function normalizeSlidePass(v: unknown): SlidePassInput | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_SLIDE_PASS_MALFORMED: builder_input.slide_pass debe ser un objeto { piece_text, slides } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const piece_text = String((v as any).piece_text ?? '').trim();
+  if (!piece_text) {
+    throw new CopyLabRequestError('COPYLAB_SLIDE_PASS_PIECE_REQUIRED: builder_input.slide_pass.piece_text es obligatorio — sin la pieza no hay de dónde sacar cifras ni fuentes');
+  }
+  const rawSlides = (v as any).slides;
+  if (!Array.isArray(rawSlides) || !rawSlides.length || rawSlides.length > SLIDE_PASS_CONTRACT_MAX_SLIDES) {
+    throw new CopyLabRequestError(`COPYLAB_SLIDE_PASS_SLIDES_REQUIRED: builder_input.slide_pass.slides debe ser una lista de 1 a ${SLIDE_PASS_CONTRACT_MAX_SLIDES} láminas (recibido: ${Array.isArray(rawSlides) ? `${rawSlides.length} láminas` : JSON.stringify(rawSlides ?? null)})`);
+  }
+  const vistos = new Set<number>();
+  const slides = rawSlides.map((s: any, i: number): SlidePassSlide => {
+    const n = s?.n;
+    const role = s?.role;
+    const headline = typeof s?.headline === 'string' ? s.headline.trim() : '';
+    const sub = s?.subheadline;
+    const motivo = !s || typeof s !== 'object' || Array.isArray(s) ? 'no es un objeto'
+      : !Number.isInteger(n) || n < 1 ? 'n debe ser un entero de 1 en adelante'
+      : vistos.has(n) ? `n=${n} repetido`
+      : !(SLIDE_ROLES as readonly string[]).includes(role) ? `role debe ser ${SLIDE_ROLES.join(' | ')}`
+      : !headline ? 'headline es obligatorio'
+      : sub !== undefined && sub !== null && typeof sub !== 'string' ? 'subheadline debe ser texto o null'
+      : null;
+    if (motivo) {
+      throw new CopyLabRequestError(`COPYLAB_SLIDE_PASS_SLIDE_MALFORMED: builder_input.slide_pass.slides[${i}] — ${motivo} (recibido: ${String(JSON.stringify(s ?? null)).slice(0, 200)})`);
+    }
+    vistos.add(n);
+    return { n, role, headline, subheadline: typeof sub === 'string' && sub.trim() ? sub.trim() : null };
+  });
+  return { piece_text, slides };
+}
+
+// Idioma primario de una etiqueta («es-XX», «ES», «en_YY» → «es», «es», «en»). Vacío si no hay.
+function primaryLanguageTag(code: unknown): string {
+  return typeof code === 'string' ? code.trim().split(/[-_]/)[0].toLowerCase() : '';
+}
+
+/**
+ * Las opciones de CTA de la marca, como DATO: primero la columna de la superficie de esta pieza (la
+ * misma que elige `getCTAFieldForCanal` para el `## CTA ACTIVO`), luego las demás columnas de texto
+ * de `public.ctas`, y al final `brands.cta_base`. Una fila cuyo idioma declarado no es el de la
+ * pieza no aporta opciones: un CTA en otro idioma no cierra esta pieza. Sin duplicados, sin URLs,
+ * hasta CTA_OPTIONS_MAX.
+ */
+function collectCtaOptions(ctas: any[] | null | undefined, preferredField: string, brandCtaBase: unknown, language: unknown): string[] {
+  const idioma = primaryLanguageTag(language);
+  const filas = (ctas ?? []).filter((r: any) => {
+    if (!r || typeof r !== 'object') return false;
+    const propio = primaryLanguageTag(r.idioma);
+    return !propio || !idioma || propio === idioma;
+  });
+  const campos = [preferredField, ...CTA_OPTION_FIELDS.filter(f => f !== preferredField)];
+  const candidatos: unknown[] = [];
+  for (const campo of campos) for (const fila of filas) candidatos.push((fila as any)[campo]);
+  candidatos.push(brandCtaBase);
+  const vistos = new Set<string>();
+  const opciones: string[] = [];
+  for (const c of candidatos) {
+    if (typeof c !== 'string') continue;
+    const texto = c.replace(/\s+/g, ' ').trim();
+    const clave = texto.toLowerCase();
+    if (!texto || /^https?:\/\//i.test(texto) || vistos.has(clave)) continue;
+    vistos.add(clave);
+    opciones.push(texto);
+    if (opciones.length >= CTA_OPTIONS_MAX) break;
+  }
+  return opciones;
+}
+
+function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], languageLabel: string): string {
+  const laminas = input.slides
+    .map(s => `[n=${s.n} · ${s.role}] Titular: ${s.headline}${s.subheadline ? `\n          Subtitular: ${s.subheadline}` : ''}`)
+    .join('\n');
+  const reglaCta = ctaOptions.length
+    ? '- cta: SÓLO en la lámina de cierre ("closing"); en las demás, null. Copia LITERAL una de estas'
+      + ' opciones de llamada a la acción de la marca, la que mejor cierre esta pieza; si ninguna encaja,'
+      + ' null. Nunca escribas una llamada a la acción propia, ni con escasez ni con urgencia:\n'
+      + ctaOptions.map((o, i) => `  ${i + 1}. «${o}»`).join('\n') + '\n'
+    : '- cta: siempre null. Esta marca no tiene opciones de llamada a la acción declaradas, y no se'
+      + ' escribe una propia.\n';
+  return 'TAREA — CONTENIDO DE APOYO DE LAS LÁMINAS DE UN CARRUSEL YA PLANIFICADO (no es una pieza nueva'
+    + ' y no se reescribe):\n'
+    + 'El carrusel ya tiene sus láminas y sus titulares. Tu trabajo es proponer, para cada lámina, los'
+    + ' elementos de apoyo que el diseño puede pintar junto al titular. No cambias ningún titular ni'
+    + ' subtitular y no los repites en la respuesta.\n\n'
+    + 'Responde SOLO con un objeto JSON, sin texto alrededor y sin bloque de código:\n'
+    + '{"slides":[{"n":N,"eyebrow":"…","keyword":"…","figure":{"value":"…","bar":{"from":0,"to":P},"source":"…"},'
+    + '"steps":[{"text":"…","critical":false}],"cta":"…"}]}\n\n'
+    + 'REGLAS (cualquier campo puede ir en null; un campo dudoso vale más en null que inventado):\n'
+    + '- Una entrada por lámina, con su mismo "n".\n'
+    + `- keyword: UNA palabra o expresión corta (hasta ${SLIDE_KEYWORD_MAX_WORDS} palabras) copiada LITERAL,`
+    + ' carácter por carácter, del titular de ESA lámina: la que carga el sentido. Como mucho una por'
+    + ' lámina, y nunca el titular entero.\n'
+    + `- eyebrow: etiqueta corta (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra la FUNCIÓN de`
+    + ` la lámina dentro del carrusel (el dato, la causa, el paso siguiente…), en el idioma de la marca`
+    + ` (${languageLabel}). No repite el titular.\n`
+    + '- figure: SÓLO si en el TEXTO DE LA PIEZA aparecen, literales, una cifra Y la fuente que la'
+    + ' sostiene, nombrada. "value" copia la cifra tal como aparece; "source" copia el nombre de la'
+    + ' fuente tal como aparece. "bar" sólo si la cifra es un porcentaje entre 0 y 100, y entonces'
+    + ' {"from":0,"to":<ese porcentaje>}; si no, null. Nunca inventes, redondees ni conviertas una cifra'
+    + ' o una fuente.\n'
+    + `- steps: de ${SLIDE_STEPS_MIN} a ${SLIDE_STEPS_MAX} pasos cortos SÓLO si la lámina explica un mecanismo o`
+    + ' un proceso; como mucho uno con "critical": true (el paso que, si falla, rompe el proceso). Si no,'
+    + ' null.\n'
+    + reglaCta
+    + '- Lo que escribes se publica con la pieza: lo gobiernan las mismas reglas de esta marca que'
+    + ' gobiernan el título y el cuerpo —idioma, tratamiento, tono, prohibiciones—.\n'
+    + '- No cambies, corrijas ni traduzcas ninguna palabra de los titulares ni de la pieza.\n\n'
+    + `LÁMINAS:\n${laminas}\n\n`
+    + `TEXTO DE LA PIEZA:\n${input.piece_text}`;
+}
+
+// La cifra de un porcentaje («37 %», «12,5%») como número; null si el valor no es un porcentaje.
+function percentOf(value: string): number | null {
+  const m = /(\d+(?:[.,]\d+)?)\s*%/.exec(value);
+  if (!m) return null;
+  const n = Number(m[1].replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * El plan de láminas tal como lo promete el contrato: una entrada por lámina PEDIDA, en su orden,
+ * con las seis claves (null lo que no vino o no sobrevivió). `null` si la respuesta no trae
+ * `slides` como lista: eso es un plan ilegible, no un plan vacío. Lo podado se dice en `dropped`:
+ * `#i: …` para una entrada entera y `nN.campo: …` para un campo de la lámina N.
+ */
+function normalizeSlidePlan(
+  raw: Record<string, unknown> | null, input: SlidePassInput, ctaOptions: string[],
+): { slides: SlidePlanEntry[]; dropped: string[] } | null {
+  if (!raw || !Array.isArray((raw as any).slides)) return null;
+  const pieza = literalKey(input.piece_text);
+  const porN = new Map(input.slides.map(s => [s.n, s] as [number, SlidePassSlide]));
+  const dropped: string[] = [];
+  const hechos = new Map<number, SlidePlanEntry>();
+  ((raw as any).slides as unknown[]).forEach((e, i) => {
+    const n = (e as any)?.n;
+    if (!e || typeof e !== 'object' || Array.isArray(e) || !Number.isInteger(n)) { dropped.push(`#${i}: SHAPE`); return; }
+    const lamina = porN.get(n);
+    if (!lamina) { dropped.push(`#${i}: UNKNOWN_SLIDE`); return; }
+    if (hechos.has(n)) { dropped.push(`#${i}: DUPLICATE_SLIDE`); return; }
+    const o = e as Record<string, unknown>;
+    const poda = (campo: string, motivo: string) => { dropped.push(`n${n}.${campo}: ${motivo}`); };
+    const texto = (x: unknown) => (typeof x === 'string' ? x.replace(/\s+/g, ' ').trim() : '');
+
+    let eyebrow: string | null = null;
+    if (o.eyebrow !== undefined && o.eyebrow !== null) {
+      const t = texto(o.eyebrow);
+      if (!t) poda('eyebrow', 'SHAPE');
+      else if (Array.from(t).length > SLIDE_EYEBROW_MAX_CHARS) poda('eyebrow', 'TOO_LONG');
+      else eyebrow = t;
+    }
+
+    let keyword: string | null = null;
+    if (o.keyword !== undefined && o.keyword !== null) {
+      const t = texto(o.keyword);
+      const titular = literalKey(lamina.headline);
+      if (!t) poda('keyword', 'SHAPE');
+      else if (t.split(' ').length > SLIDE_KEYWORD_MAX_WORDS) poda('keyword', 'TOO_LONG');
+      else if (!titular.includes(literalKey(t))) poda('keyword', 'NOT_IN_HEADLINE');
+      else if (literalKey(t) === titular) poda('keyword', 'IS_HEADLINE');
+      else keyword = t;
+    }
+
+    let figure: SlideFigure | null = null;
+    if (o.figure !== undefined && o.figure !== null) {
+      const f = o.figure as any;
+      const value = texto(f?.value);
+      const source = texto(f?.source);
+      if (typeof f !== 'object' || Array.isArray(f) || !value || !source || !/\d/.test(value)) poda('figure', 'SHAPE');
+      else if (!pieza.includes(literalKey(value))) poda('figure', 'VALUE_NOT_IN_TEXT');
+      else if (!pieza.includes(literalKey(source))) poda('figure', 'SOURCE_NOT_IN_TEXT');
+      else {
+        let bar: { from: number; to: number } | null = null;
+        if (f.bar !== undefined && f.bar !== null) {
+          const pct = percentOf(value);
+          const from = f.bar?.from, to = f.bar?.to;
+          if (pct === null || pct < 0 || pct > 100) poda('figure.bar', 'NOT_PERCENT');
+          else if (typeof from !== 'number' || typeof to !== 'number' || from < 0 || to > 100 || from > to) poda('figure.bar', 'OUT_OF_RANGE');
+          else if (Math.abs(to - pct) > 1e-6) poda('figure.bar', 'NOT_FROM_VALUE');
+          else bar = { from, to };
+        }
+        figure = { value, bar, source };
+      }
+    }
+
+    let steps: SlideStep[] | null = null;
+    if (o.steps !== undefined && o.steps !== null) {
+      const lista = o.steps as unknown;
+      const forma = Array.isArray(lista) && lista.every(p => p && typeof p === 'object' && !Array.isArray(p)
+        && texto((p as any).text) && ((p as any).critical === undefined || typeof (p as any).critical === 'boolean'));
+      if (!forma) poda('steps', 'SHAPE');
+      else if ((lista as unknown[]).length < SLIDE_STEPS_MIN || (lista as unknown[]).length > SLIDE_STEPS_MAX) poda('steps', 'COUNT');
+      else {
+        let criticos = 0;
+        steps = (lista as any[]).map(p => {
+          const critico = p.critical === true && criticos === 0;
+          if (p.critical === true) criticos++;
+          return { text: texto(p.text), critical: critico };
+        });
+        if (criticos > 1) poda('steps', 'CRITICAL_PRUNED');
+      }
+    }
+
+    let cta: string | null = null;
+    if (o.cta !== undefined && o.cta !== null) {
+      const t = texto(o.cta);
+      const opcion = ctaOptions.find(op => literalKey(op).toLowerCase() === literalKey(t).toLowerCase());
+      if (lamina.role !== 'closing') poda('cta', 'NOT_CLOSING');
+      else if (!ctaOptions.length) poda('cta', 'NO_OPTIONS');
+      else if (!opcion) poda('cta', 'NOT_IN_OPTIONS');
+      else cta = opcion;   // el texto de la OPCIÓN, tal como está en el dato
+    }
+
+    hechos.set(n, { n, eyebrow, keyword, figure, steps, cta });
+  });
+  const slides = input.slides.map(s => {
+    const hecho = hechos.get(s.n);
+    if (!hecho) dropped.push(`n${s.n}: MISSING`);
+    return hecho ?? { n: s.n, eyebrow: null, keyword: null, figure: null, steps: null, cta: null };
+  });
+  return { slides, dropped };
 }
 
 // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
@@ -2354,6 +2728,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   learned_corrections_count: number;
   format_pass: boolean;
   image_pass: ImagePassInput | null;
+  alt_pass: { source: AltSource; image_url: string } | null;
+  slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
+  // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
+  user_image_url: string | null;
 }> {
   const brandId = req.brandId ?? 'DEFAULT';
   const pack    = req.params.pack ?? 'social_post_pack';
@@ -2374,6 +2752,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   let formatPass: { piece_text: string } | null = null;
   // F2 · pasada de imágenes — misma lectura temprana, y tampoco convive con las otras dos tareas.
   let imagePass: ImagePassInput | null = null;
+  // F2/F3 · pasadas del alt y de láminas — misma lectura temprana. Ninguna convive con otra pasada
+  // ni con la reparación: cada una es una tarea distinta con su propia respuesta.
+  let altPass: AltPassInput | null = null;
+  let altSource: AltSource | null = null;
+  let slidePass: SlidePassInput | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -2400,6 +2783,20 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     if (imagePass && repair) {
       throw new CopyLabRequestError('COPYLAB_IMAGE_PASS_WITH_REPAIR: builder_input trae image_pass y repair a la vez — son dos tareas distintas');
     }
+    altPass = normalizeAltPass(bi.alt_pass);
+    slidePass = normalizeSlidePass(bi.slide_pass);
+    const otrasTareas: Array<[string, boolean]> = [
+      ['format_pass', !!formatPass], ['image_pass', !!imagePass], ['repair', !!repair],
+    ];
+    for (const [propia, presente] of [['alt_pass', !!altPass], ['slide_pass', !!slidePass]] as Array<[string, boolean]>) {
+      if (!presente) continue;
+      const otra = otrasTareas.find(([, p]) => p);
+      if (otra) {
+        throw new CopyLabRequestError(`COPYLAB_${propia.toUpperCase()}_WITH_${otra[0].toUpperCase()}: builder_input trae ${propia} y ${otra[0]} a la vez — son dos tareas distintas`);
+      }
+      otrasTareas.push([propia, true]);
+    }
+    if (altPass) altSource = resolveAltSource(COPYLAB_PROVIDER_ACCEPTS_IMAGES, altPass);
   }
 
   const isEmailSeq       = pack.startsWith('email_sequence');
@@ -2759,6 +3156,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // CTA por canal_block_id (A2·a). UI / sin canal → cta_smpc. cta_ads sale de aquí.
   const ctaField  = getCTAFieldForCanal(canalBlockId ?? '');
   const ctaActive = getActiveCTA(ctaList as any[], ctaField, brand?.cta_base ?? '');
+  // F2/F3 · pasada de láminas — las opciones de CTA salen de las MISMAS fuentes que el ## CTA ACTIVO
+  // (`ctas` + `brands.cta_base`), con la columna de la superficie de esta pieza primero. Sólo se
+  // calculan cuando hay pasada de láminas: sin ella, nada cambia.
+  const slideCtaOptions = slidePass ? collectCtaOptions(ctaList as any[], ctaField, brand?.cta_base, idioma) : [];
   if (ctaActive) layers.push(`## CTA ACTIVO\n${ctaActive}`);
 
   if (complianceRules.length) {                                       // ## COMPLIANCE (hard primero, numerado)
@@ -2916,6 +3317,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
     userInstruction = formatPass
       ? buildFormatPassInstruction(formatPass.piece_text, languageDirective.label)
+      : altPass && altSource
+      ? buildAltPassInstruction(altPass, altSource, languageDirective.label)
+      : slidePass
+      ? buildSlidePassInstruction(slidePass, slideCtaOptions, languageDirective.label)
       : imagePass
       ? buildImagePassInstruction(imagePass.piece_text, imagePass.max_images, languageDirective.label)
       : repair
@@ -2947,7 +3352,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // default por destino exacto si nadie declaró. La pieza corta la garantiza el PRESUPUESTO del
     // prompt; esto es lo que evita que una pieza bien planificada muera a dos palabras del final.
     // F1 · pasada de formato — el plan es corto; el techo de generación no aplica. Ídem F2.
-    max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : imagePass ? IMAGE_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
+    max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : imagePass ? IMAGE_PASS_MAX_TOKENS
+      : altPass ? ALT_PASS_MAX_TOKENS : slidePass ? SLIDE_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
@@ -2996,6 +3402,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     learned_corrections_count: learnedCorrections.length,
     format_pass: !!formatPass,
     image_pass: imagePass,
+    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url } : null,
+    slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
+    user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
 }
 
@@ -3191,6 +3600,9 @@ export async function callClaude(
   system: string,
   user: string,
   maxTokens = 1600,
+  // F2/F3 · pasada del alt — la imagen que el modelo tiene que MIRAR. Va por URL: la API de Mensajes
+  // la descarga ella misma. Ausente ⇒ el user viaja como texto, byte-idéntico a antes.
+  imageUrl: string | null = null,
 ): Promise<{ text: string; usage: ClaudeUsage }> {
   // La clave se resuelve ANTES de la llamada: si falta, la llamada paga no se hizo, y el error
   // sale como Error a secas (no ProviderCallError) — `provider_called: false`.
@@ -3214,7 +3626,12 @@ export async function callClaude(
         // any non-default sampling value with a 400.
         thinking: { type: 'disabled' },
         system,
-        messages: [{ role: 'user', content: user }],
+        messages: [{
+          role: 'user',
+          content: imageUrl
+            ? [{ type: 'image', source: { type: 'url', url: imageUrl } }, { type: 'text', text: user }]
+            : user,
+        }],
       }),
     });
   } catch (err) {
@@ -3316,8 +3733,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} — calling Claude`);
-    const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} alt_pass=${built.alt_pass ? built.alt_pass.source : 'no'} slide_pass=${built.slide_pass ? built.slide_pass.input.slides.length : 'no'} — calling Claude`);
+    const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens, built.user_image_url);
     usoDeLaLlamada = usage;
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
@@ -3348,6 +3765,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         status: 'ok', image_plan: normalizado.plan, usage,
         meta: { ...metaImagen, image_plan_dropped: normalizado.dropped },
+      });
+    }
+    // F2/F3 · pasada del alt — la respuesta es UN alt de lo que se ve. Inservible (sin JSON, vacío o
+    // largo) ⇒ 422 con nombre propio y con el consumo: el carril conserva el alt del plan.
+    if (carril && built.alt_pass) {
+      const metaAlt = {
+        alt_pass: true, alt_source: built.alt_pass.source,
+        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      };
+      const { alt, reason } = normalizeAltResult(extractJsonObject(output));
+      if (!alt) {
+        console.error(`[CopyLab][F3-ALT] COPYLAB_ALT_UNUSABLE brand=${body.brandId} reason=${reason} — ${output.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_ALT_UNUSABLE', reason, raw: output.slice(0, 600), usage, meta: metaAlt });
+      }
+      return res.status(200).json({ status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length } });
+    }
+    // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
+    // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
+    if (carril && built.slide_pass) {
+      const metaLaminas = {
+        slide_pass: true, slides_requested: built.slide_pass.input.slides.length,
+        cta_options_count: built.slide_pass.cta_options.length,
+        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      };
+      const normalizado = normalizeSlidePlan(extractJsonObject(output), built.slide_pass.input, built.slide_pass.cta_options);
+      if (!normalizado) {
+        console.error(`[CopyLab][F3-SLIDES] COPYLAB_SLIDE_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_SLIDE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaLaminas });
+      }
+      return res.status(200).json({
+        status: 'ok', slides: normalizado.slides, usage,
+        meta: { ...metaLaminas, dropped: normalizado.dropped },
       });
     }
     if (carril) {
