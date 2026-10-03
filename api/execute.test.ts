@@ -1325,7 +1325,7 @@ async function run() {
     assert(/nunca 0/.test(u) && /de 2 a 4/.test(u), 'la entrada va antes del primer subtítulo; de 2 a 4 secciones');
     assert(/a DOS párrafos o más/.test(u) && /N-1, N ni N\+1/.test(u), 'la cita no va pegada a su párrafo de origen');
     assert(!/MATERIA PRIMA/.test(u), 'no es una generación: no hay materia prima');
-    assert(!/\b(Devolvé|devolvelo|Cerrala|Respondé|escribí)\b/.test(u), 'sin voseo');
+    assert(!/(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|escribí)(?!\p{L})/u.test(u), 'sin voseo');
   });
 
   await test('F1·FORMATO·pure extractJsonObject: objeto suelto o en bloque de código; lo demás, null', () => {
@@ -1425,7 +1425,7 @@ async function run() {
     assert(/LITERAL/.test(u), 'focus copiado literal');
     assert(/mismas reglas de esta marca que gobiernan el título y el cuerpo/.test(u), 'las reglas de marca del system aplican al alt');
     assert(!/MATERIA PRIMA/.test(u), 'no es una generación');
-    assert(!/\b(Devolvé|devolvelo|Cerrala|Respondé|escribí|Elegí|usá)\b/.test(u), 'sin voseo');
+    assert(!/(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|escribí|Elegí|usá)(?!\p{L})/u.test(u), 'sin voseo');
     for (const nombre of ['ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'meta_fb', 'shopify', 'vercel'])
       assert(!u.includes(nombre), `la instrucción no nombra ${nombre}`);
   });
@@ -2946,7 +2946,8 @@ async function run() {
     const u = String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair(REPARACION), 1000));
     assertOrdered(u, [fmt, 'REPARACIÓN DIRIGIDA', 'MÍNIMO', 'PIEZA A REPARAR', PIEZA, 'QUÉ INCUMPLE', '[HR-GEN-01]', VIOLACIONES[0].instruction, '[HR-UNRLVL-03]', VIOLACIONES[1].instruction]);
     assert(u.includes('No reescribas lo que ya cumple'), 'la orden que impide que la segunda pasada rompa las 17 que cumplía');
-    assert(u.includes('Cerrala completa'), 'y la que impide que vuelva truncada');
+    assert(u.includes('Ciérrala completa'), 'y la que impide que vuelva truncada');
+    assert(!/(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|escribí|Elegí|usá)(?!\p{L})/u.test(u), 'sin voseo: el imperativo voseante es homógrafo del pretérito');
     // El presupuesto de G1-D sigue vigente: reparar no puede ser crecer.
     assert(u.includes('~1000 caracteres'), 'el presupuesto viaja también en la instrucción de reparación');
     assert(!String(PURE.buildRepairInstruction(fmt, PURE.normalizeRepair(REPARACION), null)).includes('presupuesto'),

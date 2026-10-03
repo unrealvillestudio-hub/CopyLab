@@ -1046,15 +1046,15 @@ function buildRepairInstruction(
   const bloques = repair.violations.map(v => `[${v.code}]\n${v.instruction}`).join('\n\n');
   return `${formatBlock}\n\n`
     + 'TAREA — REPARACIÓN DIRIGIDA (no es una pieza nueva):\n'
-    + 'Esta pieza ya está escrita y cumple todo salvo lo listado. Devolvé la pieza COMPLETA'
+    + 'Esta pieza ya está escrita y cumple todo salvo lo listado. Devuelve la pieza COMPLETA'
     + ' corregida, cambiando lo MÍNIMO necesario para cumplir cada código listado. No reescribas lo'
-    + ' que ya cumple. Cerrala completa.'
+    + ' que ya cumple. Ciérrala completa.'
     + tituloRegla
     + presupuesto
     + `\n\nPIEZA A REPARAR (íntegra, tal como se publicaría):\n${repair.piece_text}`
     + `\n\nQUÉ INCUMPLE (${repair.violations.length}) — una por bloque, cada una tiene que quedar`
     + ` cumplida:\n${bloques}`
-    + '\n\nDevolvé SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
+    + '\n\nDevuelve SOLO la pieza corregida completa, en el formato de arriba. Sin preámbulos, sin'
     + ' explicar qué cambiaste y sin nombrar los códigos dentro del texto.';
 }
 
