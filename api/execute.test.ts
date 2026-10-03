@@ -1798,6 +1798,9 @@ async function run() {
     assert(con.endsWith(`TEXTO DE LA PIEZA:\n${SP_PIECE}`), 'la pieza íntegra al final');
     assert(con.includes('1. «Agende a consulta do seu pet»') && con.includes('2. «Fale com a nossa equipe»'), 'las opciones del dato, numeradas');
     assert(/SÓLO en la lámina de cierre/.test(con) && /ni con escasez ni con urgencia/.test(con), 'cta sólo en el cierre, sin presión');
+    assert(/descarta toda opción que incumpla alguna regla de esta marca/.test(con) && /Que la opción venga de la marca no la exime/.test(con) && /Si todas incumplen, cta = null/.test(con),
+      'las opciones del dato también pasan por las reglas de la marca (opción b de Sam, 2026-10-03)');
+    assert(!/descarta toda opción/.test(sin), 'sin opciones, no hay nada que descartar');
     assert(/siempre null/.test(sin) && !sin.includes('«'), 'sin opciones: cta null y ningún CTA escrito por el código');
     assert(con.includes('(português do Brasil)') && con.includes(`${PURE.SLIDE_EYEBROW_MAX_CHARS} caracteres o menos`), 'eyebrow en el idioma de la marca y con su tope');
     assert(/LITERAL/.test(con) && /Nunca inventes, redondees ni conviertas/.test(con), 'keyword literal y cifras nunca inventadas');

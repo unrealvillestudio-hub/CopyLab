@@ -1476,7 +1476,14 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
   const reglaCta = ctaOptions.length
     ? '- cta: SÓLO en la lámina de cierre ("closing"); en las demás, null. Copia LITERAL una de estas'
       + ' opciones de llamada a la acción de la marca, la que mejor cierre esta pieza; si ninguna encaja,'
-      + ' null. Nunca escribas una llamada a la acción propia, ni con escasez ni con urgencia:\n'
+      + ' null. Nunca escribas una llamada a la acción propia, ni con escasez ni con urgencia.'
+      // F3 (Sam, 2026-10-03, opción b): una opción del DATO no queda exenta de las reglas de la marca.
+      // Medido: el cierre de 85517171 eligió «… AHORA» de las opciones de su marca. Las reglas viven en el
+      // system (mismo que la generación); acá sólo se declara que también filtran las opciones.
+      + ' Antes de elegir, descarta toda opción que incumpla alguna regla de esta marca del system: en'
+      + ' particular la presión de compra por urgencia (un apremio de tiempo: «ahora», «hoy», «ya» y sus'
+      + ' equivalentes en el idioma de la pieza) o por escasez. Que la opción venga de la marca no la'
+      + ' exime. Si todas incumplen, cta = null:\n'
       + ctaOptions.map((o, i) => `  ${i + 1}. «${o}»`).join('\n') + '\n'
     : '- cta: siempre null. Esta marca no tiene opciones de llamada a la acción declaradas, y no se'
       + ' escribe una propia.\n';
