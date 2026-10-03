@@ -1775,8 +1775,10 @@ async function run() {
 
   await test('F3·LÁMINAS·pure collectCtaOptions: las opciones son DATO — superficie primero, idioma de la pieza, sin URLs ni duplicados', () => {
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_story', 'Visite a clínica', 'pt')),
-      JSON.stringify(['Fale com a nossa equipe', 'Agende a consulta do seu pet', 'Visite a clínica']),
-      'la columna de la superficie primero, luego las demás, cta_base al final; sin la URL ni el duplicado ni la fila en otro idioma');
+      JSON.stringify(['Agende a consulta do seu pet', 'Visite a clínica']),
+      'cta_story (gesto de deslizar) y cta_ads (rótulo de botón) no sirven en un cierre de carrusel; sin la URL ni la fila en otro idioma');
+    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'A', cta_seo: 'B', cta_story: 'Deslize', cta_ads: 'Botão', cta_ultrashort: 'Já' }], 'cta_seo', null, 'pt')),
+      JSON.stringify(['B', 'A']), 'la columna de la superficie va primero cuando sirve en un cierre; gesto y botón, nunca');
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_smpc', '', 'es')), JSON.stringify(['Reserva la cita de tu mascota']),
       'en otro idioma, sólo la fila de ese idioma');
     eq(JSON.stringify(PURE.collectCtaOptions([{ cta_smpc: 'Sem idioma declarado' }], 'cta_smpc', null, 'pt')), '["Sem idioma declarado"]',
@@ -1910,7 +1912,7 @@ async function run() {
       eq(r._out._json.slides[0].cta, null, 'en la portada no');
       eq(r._out._json.meta.slide_pass, true, 'el eco');
       eq(r._out._json.meta.slides_requested, 4, 'cuántas se pidieron');
-      eq(r._out._json.meta.cta_options_count, 3, 'opciones del idioma de la pieza: smpc, story, cta_base (sin URL, sin duplicado, sin la fila en otro idioma)');
+      eq(r._out._json.meta.cta_options_count, 2, 'opciones del idioma de la pieza: smpc y cta_base (sin story ni ads, que no sirven en un cierre; sin URL, sin la fila en otro idioma)');
       assert(r._out._json.meta.dropped.includes('n1.cta: NOT_CLOSING') && r._out._json.meta.dropped.includes('n3: MISSING'), 'lo podado viaja');
       eq(r._out._json.usage.output_tokens, 140, 'el consumo');
       eq(fx.claudeBodies[0]?.max_tokens, PURE.SLIDE_PASS_MAX_TOKENS, 'el techo de la pasada');
@@ -1928,7 +1930,7 @@ async function run() {
       const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({}) }));
       eq(sp.system, gen.system, 'mismo system');
       eq(gen.slide_pass, null, 'sin la clave, sin encargo');
-      eq(sp.slide_pass?.cta_options.length, 3, 'el encargo con sus opciones');
+      eq(sp.slide_pass?.cta_options.length, 2, 'el encargo con sus opciones');
       eq(sp.user_image_url, null, 'sin imagen');
     } finally { fx.restore(); }
   });
