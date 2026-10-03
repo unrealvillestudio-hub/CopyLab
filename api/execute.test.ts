@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1588,6 +1588,70 @@ async function run() {
   // casa (para JS sin `u`, «é» no es carácter de palabra) y el control pasaría en verde con voseo.
   const VOSEO = /(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|Escribí|escribí|Elegí|Usá|usá|Describí|Copiá|Inventá|Cambiá|Corregí|Traducí|Proponé|Nombrá|Mirá|Poné|tenés|podés|querés|sabés|escribís|cambiás|repetís|sos|vos)(?!\p{L})/u;
   const MARCAS = ['ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'D7Herbal', 'DiamondDetails', 'PatriciaOsorio', 'VivoseMask', 'Vizos', 'VetMar'];
+
+  // ── F2 · el plan de imágenes no elige como foco una ENUMERACIÓN (propuesta aceptada, 2026-10-03) ──
+  // Defecto medido: un foco que enumeraba términos («…en los pesos, en las activaciones, en la
+  // política…») hizo que el generador pintara esos términos como texto en dos tiradas. Pieza de la
+  // clínica veterinaria inventada, en portugués.
+  const VM_IP_PIECE = [
+    'A clínica abre às sete da manhã.',                                                        // [0]
+    'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.',             // [1]
+    '## O que o exame procura',                                                                // [2]
+    'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.', // [3]
+    'Os resultados chegam no fim da tarde.',                                                   // [4]
+    'A tutora leva o cachorro para casa no colo.',                                             // [5]
+    'Amanhã, nova consulta.',                                                                  // [6]
+  ].join('\n\n');
+  const VM_ALT = 'Veterinária examina um cachorro sobre uma mesa de aço';
+
+  await test('F2·IMÁGENES·pure isEnumerationFocus: anáfora o términos sueltos en racha de 3; una escena no', () => {
+    eq(PURE.IMAGE_FOCUS_LIST_RUN, 3, 'racha que define una enumeración');
+    eq(PURE.IMAGE_FOCUS_TERM_MAX_WORDS, 2, 'un término suelto tiene 2 palabras o menos');
+    const enumeran = [
+      'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.',   // anáfora «no…» ×3
+      'hemograma / ALT / creatinina / ureia',                                                    // términos sueltos con barra
+      'Vacinas; vermífugos; antipulgas',                                                         // punto y coma
+      'raiva · cinomose · parvovirose',                                                          // punto medio
+      '血液、組織、病歴',                                                                           // escritura sin espacios
+    ];
+    for (const f of enumeran) eq(PURE.isEnumerationFocus(f), true, `enumera: ${f}`);
+    const escenas = [
+      'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.',
+      'Em 48 horas, não em semanas, não em meses, o gato voltou a comer.',     // anáfora de 2: no poda
+      'Gatos, cães e coelhos esperam na recepção.',                             // 1 término suelto y una frase
+      'Ração, água, e um cobertor ficam ao lado da maca.',                      // 2 sueltos seguidos: no poda
+      'O peso subiu de 4,2 para 4,8 e depois 5,1 quilos.',                      // la coma decimal no corta
+      'A dose de 1/2 comprimido, depois 1/4, depois nada.',                     // la barra entre cifras no corta
+      'A clínica abre às sete da manhã.',
+      '',
+    ];
+    for (const f of escenas) eq(PURE.isEnumerationFocus(f), false, `no enumera: ${f}`);
+  });
+
+  await test('F2·IMÁGENES·pure normalizeImagePlan: el foco que enumera se poda con FOCUS_IS_LIST, antes de la separación', () => {
+    const r = PURE.normalizeImagePlan({ images: [
+      { after: 1, focus: 'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.', alt: VM_ALT },
+      { after: 3, focus: 'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.', alt: VM_ALT },
+      { after: 4, focus: 'A tutora leva o cachorro para casa no colo.', alt: 'Tutora carrega um cachorro no colo' },
+    ] }, VM_IP_PIECE, 3);
+    eq(JSON.stringify(r.plan.map((e: any) => e.after)), '[1,4]', 'las escenas pasan');
+    // La #1 está a 2 bloques de la #0: si la poda del foco corriera después de la separación, el
+    // motivo diría TOO_CLOSE y escondería la causa real.
+    eq(JSON.stringify(r.dropped), JSON.stringify(['#1: FOCUS_IS_LIST']), 'la enumeración se dice con su motivo');
+    const sola = PURE.normalizeImagePlan({ images: [{ after: 3, focus: 'no sangue, no tecido, no histórico', alt: VM_ALT }] }, VM_IP_PIECE, 3);
+    eq(sola.plan.length, 0, 'un plan con sólo la enumeración queda vacío, no ilegible');
+    eq(sola.dropped.join(','), '#0: FOCUS_IS_LIST', 'con su motivo');
+  });
+
+  await test('F2·IMÁGENES·pure la instrucción pide una escena visible y prohíbe el foco que enumera', () => {
+    const u = String(PURE.buildImagePassInstruction(VM_IP_PIECE, 2, 'português do Brasil'));
+    assert(/ESCENA visible/.test(u) && /personas, un lugar, una acción o un objeto/.test(u), 'el foco es una escena');
+    assert(/enumere términos/.test(u) && /siglas/.test(u) && /etiquetas/.test(u) && /nombres de capas/.test(u), 'nunca una lista de términos');
+    assert(/pinta como texto/.test(u), 'dice por qué');
+    assert(!VOSEO.test(u), 'sin voseo');
+    for (const nombre of MARCAS) assert(!u.includes(nombre), `la instrucción no nombra ${nombre}`);
+  });
+
 
   await test('F3·ALT·pure normalizeAltPass: ausente = null; sin URL https corta con 400 y nombre propio', () => {
     eq(PURE.normalizeAltPass(undefined), null, 'ausente');

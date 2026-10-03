@@ -1205,7 +1205,11 @@ function buildImagePassInstruction(pieceText: string, maxImages: number, languag
     + ' ">"): ni justo antes ni justo después. Entre dos imágenes, '
     + `${IMAGE_MIN_GAP_BLOCKS} bloques o más: si una va tras [N], la siguiente va tras [N+${IMAGE_MIN_GAP_BLOCKS}] o más adelante.\n`
     + '- focus: copia LITERAL, carácter por carácter, una oración completa del bloque "after" o de la'
-    + ' sección que la imagen ilustra. Es lo que la imagen tiene que mostrar.\n'
+    + ' sección que la imagen ilustra. Es lo que la imagen tiene que mostrar, así que elige una oración'
+    + ' que describa una ESCENA visible: personas, un lugar, una acción o un objeto concreto. Nunca una'
+    + ' oración que enumere términos, nombres de capas o de herramientas, siglas o etiquetas: el'
+    + ' generador de imagen las pinta como texto y la imagen se rechaza. Si el bloque sólo tiene'
+    + ' oraciones de ese tipo, elige otro bloque o pon menos imágenes.\n'
     + `- alt: el texto alternativo de la imagen, en el idioma de la pieza (${languageLabel}), de`
     + ` ${IMAGE_ALT_MAX_CHARS} caracteres o menos. Describe la escena que se ve; no repite el título ni un`
     + ' subtítulo, no afirma beneficios, resultados ni eficacia, y no menciona texto dentro de la imagen'
@@ -1222,11 +1226,54 @@ function literalKey(s: string): string {
   return String(s ?? '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// ── El foco que ENUMERA (propuesta aceptada por Sam, 2026-10-03) ──
+//
+// POR QUÉ EXISTE: el foco es lo que el generador de imagen tiene que mostrar. Cuando el foco es una
+// enumeración de términos («…en los pesos, en las activaciones, en la política…»), el generador los
+// pinta como TEXTO y el juez rechaza la imagen. Medido sobre los 51 focos reales del barrido F2
+// (28 piezas): dos focos de este tipo, y los dos produjeron texto pintado con sus propios términos
+// —uno rechazado en sus dos tiradas, el otro en la primera—. Los otros 49 no tienen la forma.
+//
+// EL CRITERIO es de FORMA, sin vocabulario de ningún idioma: se corta el foco en ítems por los
+// separadores de lista (coma, punto y coma, barra, punto medio, viñeta, barra vertical y sus
+// equivalentes de otras escrituras; un separador entre dos cifras no corta: «9,566», «1/2») y las
+// palabras se cuentan con el segmentador de Unicode, que también sirve para escrituras sin espacios.
+// El foco enumera si tiene una de estas dos rachas:
+//   - ANÁFORA: IMAGE_FOCUS_LIST_RUN ítems seguidos que empiezan con la misma palabra («en…, en…, en…»).
+//   - TÉRMINOS SUELTOS: IMAGE_FOCUS_LIST_RUN ítems seguidos de IMAGE_FOCUS_TERM_MAX_WORDS palabras o
+//     menos («pesos / activaciones / política»).
+// Medido en los 51 focos: la racha máxima de un foco que no enumera es 2 en las dos medidas.
+const IMAGE_FOCUS_LIST_RUN = 3;
+const IMAGE_FOCUS_TERM_MAX_WORDS = 2;
+const IMAGE_FOCUS_LIST_SEPARATOR = /(?<!\d)[,;/·•|،、，；]|[,;/·•|،、，；](?!\d)/u;
+
+function focusWords(s: string): string[] {
+  const out: string[] = [];
+  for (const w of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(s)) {
+    if (w.isWordLike) out.push(w.segment.toLocaleLowerCase());
+  }
+  return out;
+}
+
+/** `true` si el foco tiene forma de enumeración (ver arriba). Pura e independiente del idioma. */
+function isEnumerationFocus(focus: string): boolean {
+  const items = String(focus ?? '').split(IMAGE_FOCUS_LIST_SEPARATOR).map(focusWords).filter(w => w.length > 0);
+  let anafora = 1;
+  let sueltos = 0;
+  for (let i = 0; i < items.length; i++) {
+    sueltos = items[i].length <= IMAGE_FOCUS_TERM_MAX_WORDS ? sueltos + 1 : 0;
+    anafora = i > 0 && items[i][0] === items[i - 1][0] ? anafora + 1 : 1;
+    if (sueltos >= IMAGE_FOCUS_LIST_RUN || anafora >= IMAGE_FOCUS_LIST_RUN) return true;
+  }
+  return false;
+}
+
 /**
  * El plan de imágenes tal como lo promete el contrato. `null` si la respuesta no trae la forma
  * mínima (`images` como lista): eso es un plan ilegible, no un plan vacío. Cada entrada que
  * incumple una regla se descarta con su motivo, en este orden: forma, alt, rango de `after`,
- * subtítulo, cita, `focus` literal, separación y tope. Lo que queda va ordenado por `after`.
+ * subtítulo, cita, `focus` literal, `focus` que enumera, separación y tope. Lo que queda va
+ * ordenado por `after`.
  */
 function normalizeImagePlan(
   raw: Record<string, unknown> | null, pieceText: string, maxImages: number,
@@ -1246,6 +1293,7 @@ function normalizeImagePlan(
     if (IMAGE_HEADING_BLOCK.test(bloques[after])) { dropped.push(`#${i}: AFTER_HEADING`); return; }
     if (isQuoteBlock(bloques[after]) || isQuoteBlock(bloques[after + 1])) { dropped.push(`#${i}: NEXT_TO_QUOTE`); return; }
     if (!texto.includes(literalKey(focus))) { dropped.push(`#${i}: FOCUS_NOT_LITERAL`); return; }
+    if (isEnumerationFocus(literalKey(focus))) { dropped.push(`#${i}: FOCUS_IS_LIST`); return; }
     validas.push({ i, after, focus, alt });
   });
   const plan: ImagePlanEntry[] = [];
