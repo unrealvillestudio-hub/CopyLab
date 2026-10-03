@@ -1376,9 +1376,13 @@ const SLIDE_EYEBROW_MAX_CHARS = 28;
 const SLIDE_KEYWORD_MAX_WORDS = 4;
 const SLIDE_STEPS_MIN = 2;
 const SLIDE_STEPS_MAX = 5;
-// Las columnas de texto de `public.ctas` (esquema medido el 2026-10-03). Son el EJE —qué superficie
-// pide la llamada a la acción—, no el vocabulario de una marca: el texto de cada una es dato.
-const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_story', 'cta_seo', 'cta_ultrashort', 'cta_ads', 'cta_spot', 'cta_ab1', 'cta_ab2'];
+// Las columnas de texto de `public.ctas` (esquema medido el 2026-10-03) que sirven en la lámina de
+// cierre de un carrusel. Son el EJE —qué superficie pide la llamada a la acción—, no el vocabulario de
+// una marca: el texto de cada una es dato. Quedan FUERA por su función, no por su texto: `cta_story`
+// (nombra el gesto de deslizar de una historia; en la última lámina no queda nada que deslizar),
+// `cta_ads` y `cta_ultrashort` (rótulos de botón: en una imagen nada se puede tocar). Medido el
+// 2026-10-03: el cierre de 85517171 salió con «DESLIZA PARA COMPRAR», de `cta_story`.
+const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_seo', 'cta_spot', 'cta_ab1', 'cta_ab2'];
 const CTA_OPTIONS_MAX = 8;
 
 interface SlidePassSlide { n: number; role: SlideRole; headline: string; subheadline: string | null }
@@ -1444,7 +1448,10 @@ function collectCtaOptions(ctas: any[] | null | undefined, preferredField: strin
     const propio = primaryLanguageTag(r.idioma);
     return !propio || !idioma || propio === idioma;
   });
-  const campos = [preferredField, ...CTA_OPTION_FIELDS.filter(f => f !== preferredField)];
+  // La columna de la superficie de la pieza va primero SÓLO si sirve en un cierre de carrusel.
+  const campos = CTA_OPTION_FIELDS.includes(preferredField)
+    ? [preferredField, ...CTA_OPTION_FIELDS.filter(f => f !== preferredField)]
+    : [...CTA_OPTION_FIELDS];
   const candidatos: unknown[] = [];
   for (const campo of campos) for (const fila of filas) candidatos.push((fila as any)[campo]);
   candidatos.push(brandCtaBase);
