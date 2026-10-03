@@ -66,7 +66,7 @@ export const maxDuration = 300;
  *       una se escribe con su fuente NOMBRADA en el texto ("según Convert"), nunca con la URL.
  *       Eso es la "procedencia declarada" que pide HR-UNRLVL-01 (kind proof).
  *     · `buildWritingMaterialBlock` (puro) inyecta mecanismo y caso concreto entre las
- *       restricciones, con instrucción CONSTRUCTIVA — desarrollá, ilustrá — no una prohibición más.
+ *       restricciones, con instrucción CONSTRUCTIVA — desarrolla, ilustra — no una prohibición más.
  *     · cualquier campo ausente ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy. Modo UI intacto.
  *
  * A1 · CAMBIO 8 (2026-08-18) — las CIFRAS dejan de ser palabra del modelo:
@@ -663,8 +663,8 @@ function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): s
     + `Escribe la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
     + ' alcanzar ni un límite del que convenga quedarse lejos: es el espacio TOTAL que tienes,'
     + ' cierre incluido.\n\n'
-    + 'Planificá antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
-    + ' Si el material no entra, achicá el ALCANCE —un caso en vez de dos, un ángulo en vez de'
+    + 'Planifica antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
+    + ' Si el material no entra, reduce el ALCANCE —un caso en vez de dos, un ángulo en vez de'
     + ' tres, una idea desarrollada en vez de tres enunciadas—, nunca el cierre ni la última'
     + ' frase. Una pieza que termina a media frase es el fallo que este presupuesto existe para'
     + ' impedir: vale más decir menos y cerrarlo, que decirlo todo y quedar cortado.';
@@ -1205,7 +1205,11 @@ function buildImagePassInstruction(pieceText: string, maxImages: number, languag
     + ' ">"): ni justo antes ni justo después. Entre dos imágenes, '
     + `${IMAGE_MIN_GAP_BLOCKS} bloques o más: si una va tras [N], la siguiente va tras [N+${IMAGE_MIN_GAP_BLOCKS}] o más adelante.\n`
     + '- focus: copia LITERAL, carácter por carácter, una oración completa del bloque "after" o de la'
-    + ' sección que la imagen ilustra. Es lo que la imagen tiene que mostrar.\n'
+    + ' sección que la imagen ilustra. Es lo que la imagen tiene que mostrar, así que elige una oración'
+    + ' que describa una ESCENA visible: personas, un lugar, una acción o un objeto concreto. Nunca una'
+    + ' oración que enumere términos, nombres de capas o de herramientas, siglas o etiquetas: el'
+    + ' generador de imagen las pinta como texto y la imagen se rechaza. Si el bloque sólo tiene'
+    + ' oraciones de ese tipo, elige otro bloque o pon menos imágenes.\n'
     + `- alt: el texto alternativo de la imagen, en el idioma de la pieza (${languageLabel}), de`
     + ` ${IMAGE_ALT_MAX_CHARS} caracteres o menos. Describe la escena que se ve; no repite el título ni un`
     + ' subtítulo, no afirma beneficios, resultados ni eficacia, y no menciona texto dentro de la imagen'
@@ -1222,11 +1226,54 @@ function literalKey(s: string): string {
   return String(s ?? '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// ── El foco que ENUMERA (propuesta aceptada por Sam, 2026-10-03) ──
+//
+// POR QUÉ EXISTE: el foco es lo que el generador de imagen tiene que mostrar. Cuando el foco es una
+// enumeración de términos («…en los pesos, en las activaciones, en la política…»), el generador los
+// pinta como TEXTO y el juez rechaza la imagen. Medido sobre los 51 focos reales del barrido F2
+// (28 piezas): dos focos de este tipo, y los dos produjeron texto pintado con sus propios términos
+// —uno rechazado en sus dos tiradas, el otro en la primera—. Los otros 49 no tienen la forma.
+//
+// EL CRITERIO es de FORMA, sin vocabulario de ningún idioma: se corta el foco en ítems por los
+// separadores de lista (coma, punto y coma, barra, punto medio, viñeta, barra vertical y sus
+// equivalentes de otras escrituras; un separador entre dos cifras no corta: «9,566», «1/2») y las
+// palabras se cuentan con el segmentador de Unicode, que también sirve para escrituras sin espacios.
+// El foco enumera si tiene una de estas dos rachas:
+//   - ANÁFORA: IMAGE_FOCUS_LIST_RUN ítems seguidos que empiezan con la misma palabra («en…, en…, en…»).
+//   - TÉRMINOS SUELTOS: IMAGE_FOCUS_LIST_RUN ítems seguidos de IMAGE_FOCUS_TERM_MAX_WORDS palabras o
+//     menos («pesos / activaciones / política»).
+// Medido en los 51 focos: la racha máxima de un foco que no enumera es 2 en las dos medidas.
+const IMAGE_FOCUS_LIST_RUN = 3;
+const IMAGE_FOCUS_TERM_MAX_WORDS = 2;
+const IMAGE_FOCUS_LIST_SEPARATOR = /(?<!\d)[,;/·•|،、，；]|[,;/·•|،、，；](?!\d)/u;
+
+function focusWords(s: string): string[] {
+  const out: string[] = [];
+  for (const w of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(s)) {
+    if (w.isWordLike) out.push(w.segment.toLocaleLowerCase());
+  }
+  return out;
+}
+
+/** `true` si el foco tiene forma de enumeración (ver arriba). Pura e independiente del idioma. */
+function isEnumerationFocus(focus: string): boolean {
+  const items = String(focus ?? '').split(IMAGE_FOCUS_LIST_SEPARATOR).map(focusWords).filter(w => w.length > 0);
+  let anafora = 1;
+  let sueltos = 0;
+  for (let i = 0; i < items.length; i++) {
+    sueltos = items[i].length <= IMAGE_FOCUS_TERM_MAX_WORDS ? sueltos + 1 : 0;
+    anafora = i > 0 && items[i][0] === items[i - 1][0] ? anafora + 1 : 1;
+    if (sueltos >= IMAGE_FOCUS_LIST_RUN || anafora >= IMAGE_FOCUS_LIST_RUN) return true;
+  }
+  return false;
+}
+
 /**
  * El plan de imágenes tal como lo promete el contrato. `null` si la respuesta no trae la forma
  * mínima (`images` como lista): eso es un plan ilegible, no un plan vacío. Cada entrada que
  * incumple una regla se descarta con su motivo, en este orden: forma, alt, rango de `after`,
- * subtítulo, cita, `focus` literal, separación y tope. Lo que queda va ordenado por `after`.
+ * subtítulo, cita, `focus` literal, `focus` que enumera, separación y tope. Lo que queda va
+ * ordenado por `after`.
  */
 function normalizeImagePlan(
   raw: Record<string, unknown> | null, pieceText: string, maxImages: number,
@@ -1246,6 +1293,7 @@ function normalizeImagePlan(
     if (IMAGE_HEADING_BLOCK.test(bloques[after])) { dropped.push(`#${i}: AFTER_HEADING`); return; }
     if (isQuoteBlock(bloques[after]) || isQuoteBlock(bloques[after + 1])) { dropped.push(`#${i}: NEXT_TO_QUOTE`); return; }
     if (!texto.includes(literalKey(focus))) { dropped.push(`#${i}: FOCUS_NOT_LITERAL`); return; }
+    if (isEnumerationFocus(literalKey(focus))) { dropped.push(`#${i}: FOCUS_IS_LIST`); return; }
     validas.push({ i, after, focus, alt });
   });
   const plan: ImagePlanEntry[] = [];
@@ -1271,8 +1319,10 @@ function normalizeImagePlan(
 // escena con la que se generó (`scene`) es la mejor aproximación disponible, y el meta lo dice
 // (`alt_source`) para que nadie confunda un alt deducido de la escena con uno mirado.
 //
-// Mismo reparto que las otras pasadas: MISMO system que la generación (las reglas de marca gobiernan
-// el alt sin copiarlas aquí), techo propio y respuesta en JSON leída con `extractJsonObject`.
+// Mismo reparto que las otras pasadas: el system de la generación (las reglas de marca gobiernan el
+// alt sin copiarlas aquí), techo propio y respuesta en JSON leída con `extractJsonObject`. Desde el
+// 2026-10-03 ese system viaja SIN las capas que sólo sirven para escribir (ver `capaDeContenido`
+// en buildPrompt): toda capa que trae una regla de marca sigue, íntegra y en el mismo orden.
 const ALT_PASS_MAX_TOKENS = 300;
 // La escena es el prompt completo del generador de imagen: puede ser larga y sólo es contexto.
 const ALT_PASS_SCENE_MAX_CHARS = 2000;
@@ -1373,6 +1423,11 @@ const SLIDE_PASS_CONTRACT_MAX_SLIDES = 20;
 const SLIDE_ROLES = ['cover', 'body', 'closing'] as const;
 type SlideRole = typeof SLIDE_ROLES[number];
 const SLIDE_EYEBROW_MAX_CHARS = 28;
+// La maqueta v4 rotula cada lámina con su TEMA en una o dos palabras («El clima», «La diferencia»).
+// Medido el 2026-10-03, segunda vuelta del barrido: aun con la regla escrita, el modelo devolvió
+// «Cierre: paso siguiente», «Apertura: el síntoma», «La solución del mercado». Dos podas que no
+// dependen de juicio ni de idioma: más de 3 palabras, o un rótulo partido con dos puntos.
+const SLIDE_EYEBROW_MAX_WORDS = 3;
 const SLIDE_KEYWORD_MAX_WORDS = 4;
 const SLIDE_STEPS_MIN = 2;
 const SLIDE_STEPS_MAX = 5;
@@ -1382,7 +1437,10 @@ const SLIDE_STEPS_MAX = 5;
 // (nombra el gesto de deslizar de una historia; en la última lámina no queda nada que deslizar),
 // `cta_ads` y `cta_ultrashort` (rótulos de botón: en una imagen nada se puede tocar). Medido el
 // 2026-10-03: el cierre de 85517171 salió con «DESLIZA PARA COMPRAR», de `cta_story`.
-const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_seo', 'cta_spot', 'cta_ab1', 'cta_ab2'];
+// `cta_seo` también queda fuera por su función: es la frase de búsqueda de la marca, no una llamada a
+// la acción. Medido el 2026-10-03 en las 8 marcas con esa columna llena: frases sin verbo dirigido al
+// lector («TINTES PROFESIONALES MIAMI», «CERAMIC PREMIUM FINISH»); el cierre de ea5a269b eligió una.
+const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_spot', 'cta_ab1', 'cta_ab2'];
 const CTA_OPTIONS_MAX = 8;
 
 interface SlidePassSlide { n: number; role: SlideRole; headline: string; subheadline: string | null }
@@ -1477,6 +1535,10 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     ? '- cta: SÓLO en la lámina de cierre ("closing"); en las demás, null. Copia LITERAL una de estas'
       + ' opciones de llamada a la acción de la marca, la que mejor cierre esta pieza; si ninguna encaja,'
       + ' null. Nunca escribas una llamada a la acción propia, ni con escasez ni con urgencia.'
+      // Medido el 2026-10-03: entre las opciones del dato hay lemas y frases de búsqueda sin verbo
+      // («COLOR THAT TRANSFORMS», «MEJOR PROTECCIÓN»). En el cierre, eso no le pide nada al lector.
+      + ' Sólo vale una opción que le pide al lector una acción, con un verbo dirigido a él; un lema,'
+      + ' una afirmación o una frase de búsqueda no es una llamada a la acción.'
       // F3 (Sam, 2026-10-03, opción b): una opción del DATO no queda exenta de las reglas de la marca.
       // Medido: el cierre de 85517171 eligió «… AHORA» de las opciones de su marca. Las reglas viven en el
       // system (mismo que la generación); acá sólo se declara que también filtran las opciones.
@@ -1500,9 +1562,16 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     + `- keyword: UNA palabra o expresión corta (hasta ${SLIDE_KEYWORD_MAX_WORDS} palabras) copiada LITERAL,`
     + ' carácter por carácter, del titular de ESA lámina: la que carga el sentido. Como mucho una por'
     + ' lámina, y nunca el titular entero.\n'
-    + `- eyebrow: etiqueta corta (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra la FUNCIÓN de`
-    + ` la lámina dentro del carrusel (el dato, la causa, el paso siguiente…), en el idioma de la marca`
-    + ` (${languageLabel}). No repite el titular.\n`
+    + `- eyebrow: rótulo de 1 a ${SLIDE_EYEBROW_MAX_WORDS} palabras (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra el`
+    + ` TEMA de esa lámina, lo que el lector encuentra en ella, como el rótulo de una sección ("El clima",`
+    + ` "La diferencia"), en el idioma de la marca (${languageLabel}). No repite el titular.`
+    // Medido el 2026-10-03 (barrido F3): «Dato clave del carrusel», «El contexto adversario», «El
+    // cierre», «Cierre: paso siguiente». La etiqueta se publica: se escribe para quien lee, no para quien
+    // planificó el carrusel.
+    + ' La lee el público: nunca nombra el papel de la lámina en la estructura (apertura, dato, causa,'
+    + ' solución, cierre, llamada), ni el formato ni sus partes (carrusel, lámina, portada), ni usa el'
+    + ' vocabulario del método con que se escribió la pieza; sin dos puntos. Si no hay un rótulo que le'
+    + ' diga algo al lector, null.\n'
     + '- figure: SÓLO si en el TEXTO DE LA PIEZA aparecen, literales, una cifra Y la fuente que la'
     + ' sostiene, nombrada. "value" copia la cifra tal como aparece; "source" copia el nombre de la'
     + ' fuente tal como aparece. "bar" sólo si la cifra es un porcentaje entre 0 y 100, y entonces'
@@ -1556,6 +1625,8 @@ function normalizeSlidePlan(
       const t = texto(o.eyebrow);
       if (!t) poda('eyebrow', 'SHAPE');
       else if (Array.from(t).length > SLIDE_EYEBROW_MAX_CHARS) poda('eyebrow', 'TOO_LONG');
+      else if (t.split(' ').length > SLIDE_EYEBROW_MAX_WORDS) poda('eyebrow', 'TOO_MANY_WORDS');
+      else if (t.includes(':')) poda('eyebrow', 'STRUCTURE');
       else eyebrow = t;
     }
 
@@ -1843,7 +1914,7 @@ function buildClaimsBlock(
 // Las reglas del Watcher ya se inyectan —HR-UNRLVL-01 y HR-GEN-08 entre ellas— y se violan igual,
 // porque decirle a un generador "no enuncies sin ilustrar" no le da CON QUÉ ilustrar. Este bloque
 // es lo otro: el mecanismo (cómo funciona el asunto por dentro) y un caso concreto del memo, con
-// su fuente. Instrucción CONSTRUCTIVA a propósito — desarrollá, ilustrá — y no una prohibición más.
+// su fuente. Instrucción CONSTRUCTIVA a propósito — desarrolla, ilustra — y no una prohibición más.
 //
 // Cualquiera de los dos puede faltar: se emite lo que haya. Sin ninguno ⇒ null ⇒ sin bloque, y el
 // prompt queda exactamente como hoy. El caso se exige DISTINTO del que abre la pieza: repetir el
@@ -1864,7 +1935,7 @@ function buildWritingMaterialBlock(
   const mech = String(mechanism ?? '').trim();
   if (mech) {
     parts.push(`MECANISMO (cómo funciona el asunto por dentro):\n${mech}\n`
-      + 'Desarrollalo en la pieza: los pasos, o la relación causal — qué provoca qué y por qué. Es'
+      + 'Desarrolla el mecanismo en la pieza: los pasos, o la relación causal — qué provoca qué y por qué. Es'
       + ' lo que separa una afirmación de una explicación, y es lo que la pieza tiene que dejar'
       + ' entendido.');
   }
@@ -1880,7 +1951,7 @@ function buildWritingMaterialBlock(
       .map((c, i) => `${i + 1}. [${c.source_name}] ${c.case} (${c.source_url})`)
       .join('\n');
     const comoUsarlos = casos.length >= 2
-      ? 'Usá el PRIMERO para abrir: es el caso con el que entrás. Usá el SEGUNDO más adelante, para'
+      ? 'Usa el PRIMERO para abrir: es el caso con el que entras. Usa el SEGUNDO más adelante, para'
         + ' mostrar que el patrón se repite — no basta con que algo haya pasado una vez. Cada uno con'
         + ' su especificidad y nombrando su fuente citable en el texto. No ilustres con el mismo caso'
         + ' con el que abriste: eso no ilustra, repite.'
@@ -1977,7 +2048,7 @@ const AUDIENCE_CTA: Record<AudienceFrame, string> = {
     + ' (contactar, agendar, cotizar, contratar, "nuestros servicios", "estamos para ayudarte").'
     + ' Ofrecerle comprar a quien no puede comprar es fallo del frente. El único cierre válido es lo'
     + ' que ese lector debe EXIGIR o recomendar donde sí tiene poder: ante quien decide, en la'
-    + ' instancia que decide, con su voto o dentro de su ámbito. Cerrá dándole esa exigencia formulada,'
+    + ' instancia que decide, con su voto o dentro de su ámbito. Cierra dándole esa exigencia formulada,'
     + ' no una invitación a comprar.',
   general:
     'Audiencia MIXTA: entre tus lectores hay quien firma y quien no, y la pieza no sabe cuál la está'
@@ -2742,7 +2813,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   learned_corrections_count: number;
   format_pass: boolean;
   image_pass: ImagePassInput | null;
-  alt_pass: { source: AltSource; image_url: string } | null;
+  // `layers_omitted`: cuántas capas de contenido NO viajaron en el system del alt (ver `capaDeContenido`).
+  alt_pass: { source: AltSource; image_url: string; layers_omitted: number } | null;
   slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
   // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
   user_image_url: string | null;
@@ -3107,6 +3179,19 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // A2·b — orden de capas alineado con buildCopyPrompt (una sola gramática):
   //   contexto → restricciones → ángulo creativo → forma de salida → instrucción.
   const layers: string[] = [];
+  // F2/F3 · COSTO DEL ALT (2026-10-03). Medido en `public.ops_generation_ledger`: la pasada del alt
+  // mandaba el system COMPLETO de la generación, y su entrada media (≈18,6 mil tokens, 42 llamadas)
+  // era casi la del plan de imágenes; la salida, ≈47 tokens. Lo caro no era el alt: era el system.
+  // Las capas que aquí entran con `capaDeContenido` sólo sirven para ESCRIBIR una pieza (objetivos,
+  // geo, keywords, CTA activo, mecanismo y casos, salidas anteriores, psico-estímulo, eje, motor
+  // creativo y forma de salida) y no traen ninguna prohibición. En la pasada del alt no se envían.
+  // Toda capa que trae una regla de marca sigue yendo íntegra y en el mismo orden, aunque también
+  // sirva para escribir: idioma, marca, audiencia (sus «Evitar»), canal, voz, compliance, copy
+  // profile, genoma, reglas del Watcher, correcciones aprendidas, cifras citables (lista cerrada),
+  // oferta (sus «No afirmar») y política de CTA. En cualquier otra tarea, el system queda byte a
+  // byte como antes.
+  const capasDeContenido = new Set<number>();
+  const capaDeContenido = (capa: string) => { capasDeContenido.add(layers.length); layers.push(capa); };
 
   // ── IDIOMA — PRIMERO Y ÚLTIMO ─────────────────────────────────────────────
   // FIX-LANG-01. Antes esta capa era la 4.ª de ~28 y las ~24 que la seguían están
@@ -3124,7 +3209,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   layers.push(buildBrandBlock(brand));                                  // ## MARCA
 
   const goalsBlock = buildGoalsBlock(goalsList as any[]);
-  if (goalsBlock) layers.push(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
+  if (goalsBlock) capaDeContenido(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
 
   const personasBlock = buildPersonasBlock(personasList as any[]);
   if (personasBlock) layers.push(personasBlock);                       // ## SEGMENTOS OBJETIVO (ICP)
@@ -3161,10 +3246,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   }
 
   const geomixBlock = buildGeomixBlock(geomixRow);
-  if (geomixBlock) layers.push(geomixBlock);                          // ## GEOMIX (omitido si no hay fila)
+  if (geomixBlock) capaDeContenido(geomixBlock);                          // ## GEOMIX (omitido si no hay fila)
 
   const keywordsBlock = buildKeywordsBlock(kwList as any[]);
-  if (keywordsBlock) layers.push(keywordsBlock);                      // ## KEYWORDS (prioridad≤3 + grupo_3)
+  if (keywordsBlock) capaDeContenido(keywordsBlock);                      // ## KEYWORDS (prioridad≤3 + grupo_3)
 
   // ── RESTRICCIONES ─────────────────────────────────────────────────────────
   // CTA por canal_block_id (A2·a). UI / sin canal → cta_smpc. cta_ads sale de aquí.
@@ -3174,7 +3259,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // (`ctas` + `brands.cta_base`), con la columna de la superficie de esta pieza primero. Sólo se
   // calculan cuando hay pasada de láminas: sin ella, nada cambia.
   const slideCtaOptions = slidePass ? collectCtaOptions(ctaList as any[], ctaField, brand?.cta_base, idioma) : [];
-  if (ctaActive) layers.push(`## CTA ACTIVO\n${ctaActive}`);
+  if (ctaActive) capaDeContenido(`## CTA ACTIVO\n${ctaActive}`);
 
   if (complianceRules.length) {                                       // ## COMPLIANCE (hard primero, numerado)
     layers.push(`## COMPLIANCE — REGLAS OBLIGATORIAS\n` + complianceRules.map((r, i) => `${i + 1}. ${r}`).join('\n'));
@@ -3188,7 +3273,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (learnedCorrectionsBlock) layers.push(learnedCorrectionsBlock);   // cómo se corrigieron antes, en esta voz
   if (claimsBlock)       layers.push(claimsBlock);        // las cifras que SÍ se pueden escribir
-  if (writingMaterialBlock) layers.push(writingMaterialBlock);   // y con qué desarrollarlas
+  if (writingMaterialBlock) capaDeContenido(writingMaterialBlock);   // y con qué desarrollarlas
   if (offerBlock) layers.push(offerBlock);                       // y hacia qué llevarlas
   if (audienceCtaBlock)  layers.push(audienceCtaBlock);
 
@@ -3199,7 +3284,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     ([lab]) => !['brandContext', 'last_creative_vector', 'sp_pool'].includes(lab)
   );
   if (prevEntries.length) {
-    layers.push(`OUTPUTS ANTERIORES:\n${prevEntries.map(([l, o]) => `[${l.toUpperCase()}]: ${String(o).slice(0, 300)}`).join('\n')}`);
+    capaDeContenido(`OUTPUTS ANTERIORES:\n${prevEntries.map(([l, o]) => `[${l.toUpperCase()}]: ${String(o).slice(0, 300)}`).join('\n')}`);
   }
 
   if (isEmailSeq && seqContext) {
@@ -3213,20 +3298,20 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
     if (seqContext.spPool) seqLayers.push(seqContext.spPool);
     if (meta.psycho_presets?.length) seqLayers.push(`PSYCHO PRESETS (en arquitectura, no en copy): ${meta.psycho_presets.join(', ')}`);
-    layers.push(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
+    capaDeContenido(`EMAIL SEQUENCE CONTEXT:\n${seqLayers.join('\n\n')}`);
   }
 
   if (psychoInjection) {
-    layers.push(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
+    capaDeContenido(`PSICO-ESTÍMULO [${bi?.psycho_preset}] (en arquitectura, no en superficie):\n${psychoInjection}`);
   }
 
   // ── ÁNGULO CREATIVO ───────────────────────────────────────────────────────
   if (bi && bi.angle && bi.angle.trim()) {
-    layers.push(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
+    capaDeContenido(`EJE ESTRUCTURAL:\n${bi.angle.trim()}`);
   }
-  if (vector) layers.push(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
-  if (tension) layers.push(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
-  if (aggro)   layers.push(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
+  if (vector) capaDeContenido(`## L14 CREATIVE VECTOR [${vector.id} · ${vector.label}]\nAplica este vector de apertura. No lo nombres — ejecútalo.\n${vector.instruction}`);
+  if (tension) capaDeContenido(`## L15 TENSION ARCHITECTURE [${tension.id} · ${tension.label}]\nCurva: ${tension.curve}\n${tension.instruction}`);
+  if (aggro)   capaDeContenido(`## L16 AGGRO DIAL [${aggro.id} · ${aggro.label}]\n${aggro.instruction}\n\nANTI-HEDGING:\n${aggro.anti_hedging}\n\nEl objetivo es la conversión. El copy sirve a ese objetivo sin disculparse por ello.`);
 
   // ── FORMA DE SALIDA (último bloque antes de la instrucción) ────────────────
   // G1-D — cuánto ESPACIO tiene la pieza es forma de salida, igual que el template: va en esta
@@ -3236,12 +3321,12 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // La FORMA declarada por la marca va primero; el presupuesto, que es quien manda sobre el espacio,
   // va después. Ver `buildFormatInstructionBlock` sobre por qué el orden no es indiferente.
   const formatInstructionBlock = bi ? buildFormatInstructionBlock(bi.format_instruction) : null;
-  if (formatInstructionBlock) layers.push(formatInstructionBlock);    // ## FORMATO DECLARADO
+  if (formatInstructionBlock) capaDeContenido(formatInstructionBlock);    // ## FORMATO DECLARADO
 
   const declaredCeiling = readDeclaredMaxTokens(bi?.max_tokens);
   const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling);
   const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
-  if (lengthBudgetBlock) layers.push(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
+  if (lengthBudgetBlock) capaDeContenido(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
 
   // BRIEF 8 · A — la sección ## TÍTULO va en la misma banda de FORMA DE SALIDA y DESPUÉS del
   // presupuesto de longitud: primero cuánto espacio tiene la pieza, después qué clase de frase la
@@ -3252,9 +3337,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // prompt de siempre, byte a byte: el bloque de diálogo no se empuja y el de título no cambia.
   const imageTitleMode = bi ? readImageTitleMode(bi.image_title_mode) : 'echo';
   if (bi && imageTitleMode === 'dialogue') {
-    layers.push(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
+    capaDeContenido(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
   }
-  if (bi) layers.push(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
+  if (bi) capaDeContenido(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
 
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
@@ -3280,13 +3365,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     if (templateVarsUnresolvedCompliance.length) {
       console.error(`[CopyLab][COMPLIANCE] template ${outputTemplate.id} (${outputTemplate.name}) — variable(s) de cumplimiento SIN valor, se inyectan vacías (${brandId} no las tiene): ${templateVarsUnresolvedCompliance.join(', ')}`);
     }
-    layers.push(`## TEMPLATE DE OUTPUT [${outputTemplate.name}]\n${filledTemplate}`);
+    capaDeContenido(`## TEMPLATE DE OUTPUT [${outputTemplate.name}]\n${filledTemplate}`);
   }
 
   const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
     : bcShape === 'context_json' ? 'context_json_per_slice'
     : 'no_cache';
-  const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${layers.join('\n\n---\n\n')}`;
+  const capasDelSystem = altPass ? layers.filter((_, i) => !capasDeContenido.has(i)) : layers;
+  const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${capasDelSystem.join('\n\n---\n\n')}`;
 
   let userInstruction: string;
   if (isEmailSeq) {
@@ -3416,7 +3502,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     learned_corrections_count: learnedCorrections.length,
     format_pass: !!formatPass,
     image_pass: imagePass,
-    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url } : null,
+    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size } : null,
     slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
     user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
@@ -3787,6 +3873,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const metaAlt = {
         alt_pass: true, alt_source: built.alt_pass.source,
         voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+        // El tamaño del system que se pagó, y cuántas capas de contenido no viajaron: sin los dos, el
+        // ahorro no se puede leer contra el ledger (`inline_image_alt` frente a `inline_image_plan`).
+        system_chars: built.system.length, layers_omitted: built.alt_pass.layers_omitted,
       };
       const { alt, reason } = normalizeAltResult(extractJsonObject(output));
       if (!alt) {

@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1589,6 +1589,69 @@ async function run() {
   const VOSEO = /(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|Escribí|escribí|Elegí|Usá|usá|Describí|Copiá|Inventá|Cambiá|Corregí|Traducí|Proponé|Nombrá|Mirá|Poné|tenés|podés|querés|sabés|escribís|cambiás|repetís|sos|vos)(?!\p{L})/u;
   const MARCAS = ['ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'D7Herbal', 'DiamondDetails', 'PatriciaOsorio', 'VivoseMask', 'Vizos', 'VetMar'];
 
+  // ── F2 · el plan de imágenes no elige como foco una ENUMERACIÓN (propuesta aceptada, 2026-10-03) ──
+  // Defecto medido: un foco que enumeraba términos («…en los pesos, en las activaciones, en la
+  // política…») hizo que el generador pintara esos términos como texto en dos tiradas. Pieza de la
+  // clínica veterinaria inventada, en portugués.
+  const VM_IP_PIECE = [
+    'A clínica abre às sete da manhã.',                                                        // [0]
+    'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.',             // [1]
+    '## O que o exame procura',                                                                // [2]
+    'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.', // [3]
+    'Os resultados chegam no fim da tarde.',                                                   // [4]
+    'A tutora leva o cachorro para casa no colo.',                                             // [5]
+    'Amanhã, nova consulta.',                                                                  // [6]
+  ].join('\n\n');
+  const VM_ALT = 'Veterinária examina um cachorro sobre uma mesa de aço';
+
+  await test('F2·IMÁGENES·pure isEnumerationFocus: anáfora o términos sueltos en racha de 3; una escena no', () => {
+    eq(PURE.IMAGE_FOCUS_LIST_RUN, 3, 'racha que define una enumeración');
+    eq(PURE.IMAGE_FOCUS_TERM_MAX_WORDS, 2, 'un término suelto tiene 2 palabras o menos');
+    const enumeran = [
+      'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.',   // anáfora «no…» ×3
+      'hemograma / ALT / creatinina / ureia',                                                    // términos sueltos con barra
+      'Vacinas; vermífugos; antipulgas',                                                         // punto y coma
+      'raiva · cinomose · parvovirose',                                                          // punto medio
+      '血液、組織、病歴',                                                                           // escritura sin espacios
+    ];
+    for (const f of enumeran) eq(PURE.isEnumerationFocus(f), true, `enumera: ${f}`);
+    const escenas = [
+      'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.',
+      'Em 48 horas, não em semanas, não em meses, o gato voltou a comer.',     // anáfora de 2: no poda
+      'Gatos, cães e coelhos esperam na recepção.',                             // 1 término suelto y una frase
+      'Ração, água, e um cobertor ficam ao lado da maca.',                      // 2 sueltos seguidos: no poda
+      'O peso subiu de 4,2 para 4,8 e depois 5,1 quilos.',                      // la coma decimal no corta
+      'A dose de 1/2 comprimido, depois 1/4, depois nada.',                     // la barra entre cifras no corta
+      'A clínica abre às sete da manhã.',
+      '',
+    ];
+    for (const f of escenas) eq(PURE.isEnumerationFocus(f), false, `no enumera: ${f}`);
+  });
+
+  await test('F2·IMÁGENES·pure normalizeImagePlan: el foco que enumera se poda con FOCUS_IS_LIST, antes de la separación', () => {
+    const r = PURE.normalizeImagePlan({ images: [
+      { after: 1, focus: 'A veterinária examina o cachorro sobre a mesa de aço, com a tutora ao lado.', alt: VM_ALT },
+      { after: 3, focus: 'O diagnóstico olha em quatro lugares: no sangue, no tecido, no histórico, no prontuário.', alt: VM_ALT },
+      { after: 4, focus: 'A tutora leva o cachorro para casa no colo.', alt: 'Tutora carrega um cachorro no colo' },
+    ] }, VM_IP_PIECE, 3);
+    eq(JSON.stringify(r.plan.map((e: any) => e.after)), '[1,4]', 'las escenas pasan');
+    // La #1 está a 2 bloques de la #0: si la poda del foco corriera después de la separación, el
+    // motivo diría TOO_CLOSE y escondería la causa real.
+    eq(JSON.stringify(r.dropped), JSON.stringify(['#1: FOCUS_IS_LIST']), 'la enumeración se dice con su motivo');
+    const sola = PURE.normalizeImagePlan({ images: [{ after: 3, focus: 'no sangue, no tecido, no histórico', alt: VM_ALT }] }, VM_IP_PIECE, 3);
+    eq(sola.plan.length, 0, 'un plan con sólo la enumeración queda vacío, no ilegible');
+    eq(sola.dropped.join(','), '#0: FOCUS_IS_LIST', 'con su motivo');
+  });
+
+  await test('F2·IMÁGENES·pure la instrucción pide una escena visible y prohíbe el foco que enumera', () => {
+    const u = String(PURE.buildImagePassInstruction(VM_IP_PIECE, 2, 'português do Brasil'));
+    assert(/ESCENA visible/.test(u) && /personas, un lugar, una acción o un objeto/.test(u), 'el foco es una escena');
+    assert(/enumere términos/.test(u) && /siglas/.test(u) && /etiquetas/.test(u) && /nombres de capas/.test(u), 'nunca una lista de términos');
+    assert(/pinta como texto/.test(u), 'dice por qué');
+    assert(!VOSEO.test(u), 'sin voseo');
+    for (const nombre of MARCAS) assert(!u.includes(nombre), `la instrucción no nombra ${nombre}`);
+  });
+
   await test('F3·ALT·pure normalizeAltPass: ausente = null; sin URL https corta con 400 y nombre propio', () => {
     eq(PURE.normalizeAltPass(undefined), null, 'ausente');
     eq(PURE.normalizeAltPass(null), null, 'null');
@@ -1663,6 +1726,8 @@ async function run() {
       eq(r._out._json.meta.alt_source, 'image', 'con visión, la imagen es la fuente');
       eq(r._out._json.meta.alt_chars, 53, 'el largo del alt, en caracteres');
       eq(r._out._json.usage.input_tokens, 900, 'el consumo viaja para que el carril lo asiente');
+      eq(r._out._json.meta.system_chars, fx.claudeBodies[0]?.system?.length, 'el tamaño del system que se pagó');
+      assert(Number.isInteger(r._out._json.meta.layers_omitted), 'y cuántas capas de contenido no viajaron');
       assert(!('body' in r._out._json) && !('image_plan' in r._out._json), 'ni pieza ni plan');
       const body = fx.claudeBodies[0];
       eq(body?.max_tokens, PURE.ALT_PASS_MAX_TOKENS, 'el techo de la pasada');
@@ -1673,14 +1738,54 @@ async function run() {
     } finally { fx.restore(); }
   });
 
-  await test('F3·ALT·cableado: el MISMO system que la generación; sin la clave, el user sigue siendo texto', async () => {
+  // F2/F3 · costo del alt (2026-10-03): el system del alt es el de la generación SIN las capas que sólo
+  // sirven para escribir. Toda capa que trae una regla de marca sigue, íntegra y en el mismo orden.
+  const VM_FULL_BCTX = { brandContext: {
+    ...VM_BCTX.brandContext,
+    humanize_profiles: [{ tone: 'acolhedor', personality: 'calma', authenticity_rules: 'sem exageros', anti_patterns: ['alarmismo'] }],
+    brand_goals: [{ goal_text: 'Dobrar as consultas preventivas', priority: 1 }],
+    brand_personas: [{ label: 'Tutora de primeira viagem', pain_points: ['medo'], copy_hooks: ['gancho'], avoid: ['Prometer cura'] }],
+    compliance_rules: [{ rule_text: 'Nunca indicar medicamento sem consulta.', severity: 'hard' }],
+    keywords: [{ keyword: 'vacina para cães', prioridad: 1, grupo_3: 'g3' }],
+    brand_copy_profiles: [{ id: 'cp-vm', voice_tone_primary: 'acolhedor', compliance_prohibited_words: ['milagroso'] }],
+    creative_vectors: [{ id: 'VEC-VM', category: 'c', label: 'L', instruction: 'vetor-de-abertura', aggro_min: 1, aggro_max: 5 }],
+    tension_architectures: [{ id: 'TEN-VM', label: 'TL', instruction: 'curva-de-tensao', curve: 'cu' }],
+    aggro_presets: [{ id: 'AGGRO_2', level: 2, label: 'AL', instruction: 'aggro-vm', anti_hedging: 'ah' }],
+  } };
+  const vmFullBI = (extra: any) => vmBI({
+    destination: 'editorial', platform: 'blog', max_tokens: 4000, max_tokens_source: 'channel', title_budget_chars: 90,
+    rules: [{ code: 'R-N1-02', kind: 'prohibition', statement: 'x', instruction: 'Nunca use a palavra garantido.' }],
+    angle: 'eixo-da-peca', audience_frame: 'influye', mechanism: 'mecanismo-da-vacina',
+    claims: [{ claim: 'Cães vacinados', value: '9 em 10', source_url: 'https://fonte.example/a', source_name: 'Fonte VM' }],
+    offer_catalog: { items: [{ name: 'Plano Filhote', avoid_claims: ['Imunidade total'] }] },
+    ...extra,
+  });
+
+  await test('F3·ALT·cableado: el system del alt es el de la generación sin las capas de contenido; toda regla de marca sigue', async () => {
     const fx = vmFetch();
     try {
-      const regla = { code: 'R-N1-02', kind: 'prohibition', statement: 'x', instruction: 'Nunca use a palavra garantido.' };
-      const alt = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla], alt_pass: { image_url: VM_IMG } }) }));
-      const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla] }) }));
-      eq(alt.system, gen.system, 'mismo system: voz, idioma y reglas de la marca gobiernan el alt');
-      assert(alt.system.includes('Nunca use a palavra garantido.') && !alt.user.includes('garantido'), 'la regla está en el system, no copiada');
+      const alt = await buildPrompt(reqWith(VM_FULL_BCTX, { brandId: 'VetMar', builder_input: vmFullBI({ alt_pass: { image_url: VM_IMG } }) }));
+      const gen = await buildPrompt(reqWith(VM_FULL_BCTX, { brandId: 'VetMar', builder_input: vmFullBI({}) }));
+      const capas = (s: string) => s.split('\n\n---\n\n');
+      const deAlt = new Set(capas(alt.system));
+      // Las del alt son las de la generación, en el mismo orden: no hay ninguna capa nueva ni reordenada.
+      eq(JSON.stringify(capas(alt.system)), JSON.stringify(capas(gen.system).filter(c => deAlt.has(c))), 'subsecuencia ordenada');
+      const omitidas = capas(gen.system).filter(c => !deAlt.has(c));
+      eq(alt.alt_pass?.layers_omitted, omitidas.length, 'el eco dice cuántas no viajaron');
+      // Lo que sólo sirve para escribir no viaja.
+      for (const marca of ['OBJETIVOS ESTRATÉGICOS', '## KEYWORDS', '## CTA ACTIVO', 'mecanismo-da-vacina', 'eixo-da-peca',
+        'vetor-de-abertura', 'curva-de-tensao', 'aggro-vm', '## PRESUPUESTO DE LONGITUD', '## TÍTULO']) {
+        assert(gen.system.includes(marca), `la generación sí lleva ${marca}`);
+        assert(!alt.system.includes(marca), `el alt no lleva ${marca}`);
+      }
+      // Toda regla de marca sigue gobernando el alt: idioma (apertura y cierre), voz, compliance,
+      // copy profile, genoma, Watcher, audiencia, cifras, oferta y política de CTA.
+      eq(alt.system.split('## IDIOMA DE SAÍDA').length - 1, 2, 'idioma al abrir y al cerrar');
+      for (const regla of ['Nunca use a palavra garantido.', 'Nunca indicar medicamento sem consulta.', 'milagroso', 'prohibida-1',
+        'reg-prohibido', 'alarmismo', 'Prometer cura', '9 em 10', 'Imunidade total', 'PROHIBIDO todo CTA', '## MARCA: VetMar']) {
+        assert(alt.system.includes(regla), `el alt conserva «${regla}»`);
+      }
+      assert(!alt.user.includes('garantido'), 'la regla está en el system, no copiada en la tarea');
       eq(alt.user_image_url, VM_IMG, 'la imagen acompaña al user');
       eq(gen.user_image_url, null, 'sin la clave, nada de imagen');
       eq(gen.alt_pass, null, 'ni encargo');
@@ -1777,8 +1882,11 @@ async function run() {
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_story', 'Visite a clínica', 'pt')),
       JSON.stringify(['Agende a consulta do seu pet', 'Visite a clínica']),
       'cta_story (gesto de deslizar) y cta_ads (rótulo de botón) no sirven en un cierre de carrusel; sin la URL ni la fila en otro idioma');
-    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'A', cta_seo: 'B', cta_story: 'Deslize', cta_ads: 'Botão', cta_ultrashort: 'Já' }], 'cta_seo', null, 'pt')),
+    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'A', cta_spot: 'B', cta_story: 'Deslize', cta_ads: 'Botão', cta_ultrashort: 'Já' }], 'cta_spot', null, 'pt')),
       JSON.stringify(['B', 'A']), 'la columna de la superficie va primero cuando sirve en un cierre; gesto y botón, nunca');
+    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'Agende a consulta', cta_seo: 'CLÍNICA VETERINÁRIA SANTOS' }], 'cta_seo', null, 'pt')),
+      JSON.stringify(['Agende a consulta']), 'cta_seo es frase de búsqueda, no llamada a la acción: nunca es opción, ni siquiera como superficie de la pieza');
+    assert(!PURE.CTA_OPTION_FIELDS.includes('cta_seo'), 'el eje excluye cta_seo por su función');
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_smpc', '', 'es')), JSON.stringify(['Reserva la cita de tu mascota']),
       'en otro idioma, sólo la fila de ese idioma');
     eq(JSON.stringify(PURE.collectCtaOptions([{ cta_smpc: 'Sem idioma declarado' }], 'cta_smpc', null, 'pt')), '["Sem idioma declarado"]',
@@ -1803,10 +1911,26 @@ async function run() {
     assert(!/descarta toda opción/.test(sin), 'sin opciones, no hay nada que descartar');
     assert(/siempre null/.test(sin) && !sin.includes('«'), 'sin opciones: cta null y ningún CTA escrito por el código');
     assert(con.includes('(português do Brasil)') && con.includes(`${PURE.SLIDE_EYEBROW_MAX_CHARS} caracteres o menos`), 'eyebrow en el idioma de la marca y con su tope');
+    assert(/nombra el\s+TEMA de esa lámina/.test(con) && /nunca nombra el papel de la lámina en la estructura/.test(con)
+      && /ni el formato ni sus partes/.test(con) && /vocabulario del método/.test(con) && /sin dos puntos/.test(con),
+      'eyebrow: el tema de la lámina, escrito para quien lee (maqueta v4; barrido F3, 2026-10-03)');
+    assert(/Sólo vale una opción que le pide al lector una acción/.test(con) && /un lema,\s*una afirmación o una frase de búsqueda no es una llamada a la acción/.test(con),
+      'el cierre elige una instrucción, no un lema ni una frase de búsqueda');
+    assert(!/Sólo vale una opción/.test(sin), 'sin opciones, no hay nada que elegir');
     assert(/LITERAL/.test(con) && /Nunca inventes, redondees ni conviertas/.test(con), 'keyword literal y cifras nunca inventadas');
     assert(/de 2 a 5 pasos/.test(con) && /como mucho uno con "critical": true/.test(con), 'pasos acotados');
     assert(/No cambies, corrijas ni traduzcas/.test(con), 'titulares intactos');
     assert(/mismas reglas de esta marca/.test(con), 'las reglas de marca del system gobiernan lo nuevo');
+  });
+
+  await test('IDIOMA·el código de CopyLab no lleva voseo en ningún texto (2026-10-03)', () => {
+    // Medido el 2026-10-03: «Planificá», «achicá», «Desarrollalo», «Usá… entrás», «Cerrá» viajaban al
+    // modelo dentro de instrucciones fuera de los bloques nuevos. Lo que el modelo lee, lo imita: se
+    // revisa el archivo ENTERO, no sólo las instrucciones del bloque puro.
+    const fuente = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const VOSEO_AMPLIO = /(?<!\p{L})(Planificá|achicá|Desarrollalo|desarrollá|ilustrá|entrás|Cerrá|cerrá|Usá|usá|Escribí|escribí|Elegí|Devolvé|Respondé|tenés|podés|querés|sabés|sos|vos)(?!\p{L})/u;
+    const hallado = fuente.split('\n').map((l, i) => [i + 1, l] as const).filter(([, l]) => VOSEO_AMPLIO.test(l));
+    eq(JSON.stringify(hallado.map(([n]) => n)), '[]', `voseo en api/execute.ts: ${hallado.map(([n, l]) => `${n}: ${l.trim().slice(0, 80)}`).join(' | ')}`);
   });
 
   await test('F3·pure las instrucciones nuevas no nombran ninguna marca ni usan voseo', () => {
@@ -1855,6 +1979,8 @@ async function run() {
     const casos: Array<[any, string, string]> = [
       [{ n: 2, eyebrow: 'x'.repeat(29) }, 'eyebrow', 'n2.eyebrow: TOO_LONG'],
       [{ n: 2, eyebrow: '  ' }, 'eyebrow', 'n2.eyebrow: SHAPE'],
+      [{ n: 2, eyebrow: 'A solução do mercado' }, 'eyebrow', 'n2.eyebrow: TOO_MANY_WORDS'],
+      [{ n: 2, eyebrow: 'Fecho: próximo passo' }, 'eyebrow', 'n2.eyebrow: STRUCTURE'],
       [{ n: 2, keyword: 'vacina atrasada' }, 'keyword', 'n2.keyword: NOT_IN_HEADLINE'],
       [{ n: 2, keyword: 'Seis em cada dez tutores' }, 'keyword', 'n2.keyword: TOO_LONG'],
       [{ n: 1, keyword: 'adiam a vacina' }, 'keyword', 'n1.keyword: NOT_IN_HEADLINE'],   // está en el titular de OTRA lámina
