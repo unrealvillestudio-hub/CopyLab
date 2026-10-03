@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1712,6 +1712,75 @@ async function run() {
     eq(PURE.normalizeAltResult({ alt: 12 }).reason, 'EMPTY', 'no es texto');
     eq(PURE.normalizeAltResult({ texto: 'x' }).reason, 'UNPARSABLE', 'sin la clave');
     eq(PURE.normalizeAltResult(null).reason, 'UNPARSABLE', 'sin JSON');
+  });
+
+  // ── Paquete de alt (Sam, 2026-10-03): las dos pistas, con una marca inventada (VetMar) ──
+  await test('ALT-PACK·pure normalizeAltPass: keyword_hint y location son opcionales; un lugar ilegible es 400', () => {
+    const sin = PURE.normalizeAltPass({ image_url: VM_IMG });
+    eq(sin.keyword_hint, null, 'sin pista de palabra clave');
+    eq(sin.location, null, 'sin pista de lugar');
+    const con = PURE.normalizeAltPass({ image_url: VM_IMG, keyword_hint: '  vacina para cães\n ',
+      location: { name: ' Clínica do Porto ', city: ' Porto Alegre ', aliases: ['o porto', '', 7, 'a', 'b', 'c', 'd', 'e'] } });
+    eq(con.keyword_hint, 'vacina para cães', 'la palabra clave en una línea');
+    eq(JSON.stringify(con.location), JSON.stringify({ name: 'Clínica do Porto', city: 'Porto Alegre', aliases: ['o porto', 'a', 'b', 'c', 'd'] }), 'el lugar normalizado y acotado');
+    eq(Array.from(PURE.normalizeAltPass({ image_url: VM_IMG, keyword_hint: 'k'.repeat(300) }).keyword_hint).length, PURE.ALT_KEYWORD_HINT_MAX_CHARS + 1, 'palabra clave acotada (+ …)');
+    eq(PURE.normalizeAltPass({ image_url: VM_IMG, location: null }).location, null, 'location null = sin lugar');
+    for (const location of ['Porto Alegre', ['x'], { city: 'Porto Alegre' }, { name: '   ' }]) {
+      let msg = ''; let st: any = null;
+      try { PURE.normalizeAltPass({ image_url: VM_IMG, location }); } catch (e: any) { msg = e.message; st = e.http_status; }
+      assert(msg.includes('COPYLAB_ALT_PASS_MALFORMED'), `${JSON.stringify(location)} ⇒ MALFORMED (${msg})`);
+      eq(st, 400, 'error del emisor');
+    }
+  });
+
+  await test('ALT-PACK·pure GEO SÓLO CON LOCACIÓN: sin lugar, prohíbe nombrar uno; con lugar, lo nombra una vez', () => {
+    const sin = String(PURE.buildAltPassInstruction(PURE.normalizeAltPass({ image_url: VM_IMG }), 'image', 'L'));
+    assert(/NO se generó en un lugar real/.test(sin) && /barrio,\s+ciudad, región ni país/.test(sin), 'sin locación no se nombra lugar');
+    assert(/aunque el texto de la pieza lo mencione/.test(sin), 'ni aunque el texto lo nombre');
+    const con = String(PURE.buildAltPassInstruction(PURE.normalizeAltPass({ image_url: VM_IMG,
+      location: { name: 'Clínica do Porto', city: 'Porto Alegre', aliases: ['o porto'] } }), 'image', 'L'));
+    assert(con.includes('«Clínica do Porto»') && con.includes('ciudad: Porto Alegre') && con.includes('o porto'), 'el lugar, su ciudad y sus alias');
+    assert(/Nómbralo una vez/.test(con) && /No nombres ningún otro lugar/.test(con), 'una vez, y ningún otro');
+    assert(!/NO se generó en un lugar real/.test(con), 'la regla de «sin lugar» no convive con un lugar');
+  });
+
+  await test('ALT-PACK·pure LA PALABRA CLAVE NUNCA FORZADA: sólo si se ve; sin pista, ni se menciona', () => {
+    const sin = String(PURE.buildAltPassInstruction(PURE.normalizeAltPass({ image_url: VM_IMG }), 'image', 'L'));
+    assert(!/Palabra clave/.test(sin), 'sin pista no hay regla de palabra clave');
+    const con = String(PURE.buildAltPassInstruction(PURE.normalizeAltPass({ image_url: VM_IMG, keyword_hint: 'vacina para cães' }), 'image', 'L'));
+    assert(con.includes('«vacina para cães»'), 'la palabra clave viaja');
+    assert(/SÓLO si lo que nombra se ve de verdad/.test(con) && /NO la uses/.test(con) && /forzado/.test(con), 'sólo si se ve; si no, no');
+    assert(/lugar que la regla de lugar no permite/.test(con), 'la palabra clave no abre la puerta a un lugar');
+    for (const t of [sin, con, String(PURE.buildAltPlaceRule({ name: 'n', city: null, aliases: [] })), String(PURE.buildAltKeywordRule('k'))]) {
+      const m = VOSEO.exec(t);
+      assert(!m, `voseo: «${m?.[0]}»`);
+      for (const marca of MARCAS.filter((x) => x !== 'VetMar')) assert(!t.includes(marca), `nombra ${marca}`);
+    }
+  });
+
+  await test('ALT-PACK·pure altHintsEcho: mide si el alt usó cada pista, sin tildes ni mayúsculas', () => {
+    const input = PURE.normalizeAltPass({ image_url: VM_IMG, keyword_hint: 'Vacina para CÃES', location: { name: 'Clínica do Porto', city: 'Porto Alegre' } });
+    eq(JSON.stringify(PURE.altHintsEcho('Veterinária aplica vacina para cães em Porto Alegre', input)),
+      JSON.stringify({ keyword_hint_offered: true, keyword_in_alt: true, location_offered: true, location_in_alt: true }), 'las dos entran');
+    eq(JSON.stringify(PURE.altHintsEcho('Veterinária examina um labrador', input)),
+      JSON.stringify({ keyword_hint_offered: true, keyword_in_alt: false, location_offered: true, location_in_alt: false }), 'ninguna entra');
+    eq(JSON.stringify(PURE.altHintsEcho('x', PURE.normalizeAltPass({ image_url: VM_IMG }))),
+      JSON.stringify({ keyword_hint_offered: false, keyword_in_alt: null, location_offered: false, location_in_alt: null }), 'sin pistas: null, no false');
+  });
+
+  await test('ALT-PACK·cableado: las pistas llegan al user de la llamada y el 200 trae su eco', async () => {
+    const fx = vmFetch({ content: [{ text: '{"alt":"Veterinária aplica vacina para cães na Clínica do Porto"}' }], usage: { input_tokens: 900, output_tokens: 30 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ alt_pass: { image_url: VM_IMG, scene: VM_SCENE,
+        keyword_hint: 'vacina para cães', location: { name: 'Clínica do Porto', city: 'Porto Alegre' } } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      const user = JSON.stringify(fx.claudeBodies[0]?.messages ?? []);
+      assert(user.includes('vacina para cães') && user.includes('Clínica do Porto'), 'las dos pistas viajan en el encargo');
+      eq(r._out._json.meta.keyword_in_alt, true, 'el eco de la palabra clave');
+      eq(r._out._json.meta.location_in_alt, true, 'el eco del lugar');
+      eq(r._out._json.meta.location_offered, true, 'el lugar se ofreció');
+    } finally { fx.restore(); }
   });
 
   await test('F3·ALT·cableado: con visión la imagen viaja por URL en el user; 200 con el alt, su techo y alt_source', async () => {

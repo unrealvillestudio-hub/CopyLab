@@ -220,7 +220,15 @@ interface BuilderInput {
   // generar la imagen: la URL pública de la imagen ya generada, la escena con la que se generó
   // (`scene`, el prompt completo del generador) y lo que debía ilustrar (`focus`). CopyLab devuelve
   // el alt de lo que se VE. Ausente ⇒ nada de esto corre.
-  alt_pass?: { image_url: string; scene?: string | null; focus?: string | null } | null;
+  // Paquete de alt (Sam, 2026-10-03): dos PISTAS opcionales, ambas resueltas por el carril como dato.
+  // `keyword_hint` es la palabra clave principal de la pieza, y sólo llega si el canal la enciende
+  // (`brand_publish_channels.config.alt_keyword_hint`); `location` es el lugar real con cuyas fotos se
+  // generó la imagen, y sólo llega si ImageLab la generó con una locación (`location_used`).
+  alt_pass?: {
+    image_url: string; scene?: string | null; focus?: string | null;
+    keyword_hint?: string | null;
+    location?: { name: string; city?: string | null; aliases?: string[] | null } | null;
+  } | null;
   // F2/F3 · PASADA DE LÁMINAS (contrato (5), Sam, 2026-10-03) — un carrusel ya planificado (sus
   // láminas con rol y titular) y el texto de la pieza. CopyLab propone por lámina eyebrow, keyword,
   // figure, steps y cta; nunca cambia un titular. Ausente ⇒ nada de esto corre.
@@ -1329,7 +1337,16 @@ const ALT_PASS_SCENE_MAX_CHARS = 2000;
 const ALT_PASS_FOCUS_MAX_CHARS = 400;
 
 type AltSource = 'image' | 'scene';
-interface AltPassInput { image_url: string; scene: string | null; focus: string | null }
+// Paquete de alt (2026-10-03): topes de las dos pistas. Una palabra clave es una frase corta; un lugar,
+// un nombre y una ciudad. Más largo que esto no es una pista: es otra cosa, y se acota.
+const ALT_KEYWORD_HINT_MAX_CHARS = 80;
+const ALT_LOCATION_NAME_MAX_CHARS = 120;
+const ALT_LOCATION_ALIASES_MAX = 5;
+interface AltLocationHint { name: string; city: string | null; aliases: string[] }
+interface AltPassInput {
+  image_url: string; scene: string | null; focus: string | null;
+  keyword_hint: string | null; location: AltLocationHint | null;
+}
 
 function clipPlain(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;
@@ -1355,6 +1372,53 @@ function normalizeAltPass(v: unknown): AltPassInput | null {
     image_url,
     scene: clipPlain((v as any).scene, ALT_PASS_SCENE_MAX_CHARS),
     focus: clipPlain((v as any).focus, ALT_PASS_FOCUS_MAX_CHARS),
+    keyword_hint: clipPlain((v as any).keyword_hint, ALT_KEYWORD_HINT_MAX_CHARS),
+    location: normalizeAltLocation((v as any).location),
+  };
+}
+
+/**
+ * La pista de LUGAR (paquete de alt, 2026-10-03). Ausente o vacía ⇒ null, y el alt no nombra ningún
+ * lugar. Con forma equivocada ⇒ 400: un lugar que no se puede leer no se adivina.
+ */
+function normalizeAltLocation(v: unknown): AltLocationHint | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_ALT_PASS_MALFORMED: builder_input.alt_pass.location debe ser un objeto { name, city?, aliases? } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const name = clipPlain((v as any).name, ALT_LOCATION_NAME_MAX_CHARS);
+  if (!name) {
+    throw new CopyLabRequestError('COPYLAB_ALT_PASS_MALFORMED: builder_input.alt_pass.location llegó sin name');
+  }
+  const aliases = (Array.isArray((v as any).aliases) ? (v as any).aliases : [])
+    .map((a: unknown) => clipPlain(a, ALT_LOCATION_NAME_MAX_CHARS)).filter((a: string | null): a is string => !!a)
+    .slice(0, ALT_LOCATION_ALIASES_MAX);
+  return { name, city: clipPlain((v as any).city, ALT_LOCATION_NAME_MAX_CHARS), aliases };
+}
+
+/** Texto comparable: minúsculas, sin tildes, espacios colapsados. Para el eco de las pistas. */
+function altComparable(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * EL ECO DE LAS PISTAS (paquete de alt, 2026-10-03): qué se ofreció y si el alt devuelto lo usa. No
+ * decide nada —el alt no se rechaza por usar o no usar una pista—: es la medida que deja leer en el
+ * libro cuántas veces la palabra clave entró y si un lugar se nombró sin locación.
+ */
+function altHintsEcho(alt: string, input: AltPassInput): {
+  keyword_hint_offered: boolean; keyword_in_alt: boolean | null; location_offered: boolean; location_in_alt: boolean | null;
+} {
+  const a = altComparable(alt);
+  const kw = input.keyword_hint ? altComparable(input.keyword_hint) : '';
+  const nombres = input.location
+    ? [input.location.name, input.location.city, ...input.location.aliases].filter((x): x is string => !!x).map(altComparable).filter(Boolean)
+    : [];
+  return {
+    keyword_hint_offered: !!kw,
+    keyword_in_alt: kw ? a.includes(kw) : null,
+    location_offered: !!input.location,
+    location_in_alt: input.location ? nombres.some((n) => a.includes(n)) : null,
   };
 }
 
@@ -1363,6 +1427,31 @@ function resolveAltSource(acceptsImages: boolean, input: AltPassInput): AltSourc
   if (acceptsImages) return 'image';
   if (input.scene) return 'scene';
   throw new CopyLabRequestError('COPYLAB_ALT_PASS_SCENE_REQUIRED: el proveedor de CopyLab no admite imágenes como entrada y builder_input.alt_pass.scene no llegó — sin imagen ni escena no hay de qué escribir el alt');
+}
+
+// GEO EN EL ALT SÓLO CON LOCACIÓN (paquete de alt, Sam 2026-10-03). Un lugar nombrado en el alt es
+// una afirmación sobre la foto: sólo es cierta si la imagen se generó con las fotos de ese lugar. Sin
+// esa pista, el alt describe el entorno sin nombre propio, para todas las marcas por igual.
+function buildAltPlaceRule(location: AltLocationHint | null): string {
+  if (!location) {
+    return '- Lugar: esta imagen NO se generó en un lugar real. No nombres ningún lugar concreto —barrio,'
+      + ' ciudad, región ni país— aunque el texto de la pieza lo mencione: describe el entorno sin nombre'
+      + ' propio (una sala, una calle, una oficina).';
+  }
+  const otros = [location.city ? `ciudad: ${location.city}` : '', location.aliases.length ? `también se le llama: ${location.aliases.join(', ')}` : '']
+    .filter(Boolean).join('; ');
+  return `- Lugar: la imagen se generó con fotos de un lugar real: «${location.name}»${otros ? ` (${otros})` : ''}.`
+    + ' Nómbralo una vez y de forma natural —por su nombre o por su ciudad—, sin añadir detalles del lugar'
+    + ' que no se vean. No nombres ningún otro lugar.';
+}
+
+// LA PALABRA CLAVE, NUNCA FORZADA (paquete de alt, Sam 2026-10-03). La pista llega sólo si el canal la
+// enciende como dato; aquí se dice cuándo NO se usa, que es la mitad que importa.
+function buildAltKeywordRule(keyword: string): string {
+  return `- Palabra clave (opcional): «${keyword}». Úsala en el alt SÓLO si lo que nombra se ve de verdad en`
+    + ' la imagen y cabe de forma natural en la descripción. Si no se ve, si cambiaría lo que el alt dice de'
+    + ' la imagen, o si obliga a nombrar un lugar que la regla de lugar no permite, NO la uses: un alt'
+    + ' forzado es peor que uno sin palabra clave.';
 }
 
 function buildAltPassInstruction(input: AltPassInput, source: AltSource, languageLabel: string): string {
@@ -1384,7 +1473,9 @@ function buildAltPassInstruction(input: AltPassInput, source: AltSource, languag
     + '- No afirma beneficios, resultados, eficacia ni promesas, y no menciona texto, letras ni'
     + ' logotipos dentro de la imagen.\n'
     + '- El alt se publica con la pieza: lo gobiernan las mismas reglas de esta marca que gobiernan el'
-    + ' título y el cuerpo —idioma, tratamiento, tono, prohibiciones—.'
+    + ' título y el cuerpo —idioma, tratamiento, tono, prohibiciones—.\n'
+    + buildAltPlaceRule(input.location)
+    + (input.keyword_hint ? `\n${buildAltKeywordRule(input.keyword_hint)}` : '')
     + (input.focus ? `\n\nQUÉ DEBÍA ILUSTRAR (contexto, no se copia):\n${input.focus}` : '')
     + (source === 'scene' && input.scene ? `\n\nESCENA CON LA QUE SE GENERÓ:\n${input.scene}` : '');
 }
@@ -2814,7 +2905,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   format_pass: boolean;
   image_pass: ImagePassInput | null;
   // `layers_omitted`: cuántas capas de contenido NO viajaron en el system del alt (ver `capaDeContenido`).
-  alt_pass: { source: AltSource; image_url: string; layers_omitted: number } | null;
+  alt_pass: { source: AltSource; image_url: string; layers_omitted: number; input: AltPassInput } | null;
   slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
   // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
   user_image_url: string | null;
@@ -3502,7 +3593,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     learned_corrections_count: learnedCorrections.length,
     format_pass: !!formatPass,
     image_pass: imagePass,
-    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size } : null,
+    alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size, input: altPass } : null,
     slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
     user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
@@ -3882,7 +3973,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error(`[CopyLab][F3-ALT] COPYLAB_ALT_UNUSABLE brand=${body.brandId} reason=${reason} — ${output.slice(0, 200)}`);
         return res.status(422).json({ status: 'error', error: 'COPYLAB_ALT_UNUSABLE', reason, raw: output.slice(0, 600), usage, meta: metaAlt });
       }
-      return res.status(200).json({ status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length } });
+      return res.status(200).json({ status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length, ...altHintsEcho(alt, built.alt_pass.input) } });
     }
     // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
     // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
