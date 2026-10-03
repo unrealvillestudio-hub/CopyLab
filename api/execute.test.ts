@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1777,8 +1777,11 @@ async function run() {
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_story', 'Visite a clínica', 'pt')),
       JSON.stringify(['Agende a consulta do seu pet', 'Visite a clínica']),
       'cta_story (gesto de deslizar) y cta_ads (rótulo de botón) no sirven en un cierre de carrusel; sin la URL ni la fila en otro idioma');
-    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'A', cta_seo: 'B', cta_story: 'Deslize', cta_ads: 'Botão', cta_ultrashort: 'Já' }], 'cta_seo', null, 'pt')),
+    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'A', cta_spot: 'B', cta_story: 'Deslize', cta_ads: 'Botão', cta_ultrashort: 'Já' }], 'cta_spot', null, 'pt')),
       JSON.stringify(['B', 'A']), 'la columna de la superficie va primero cuando sirve en un cierre; gesto y botón, nunca');
+    eq(JSON.stringify(PURE.collectCtaOptions([{ idioma: 'pt', cta_smpc: 'Agende a consulta', cta_seo: 'CLÍNICA VETERINÁRIA SANTOS' }], 'cta_seo', null, 'pt')),
+      JSON.stringify(['Agende a consulta']), 'cta_seo es frase de búsqueda, no llamada a la acción: nunca es opción, ni siquiera como superficie de la pieza');
+    assert(!PURE.CTA_OPTION_FIELDS.includes('cta_seo'), 'el eje excluye cta_seo por su función');
     eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_smpc', '', 'es')), JSON.stringify(['Reserva la cita de tu mascota']),
       'en otro idioma, sólo la fila de ese idioma');
     eq(JSON.stringify(PURE.collectCtaOptions([{ cta_smpc: 'Sem idioma declarado' }], 'cta_smpc', null, 'pt')), '["Sem idioma declarado"]',
@@ -1803,6 +1806,11 @@ async function run() {
     assert(!/descarta toda opción/.test(sin), 'sin opciones, no hay nada que descartar');
     assert(/siempre null/.test(sin) && !sin.includes('«'), 'sin opciones: cta null y ningún CTA escrito por el código');
     assert(con.includes('(português do Brasil)') && con.includes(`${PURE.SLIDE_EYEBROW_MAX_CHARS} caracteres o menos`), 'eyebrow en el idioma de la marca y con su tope');
+    assert(/nunca nombra el formato ni sus partes/.test(con) && /nunca usa el vocabulario del método/.test(con),
+      'eyebrow escrita para quien lee: sin nombrar el carrusel ni el método (barrido F3, 2026-10-03)');
+    assert(/Sólo vale una opción que le pide al lector una acción/.test(con) && /un lema,\s*una afirmación o una frase de búsqueda no es una llamada a la acción/.test(con),
+      'el cierre elige una instrucción, no un lema ni una frase de búsqueda');
+    assert(!/Sólo vale una opción/.test(sin), 'sin opciones, no hay nada que elegir');
     assert(/LITERAL/.test(con) && /Nunca inventes, redondees ni conviertas/.test(con), 'keyword literal y cifras nunca inventadas');
     assert(/de 2 a 5 pasos/.test(con) && /como mucho uno con "critical": true/.test(con), 'pasos acotados');
     assert(/No cambies, corrijas ni traduzcas/.test(con), 'titulares intactos');

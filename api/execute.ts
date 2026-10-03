@@ -1382,7 +1382,10 @@ const SLIDE_STEPS_MAX = 5;
 // (nombra el gesto de deslizar de una historia; en la última lámina no queda nada que deslizar),
 // `cta_ads` y `cta_ultrashort` (rótulos de botón: en una imagen nada se puede tocar). Medido el
 // 2026-10-03: el cierre de 85517171 salió con «DESLIZA PARA COMPRAR», de `cta_story`.
-const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_seo', 'cta_spot', 'cta_ab1', 'cta_ab2'];
+// `cta_seo` también queda fuera por su función: es la frase de búsqueda de la marca, no una llamada a
+// la acción. Medido el 2026-10-03 en las 8 marcas con esa columna llena: frases sin verbo dirigido al
+// lector («TINTES PROFESIONALES MIAMI», «CERAMIC PREMIUM FINISH»); el cierre de ea5a269b eligió una.
+const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_spot', 'cta_ab1', 'cta_ab2'];
 const CTA_OPTIONS_MAX = 8;
 
 interface SlidePassSlide { n: number; role: SlideRole; headline: string; subheadline: string | null }
@@ -1477,6 +1480,10 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     ? '- cta: SÓLO en la lámina de cierre ("closing"); en las demás, null. Copia LITERAL una de estas'
       + ' opciones de llamada a la acción de la marca, la que mejor cierre esta pieza; si ninguna encaja,'
       + ' null. Nunca escribas una llamada a la acción propia, ni con escasez ni con urgencia.'
+      // Medido el 2026-10-03: entre las opciones del dato hay lemas y frases de búsqueda sin verbo
+      // («COLOR THAT TRANSFORMS», «MEJOR PROTECCIÓN»). En el cierre, eso no le pide nada al lector.
+      + ' Sólo vale una opción que le pide al lector una acción, con un verbo dirigido a él; un lema,'
+      + ' una afirmación o una frase de búsqueda no es una llamada a la acción.'
       // F3 (Sam, 2026-10-03, opción b): una opción del DATO no queda exenta de las reglas de la marca.
       // Medido: el cierre de 85517171 eligió «… AHORA» de las opciones de su marca. Las reglas viven en el
       // system (mismo que la generación); acá sólo se declara que también filtran las opciones.
@@ -1502,7 +1509,13 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     + ' lámina, y nunca el titular entero.\n'
     + `- eyebrow: etiqueta corta (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra la FUNCIÓN de`
     + ` la lámina dentro del carrusel (el dato, la causa, el paso siguiente…), en el idioma de la marca`
-    + ` (${languageLabel}). No repite el titular.\n`
+    + ` (${languageLabel}). No repite el titular.`
+    // Medido el 2026-10-03 (barrido F3): «Dato clave del carrusel», «El contexto adversario», «El
+    // cierre», «Solución presentada». La etiqueta se publica: se escribe para quien lee, no para quien
+    // planificó el carrusel.
+    + ' La lee el público: nunca nombra el formato ni sus partes (carrusel, lámina, portada, cierre),'
+    + ' nunca usa el vocabulario del método con que se escribió la pieza, y no suena a nota de quien la'
+    + ' analiza. Si no hay una etiqueta que le diga algo al lector, null.\n'
     + '- figure: SÓLO si en el TEXTO DE LA PIEZA aparecen, literales, una cifra Y la fuente que la'
     + ' sostiene, nombrada. "value" copia la cifra tal como aparece; "source" copia el nombre de la'
     + ' fuente tal como aparece. "bar" sólo si la cifra es un porcentaje entre 0 y 100, y entonces'
