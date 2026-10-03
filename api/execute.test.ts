@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1556,6 +1556,405 @@ async function run() {
       for (const [extra, code] of cruces) {
         const r = makeRes();
         await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', image_pass: { piece_text: IP_PIECE, max_images: 1 }, ...extra }) }) } as any, r as any);
+        eq(r._out._status, 400, `${code} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes(code), r._out._json.error);
+      }
+      eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
+    } finally { fx.restore(); }
+  });
+
+  // ── F2/F3 · PASADAS DEL ALT Y DE LÁMINAS (contrato (3) y (5), Sam, 2026-10-03) ──────────────────
+  // Marca inventada de otro rubro (clínica veterinaria) y otro idioma (portugués): nada de esto
+  // conoce una marca real. Sus CTAs llegan como DATO, igual que en producción (`ctas` + `cta_base`).
+  const VM_DIRECTIVA = {
+    language_code: 'pt', label: 'português do Brasil', active: true, register_type: 'neutral', register_scope: 'international',
+    directive_block: '## IDIOMA DE SAÍDA\nEscreva TUDO em português do Brasil.', register_constraints: null,
+  };
+  const VM_CTAS = [
+    { idioma: 'pt-BR', cta_smpc: 'Agende a consulta do seu pet', cta_story: 'Fale com a nossa equipe', cta_ads: 'Agende a consulta do seu pet', cta_seo: 'https://vetmar.example/agendar' },
+    { idioma: 'es', cta_smpc: 'Reserva la cita de tu mascota' },
+  ];
+  const VM_BCTX = { brandContext: {
+    brands: [{ id: 'VetMar', display_name: 'VetMar', language_primary: 'pt', cta_base: 'Visite a clínica' }],
+    brand_voice_genome: [GENOME_V1], ctas: VM_CTAS,
+  } };
+  const vmBI = (extra: any) => lbBI({ language: 'pt', ...extra });
+  const vmFetch = (claude?: any) => installFetch({ tables: { language_directives: [VM_DIRECTIVA] }, ...(claude ? { claude } : {}) });
+  const VM_IMG = 'https://cdn.vetmar.example/pieces/abc/clean.png';
+  const VM_SCENE = 'Veterinária examina um cachorro labrador sobre uma mesa de aço, luz suave de janela.';
+  // Voseo: las formas que una instrucción en español podría colar. Marcas: las que viven en la base
+  // y la inventada de estos tests. Ninguna puede aparecer en una instrucción del bloque puro.
+  // Límite de palabra UNICODE: con `\b` a secas, una palabra que termina en vocal acentuada nunca
+  // casa (para JS sin `u`, «é» no es carácter de palabra) y el control pasaría en verde con voseo.
+  const VOSEO = /(?<!\p{L})(Devolvé|devolvelo|Cerrala|Respondé|Escribí|escribí|Elegí|Usá|usá|Describí|Copiá|Inventá|Cambiá|Corregí|Traducí|Proponé|Nombrá|Mirá|Poné|tenés|podés|querés|sabés|escribís|cambiás|repetís|sos|vos)(?!\p{L})/u;
+  const MARCAS = ['ForumPHs', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'D7Herbal', 'DiamondDetails', 'PatriciaOsorio', 'VivoseMask', 'Vizos', 'VetMar'];
+
+  await test('F3·ALT·pure normalizeAltPass: ausente = null; sin URL https corta con 400 y nombre propio', () => {
+    eq(PURE.normalizeAltPass(undefined), null, 'ausente');
+    eq(PURE.normalizeAltPass(null), null, 'null');
+    const ok = PURE.normalizeAltPass({ image_url: ` ${VM_IMG} `, scene: `  ${VM_SCENE}\n `, focus: 7 });
+    eq(ok.image_url, VM_IMG, 'URL recortada');
+    eq(ok.scene, VM_SCENE, 'escena en una línea');
+    eq(ok.focus, null, 'focus que no es texto: null');
+    eq(Array.from(PURE.normalizeAltPass({ image_url: VM_IMG, scene: 'x'.repeat(5000) }).scene).length, 2001, 'escena acotada (+ …)');
+    const casos: any[] = [
+      [[], 'MALFORMED'], ['texto', 'MALFORMED'],
+      [{}, 'IMAGE_REQUIRED'], [{ image_url: '' }, 'IMAGE_REQUIRED'], [{ image_url: 'http://cdn.example/a.png' }, 'IMAGE_REQUIRED'],
+      [{ image_url: 'ftp://cdn.example/a.png' }, 'IMAGE_REQUIRED'], [{ image_url: 'https://' }, 'IMAGE_REQUIRED'], [{ image_url: 42 }, 'IMAGE_REQUIRED'],
+    ];
+    for (const [v, code] of casos) {
+      let msg = ''; let st: any = null;
+      try { PURE.normalizeAltPass(v); } catch (e: any) { msg = e.message; st = e.http_status; }
+      assert(msg.includes(`COPYLAB_ALT_PASS_${code}`), `${JSON.stringify(v)} ⇒ ${code} (${msg})`);
+      eq(st, 400, `${JSON.stringify(v)} es un error del emisor`);
+    }
+  });
+
+  await test('F3·ALT·pure resolveAltSource: con visión manda la imagen; sin visión, la escena; sin ninguna, 400', () => {
+    const conEscena = PURE.normalizeAltPass({ image_url: VM_IMG, scene: VM_SCENE });
+    const sinEscena = PURE.normalizeAltPass({ image_url: VM_IMG });
+    eq(PURE.resolveAltSource(true, conEscena), 'image', 'visión + escena ⇒ imagen (fuente de verdad)');
+    eq(PURE.resolveAltSource(true, sinEscena), 'image', 'visión sin escena ⇒ imagen');
+    eq(PURE.resolveAltSource(false, conEscena), 'scene', 'sin visión ⇒ escena');
+    let msg = ''; let st: any = null;
+    try { PURE.resolveAltSource(false, sinEscena); } catch (e: any) { msg = e.message; st = e.http_status; }
+    assert(msg.includes('COPYLAB_ALT_PASS_SCENE_REQUIRED'), msg);
+    eq(st, 400, 'error del emisor');
+  });
+
+  await test('F3·ALT·pure la instrucción pide sólo JSON, lo que se VE, y en modo imagen no mezcla la escena', () => {
+    const input = PURE.normalizeAltPass({ image_url: VM_IMG, scene: VM_SCENE, focus: 'O exame começa pelo olhar.' });
+    const img = String(PURE.buildAltPassInstruction(input, 'image', 'português do Brasil'));
+    const esc = String(PURE.buildAltPassInstruction(input, 'scene', 'português do Brasil'));
+    assert(img.includes('{"alt":"…"}') && esc.includes('{"alt":"…"}'), 'el esquema');
+    assert(img.includes(`${PURE.IMAGE_ALT_MAX_CHARS} caracteres o menos`), 'el largo del contrato');
+    assert(img.includes('(português do Brasil)'), 'el idioma de la marca');
+    assert(/adjunta/.test(img) && /fuente\s+de verdad/.test(img), 'la imagen adjunta manda');
+    assert(!img.includes(VM_SCENE), 'en modo imagen la escena no entra: es lo que produjo el defecto');
+    assert(esc.includes(VM_SCENE), 'en modo escena, la escena es la fuente');
+    assert(img.includes('O exame começa pelo olhar.') && /contexto, no se copia/.test(img), 'el foco viaja como contexto');
+    assert(/personas/.test(img) && /lugar/.test(img) && /acción/.test(img), 'personas, lugar y acción');
+    assert(/«imagen de»/.test(img) && /texto, letras ni\s+logotipos/.test(img), 'ni fórmula de apertura ni texto en la imagen');
+    assert(/mismas reglas de esta marca/.test(img), 'las reglas de marca del system gobiernan el alt');
+    assert(!/MATERIA PRIMA/.test(img), 'no es una generación');
+  });
+
+  await test('F3·ALT·pure normalizeAltResult: una línea de 125 o menos; vacío, largo o ilegible ⇒ null con motivo', () => {
+    const ok = PURE.normalizeAltResult({ alt: '  «Veterinária examina\n um cachorro sobre a mesa»  ' });
+    eq(ok.alt, 'Veterinária examina um cachorro sobre a mesa', 'una línea y sin comillas alrededor');
+    eq(ok.reason, null, 'sin motivo');
+    eq(PURE.normalizeAltResult({ alt: 'á'.repeat(PURE.IMAGE_ALT_MAX_CHARS) }).alt?.length, PURE.IMAGE_ALT_MAX_CHARS, 'el tope exacto pasa');
+    eq(PURE.normalizeAltResult({ alt: 'x'.repeat(PURE.IMAGE_ALT_MAX_CHARS + 1) }).reason, 'TOO_LONG', 'uno más, no');
+    eq(PURE.normalizeAltResult({ alt: '   ' }).reason, 'EMPTY', 'vacío');
+    eq(PURE.normalizeAltResult({ alt: 12 }).reason, 'EMPTY', 'no es texto');
+    eq(PURE.normalizeAltResult({ texto: 'x' }).reason, 'UNPARSABLE', 'sin la clave');
+    eq(PURE.normalizeAltResult(null).reason, 'UNPARSABLE', 'sin JSON');
+  });
+
+  await test('F3·ALT·cableado: con visión la imagen viaja por URL en el user; 200 con el alt, su techo y alt_source', async () => {
+    const fx = vmFetch({ content: [{ text: '{"alt":"Veterinária examina um labrador sobre uma mesa de aço"}' }], usage: { input_tokens: 900, output_tokens: 30 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ alt_pass: { image_url: VM_IMG, scene: VM_SCENE } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.status, 'ok', 'status ok');
+      eq(r._out._json.alt, 'Veterinária examina um labrador sobre uma mesa de aço', 'el alt');
+      eq(r._out._json.meta.alt_pass, true, 'el eco');
+      eq(r._out._json.meta.alt_source, 'image', 'con visión, la imagen es la fuente');
+      eq(r._out._json.meta.alt_chars, 53, 'el largo del alt, en caracteres');
+      eq(r._out._json.usage.input_tokens, 900, 'el consumo viaja para que el carril lo asiente');
+      assert(!('body' in r._out._json) && !('image_plan' in r._out._json), 'ni pieza ni plan');
+      const body = fx.claudeBodies[0];
+      eq(body?.max_tokens, PURE.ALT_PASS_MAX_TOKENS, 'el techo de la pasada');
+      const content = body?.messages?.[0]?.content;
+      assert(Array.isArray(content) && content.length === 2, 'el user es imagen + texto');
+      eq(JSON.stringify(content[0]), JSON.stringify({ type: 'image', source: { type: 'url', url: VM_IMG } }), 'la imagen por URL, primero');
+      assert(content[1].type === 'text' && String(content[1].text).includes('TEXTO ALTERNATIVO'), 'y la instrucción después');
+    } finally { fx.restore(); }
+  });
+
+  await test('F3·ALT·cableado: el MISMO system que la generación; sin la clave, el user sigue siendo texto', async () => {
+    const fx = vmFetch();
+    try {
+      const regla = { code: 'R-N1-02', kind: 'prohibition', statement: 'x', instruction: 'Nunca use a palavra garantido.' };
+      const alt = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla], alt_pass: { image_url: VM_IMG } }) }));
+      const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ rules: [regla] }) }));
+      eq(alt.system, gen.system, 'mismo system: voz, idioma y reglas de la marca gobiernan el alt');
+      assert(alt.system.includes('Nunca use a palavra garantido.') && !alt.user.includes('garantido'), 'la regla está en el system, no copiada');
+      eq(alt.user_image_url, VM_IMG, 'la imagen acompaña al user');
+      eq(gen.user_image_url, null, 'sin la clave, nada de imagen');
+      eq(gen.alt_pass, null, 'ni encargo');
+      eq(alt.alt_pass?.source, 'image', 'el encargo ya leído');
+    } finally { fx.restore(); }
+    // callClaude sin imagen: el user viaja como texto, byte-idéntico a antes.
+    const fx2 = installFetch({ claude: { content: [{ text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } } });
+    try {
+      await callClaude('s', 'u', 10);
+      eq(fx2.claudeBodies[0]?.messages?.[0]?.content, 'u', 'texto plano');
+    } finally { fx2.restore(); }
+  });
+
+  await test('F3·ALT·cableado: alt vacío, largo o sin JSON ⇒ 422 COPYLAB_ALT_UNUSABLE con el consumo', async () => {
+    for (const [texto, motivo] of [['Aqui está o alt: …', 'UNPARSABLE'], ['{"alt":""}', 'EMPTY'], [JSON.stringify({ alt: 'x'.repeat(126) }), 'TOO_LONG']]) {
+      const fx = vmFetch({ content: [{ text: texto }], usage: { input_tokens: 5, output_tokens: 6 } });
+      try {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ alt_pass: { image_url: VM_IMG } }) }) } as any, r as any);
+        eq(r._out._status, 422, `${motivo} ⇒ HTTP 422`);
+        eq(r._out._json.error, 'COPYLAB_ALT_UNUSABLE', 'nombre propio');
+        eq(r._out._json.reason, motivo, 'con su motivo');
+        eq(r._out._json.usage.output_tokens, 6, 'y el consumo');
+        eq(r._out._json.meta.alt_pass, true, 'el eco también en el fallo');
+      } finally { fx.restore(); }
+    }
+  });
+
+  await test('F3·ALT·cableado: sin URL https ⇒ 400; con otra pasada o con repair corta antes de la llamada', async () => {
+    const fx = vmFetch();
+    try {
+      for (const alt_pass of [{ image_url: 'http://cdn.example/a.png' }, { scene: VM_SCENE }]) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ alt_pass }) }) } as any, r as any);
+        eq(r._out._status, 400, `${JSON.stringify(alt_pass)} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes('COPYLAB_ALT_PASS_IMAGE_REQUIRED'), r._out._json.error);
+      }
+      const cruces: Array<[any, string]> = [
+        [{ format_pass: { piece_text: 'p' } }, 'COPYLAB_ALT_PASS_WITH_FORMAT_PASS'],
+        [{ image_pass: { piece_text: 'p', max_images: 1 } }, 'COPYLAB_ALT_PASS_WITH_IMAGE_PASS'],
+        [{ repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }, 'COPYLAB_ALT_PASS_WITH_REPAIR'],
+        [{ slide_pass: { piece_text: 'p', slides: [{ n: 1, role: 'cover', headline: 'h' }] } }, 'COPYLAB_SLIDE_PASS_WITH_ALT_PASS'],
+      ];
+      for (const [extra, code] of cruces) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ alt_pass: { image_url: VM_IMG }, ...extra }) }) } as any, r as any);
+        eq(r._out._status, 400, `${code} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes(code), r._out._json.error);
+      }
+      eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
+    } finally { fx.restore(); }
+  });
+
+  // Carrusel de la marca inventada. La pieza trae UNA cifra con su fuente nombrada (literal).
+  const SP_PIECE = 'Segundo o Conselho Regional de Veterinária, 62% dos tutores adiam a vacina anual. '
+    + 'O atraso abre espaço para doenças que a vacina evitaria. Três passos resolvem: marcar a consulta, '
+    + 'levar a carteira de vacinação e confirmar a próxima dose.';
+  const SP_SLIDES = [
+    { n: 1, role: 'cover', headline: 'A vacina anual que ninguém lembra', subheadline: null },
+    { n: 2, role: 'body', headline: 'Seis em cada dez tutores adiam a vacina' },
+    { n: 3, role: 'body', headline: 'Três passos para não esquecer', subheadline: 'Leva menos de uma hora' },
+    { n: 4, role: 'closing', headline: 'Seu pet protegido o ano todo' },
+  ];
+  const SP_INPUT = () => PURE.normalizeSlidePass({ piece_text: SP_PIECE, slides: SP_SLIDES });
+  const SP_OPCIONES = ['Agende a consulta do seu pet', 'Fale com a nossa equipe'];
+  const slidePlan = (slides: any, opciones = SP_OPCIONES) => PURE.normalizeSlidePlan({ slides }, SP_INPUT(), opciones);
+
+  await test('F3·LÁMINAS·pure normalizeSlidePass: ausente = null; encargo mal formado ⇒ 400 con nombre propio', () => {
+    eq(PURE.normalizeSlidePass(undefined), null, 'ausente');
+    eq(PURE.normalizeSlidePass(null), null, 'null');
+    const ok = SP_INPUT();
+    eq(ok.slides.length, 4, 'las cuatro láminas');
+    eq(ok.slides[2].subheadline, 'Leva menos de uma hora', 'subtitular tal cual');
+    eq(ok.slides[1].subheadline, null, 'subtitular ausente ⇒ null');
+    const s = (extra: any) => ({ piece_text: 'p', slides: [{ n: 1, role: 'cover', headline: 'h', ...extra }] });
+    const casos: any[] = [
+      [[], 'MALFORMED'], ['texto', 'MALFORMED'],
+      [{ slides: SP_SLIDES }, 'PIECE_REQUIRED'], [{ piece_text: '  ', slides: SP_SLIDES }, 'PIECE_REQUIRED'],
+      [{ piece_text: 'p' }, 'SLIDES_REQUIRED'], [{ piece_text: 'p', slides: [] }, 'SLIDES_REQUIRED'],
+      [{ piece_text: 'p', slides: Array.from({ length: 21 }, (_, i) => ({ n: i + 1, role: 'body', headline: 'h' })) }, 'SLIDES_REQUIRED'],
+      [s({ n: 0 }), 'SLIDE_MALFORMED'], [s({ n: 1.5 }), 'SLIDE_MALFORMED'], [s({ role: 'intro' }), 'SLIDE_MALFORMED'],
+      [s({ headline: ' ' }), 'SLIDE_MALFORMED'], [s({ subheadline: 3 }), 'SLIDE_MALFORMED'],
+      [{ piece_text: 'p', slides: [{ n: 1, role: 'cover', headline: 'a' }, { n: 1, role: 'body', headline: 'b' }] }, 'SLIDE_MALFORMED'],
+    ];
+    for (const [v, code] of casos) {
+      let msg = ''; let st: any = null;
+      try { PURE.normalizeSlidePass(v); } catch (e: any) { msg = e.message; st = e.http_status; }
+      assert(msg.includes(`COPYLAB_SLIDE_PASS_${code}`), `${JSON.stringify(v).slice(0, 80)} ⇒ ${code} (${msg})`);
+      eq(st, 400, 'error del emisor');
+    }
+  });
+
+  await test('F3·LÁMINAS·pure collectCtaOptions: las opciones son DATO — superficie primero, idioma de la pieza, sin URLs ni duplicados', () => {
+    eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_story', 'Visite a clínica', 'pt')),
+      JSON.stringify(['Fale com a nossa equipe', 'Agende a consulta do seu pet', 'Visite a clínica']),
+      'la columna de la superficie primero, luego las demás, cta_base al final; sin la URL ni el duplicado ni la fila en otro idioma');
+    eq(JSON.stringify(PURE.collectCtaOptions(VM_CTAS, 'cta_smpc', '', 'es')), JSON.stringify(['Reserva la cita de tu mascota']),
+      'en otro idioma, sólo la fila de ese idioma');
+    eq(JSON.stringify(PURE.collectCtaOptions([{ cta_smpc: 'Sem idioma declarado' }], 'cta_smpc', null, 'pt')), '["Sem idioma declarado"]',
+      'una fila sin idioma declarado aporta');
+    eq(JSON.stringify(PURE.collectCtaOptions([], 'cta_smpc', 'Visite a clínica', 'pt')), '["Visite a clínica"]', 'sin filas, cta_base');
+    eq(JSON.stringify(PURE.collectCtaOptions(null, 'cta_smpc', '', 'pt')), '[]', 'sin nada, ninguna opción');
+    const muchas = Array.from({ length: 12 }, (_, i) => ({ cta_smpc: `Opção ${i}` }));
+    eq(PURE.collectCtaOptions(muchas, 'cta_smpc', '', 'pt').length, 8, 'con tope');
+    eq(PURE.primaryLanguageTag('es-XX'), 'es', 'idioma primario'); eq(PURE.primaryLanguageTag('EN'), 'en', 'en minúscula');
+  });
+
+  await test('F3·LÁMINAS·pure la instrucción lista láminas y opciones del dato, pide sólo JSON y nunca escribe un CTA propio', () => {
+    const con = String(PURE.buildSlidePassInstruction(SP_INPUT(), SP_OPCIONES, 'português do Brasil'));
+    const sin = String(PURE.buildSlidePassInstruction(SP_INPUT(), [], 'português do Brasil'));
+    assert(con.includes('{"slides":[{"n":N,'), 'el esquema');
+    assert(con.includes('[n=3 · body] Titular: Três passos para não esquecer') && con.includes('Subtitular: Leva menos de uma hora'), 'las láminas con rol, titular y subtitular');
+    assert(con.endsWith(`TEXTO DE LA PIEZA:\n${SP_PIECE}`), 'la pieza íntegra al final');
+    assert(con.includes('1. «Agende a consulta do seu pet»') && con.includes('2. «Fale com a nossa equipe»'), 'las opciones del dato, numeradas');
+    assert(/SÓLO en la lámina de cierre/.test(con) && /ni con escasez ni con urgencia/.test(con), 'cta sólo en el cierre, sin presión');
+    assert(/siempre null/.test(sin) && !sin.includes('«'), 'sin opciones: cta null y ningún CTA escrito por el código');
+    assert(con.includes('(português do Brasil)') && con.includes(`${PURE.SLIDE_EYEBROW_MAX_CHARS} caracteres o menos`), 'eyebrow en el idioma de la marca y con su tope');
+    assert(/LITERAL/.test(con) && /Nunca inventes, redondees ni conviertas/.test(con), 'keyword literal y cifras nunca inventadas');
+    assert(/de 2 a 5 pasos/.test(con) && /como mucho uno con "critical": true/.test(con), 'pasos acotados');
+    assert(/No cambies, corrijas ni traduzcas/.test(con), 'titulares intactos');
+    assert(/mismas reglas de esta marca/.test(con), 'las reglas de marca del system gobiernan lo nuevo');
+  });
+
+  await test('F3·pure las instrucciones nuevas no nombran ninguna marca ni usan voseo', () => {
+    const alt = PURE.normalizeAltPass({ image_url: VM_IMG, scene: 'escena', focus: 'foco' });
+    const textos = [
+      String(PURE.buildAltPassInstruction(alt, 'image', 'L')),
+      String(PURE.buildAltPassInstruction(alt, 'scene', 'L')),
+      String(PURE.buildSlidePassInstruction(PURE.normalizeSlidePass({ piece_text: 'p', slides: [{ n: 1, role: 'closing', headline: 'h' }] }), [], 'L')),
+      String(PURE.buildSlidePassInstruction(PURE.normalizeSlidePass({ piece_text: 'p', slides: [{ n: 1, role: 'closing', headline: 'h' }] }), ['o'], 'L')),
+    ];
+    for (const t of textos) {
+      const m = VOSEO.exec(t);
+      assert(!m, `voseo en la instrucción: «${m?.[0]}»`);
+      for (const marca of MARCAS) assert(!t.toLowerCase().includes(marca.toLowerCase()), `la instrucción nombra ${marca}`);
+    }
+    // Y el código de las dos pasadas, tal como se despliega (sin comentarios), tampoco.
+    const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const desde = src.indexOf('// ── F2/F3 · PASADA DEL ALT');
+    const hasta = src.indexOf('// ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES');
+    assert(desde > 0 && hasta > desde, 'el tramo de las pasadas nuevas existe');
+    const js = ts.transpileModule(src.slice(desde, hasta), { compilerOptions: { target: ts.ScriptTarget.ES2022, removeComments: true } }).outputText;
+    for (const marca of MARCAS) assert(!js.toLowerCase().includes(marca.toLowerCase()), `el código nombra ${marca}`);
+    assert(!VOSEO.test(js), 'ni voseo en el código');
+  });
+
+  await test('F3·LÁMINAS·pure normalizeSlidePlan: lo válido pasa con las seis claves, una entrada por lámina pedida', () => {
+    eq(PURE.normalizeSlidePlan(null, SP_INPUT(), []), null, 'sin objeto');
+    eq(PURE.normalizeSlidePlan({ images: [] }, SP_INPUT(), []), null, 'sin slides');
+    const r = slidePlan([
+      { n: 4, eyebrow: 'O próximo passo', cta: 'agende a consulta do seu PET' },
+      { n: 2, eyebrow: 'O dado', keyword: 'adiam a vacina', figure: { value: '62%', bar: { from: 0, to: 62 }, source: 'Conselho Regional de Veterinária' } },
+      { n: 3, eyebrow: 'O método', steps: [{ text: 'Marcar a consulta' }, { text: 'Levar a carteira', critical: true }, { text: 'Confirmar a dose', critical: false }] },
+    ]);
+    eq(JSON.stringify(r.slides.map((s: any) => s.n)), '[1,2,3,4]', 'una por lámina pedida, en su orden');
+    eq(JSON.stringify(Object.keys(r.slides[1])), '["n","eyebrow","keyword","figure","steps","cta"]', 'sólo las claves del contrato');
+    eq(r.slides[1].keyword, 'adiam a vacina', 'keyword literal del titular');
+    eq(JSON.stringify(r.slides[1].figure), JSON.stringify({ value: '62%', bar: { from: 0, to: 62 }, source: 'Conselho Regional de Veterinária' }), 'figure con su barra');
+    eq(JSON.stringify(r.slides[2].steps.map((p: any) => p.critical)), '[false,true,false]', 'pasos con un crítico');
+    eq(r.slides[3].cta, 'Agende a consulta do seu pet', 'el CTA es el texto de la OPCIÓN, tal como está en el dato');
+    eq(JSON.stringify(r.slides[0]), JSON.stringify({ n: 1, eyebrow: null, keyword: null, figure: null, steps: null, cta: null }), 'la lámina que no vino, en null');
+    eq(JSON.stringify(r.dropped), '["n1: MISSING"]', 'y se dice');
+  });
+
+  await test('F3·LÁMINAS·pure normalizeSlidePlan: cada regla del contrato poda el campo con su motivo', () => {
+    const F = { value: '62%', bar: null, source: 'Conselho Regional de Veterinária' };
+    const casos: Array<[any, string, string]> = [
+      [{ n: 2, eyebrow: 'x'.repeat(29) }, 'eyebrow', 'n2.eyebrow: TOO_LONG'],
+      [{ n: 2, eyebrow: '  ' }, 'eyebrow', 'n2.eyebrow: SHAPE'],
+      [{ n: 2, keyword: 'vacina atrasada' }, 'keyword', 'n2.keyword: NOT_IN_HEADLINE'],
+      [{ n: 2, keyword: 'Seis em cada dez tutores' }, 'keyword', 'n2.keyword: TOO_LONG'],
+      [{ n: 1, keyword: 'adiam a vacina' }, 'keyword', 'n1.keyword: NOT_IN_HEADLINE'],   // está en el titular de OTRA lámina
+      [{ n: 2, figure: { ...F, value: '71%' } }, 'figure', 'n2.figure: VALUE_NOT_IN_TEXT'],
+      [{ n: 2, figure: { ...F, source: 'Ministério da Saúde' } }, 'figure', 'n2.figure: SOURCE_NOT_IN_TEXT'],
+      [{ n: 2, figure: { ...F, value: 'muitos' } }, 'figure', 'n2.figure: SHAPE'],
+      [{ n: 3, steps: [{ text: 'Só um' }] }, 'steps', 'n3.steps: COUNT'],
+      [{ n: 3, steps: Array.from({ length: 6 }, (_, i) => ({ text: `p${i}` })) }, 'steps', 'n3.steps: COUNT'],
+      [{ n: 3, steps: ['texto', 'solto'] }, 'steps', 'n3.steps: SHAPE'],
+      [{ n: 2, cta: 'Agende a consulta do seu pet' }, 'cta', 'n2.cta: NOT_CLOSING'],
+      [{ n: 4, cta: 'Garanta já a sua vaga' }, 'cta', 'n4.cta: NOT_IN_OPTIONS'],
+    ];
+    for (const [entrada, campo, motivo] of casos) {
+      const r = slidePlan([entrada]);
+      const lamina = r.slides.find((s: any) => s.n === entrada.n);
+      eq(lamina[campo], null, `${JSON.stringify(entrada)} ⇒ ${campo} podado`);
+      assert(r.dropped.includes(motivo), `${JSON.stringify(entrada)} ⇒ ${motivo} (obtenido ${JSON.stringify(r.dropped)})`);
+    }
+    // El titular entero no es una keyword.
+    const entero = slidePlan([{ n: 3, keyword: 'Três passos para não esquecer' }]);
+    assert(entero.dropped.includes('n3.keyword: TOO_LONG') || entero.dropped.includes('n3.keyword: IS_HEADLINE'), 'el titular entero cae');
+    const corto = PURE.normalizeSlidePlan({ slides: [{ n: 1, keyword: 'Vacina' }] },
+      PURE.normalizeSlidePass({ piece_text: 'p', slides: [{ n: 1, role: 'cover', headline: 'Vacina' }] }), []);
+    eq(corto.dropped.join(','), 'n1.keyword: IS_HEADLINE', 'una palabra que ES todo el titular tampoco');
+    // La barra: sólo de un porcentaje y desde su propia cifra.
+    const barra = (bar: any, value = '62%') => slidePlan([{ n: 2, figure: { ...F, value, bar } }]);
+    eq(barra({ from: 0, to: 62 }).slides[1].figure.bar.to, 62, 'barra del porcentaje');
+    assert(barra({ from: 0, to: 70 }).dropped.includes('n2.figure.bar: NOT_FROM_VALUE'), 'barra que no sale de la cifra');
+    assert(barra({ from: 0, to: 70 }).slides[1].figure !== null, 'la cifra sobrevive aunque caiga la barra');
+    assert(barra({ from: -5, to: 62 }).dropped.includes('n2.figure.bar: OUT_OF_RANGE'), 'fuera de 0..100');
+    // Dos críticos: el primero queda, el resto se poda y se dice.
+    const dos = slidePlan([{ n: 3, steps: [{ text: 'a', critical: true }, { text: 'b', critical: true }] }]);
+    eq(JSON.stringify(dos.slides[2].steps.map((p: any) => p.critical)), '[true,false]', 'como mucho un crítico');
+    assert(dos.dropped.includes('n3.steps: CRITICAL_PRUNED'), 'y se dice');
+    // Sin opciones de CTA, ningún cierre lleva CTA.
+    const sinOpciones = slidePlan([{ n: 4, cta: 'Agende a consulta do seu pet' }], []);
+    eq(sinOpciones.slides[3].cta, null, 'sin opciones, null');
+    assert(sinOpciones.dropped.includes('n4.cta: NO_OPTIONS'), 'con su motivo');
+    // Entradas enteras.
+    const ent = slidePlan([null, { n: 9 }, { n: 2 }, { n: 2, eyebrow: 'x' }, { n: '2' }]);
+    for (const m of ['#0: SHAPE', '#1: UNKNOWN_SLIDE', '#3: DUPLICATE_SLIDE', '#4: SHAPE']) assert(ent.dropped.includes(m), `${m} (${JSON.stringify(ent.dropped)})`);
+  });
+
+  await test('F3·LÁMINAS·cableado: las opciones de CTA salen del DATO de la marca; 200 con el plan, su techo y el eco', async () => {
+    const crudo = { slides: [
+      { n: 2, eyebrow: 'O dado', keyword: 'adiam a vacina', figure: { value: '62%', bar: { from: 0, to: 62 }, source: 'Conselho Regional de Veterinária' } },
+      { n: 4, cta: 'Agende a consulta do seu pet' },
+      { n: 1, cta: 'Fale com a nossa equipe' },
+    ] };
+    const fx = vmFetch({ content: [{ text: '```json\n' + JSON.stringify(crudo) + '\n```' }], usage: { input_tokens: 1200, output_tokens: 140 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.status, 'ok', 'status ok');
+      eq(r._out._json.slides.length, 4, 'una entrada por lámina');
+      eq(r._out._json.slides[3].cta, 'Agende a consulta do seu pet', 'CTA del dato en el cierre');
+      eq(r._out._json.slides[0].cta, null, 'en la portada no');
+      eq(r._out._json.meta.slide_pass, true, 'el eco');
+      eq(r._out._json.meta.slides_requested, 4, 'cuántas se pidieron');
+      eq(r._out._json.meta.cta_options_count, 3, 'opciones del idioma de la pieza: smpc, story, cta_base (sin URL, sin duplicado, sin la fila en otro idioma)');
+      assert(r._out._json.meta.dropped.includes('n1.cta: NOT_CLOSING') && r._out._json.meta.dropped.includes('n3: MISSING'), 'lo podado viaja');
+      eq(r._out._json.usage.output_tokens, 140, 'el consumo');
+      eq(fx.claudeBodies[0]?.max_tokens, PURE.SLIDE_PASS_MAX_TOKENS, 'el techo de la pasada');
+      const user = String(fx.claudeBodies[0]?.messages?.[0]?.content ?? '');
+      assert(user.includes('«Agende a consulta do seu pet»') && user.includes('«Visite a clínica»'), 'las opciones del dato llegan al user');
+      assert(!user.includes('Reserva la cita de tu mascota') && !user.includes('https://vetmar.example'), 'ni la fila en otro idioma ni la URL');
+      assert(!user.includes('MATERIA PRIMA'), 'no es una generación');
+    } finally { fx.restore(); }
+  });
+
+  await test('F3·LÁMINAS·cableado: el MISMO system que la generación; sin la clave, nada de esto corre', async () => {
+    const fx = vmFetch();
+    try {
+      const sp = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES } }) }));
+      const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({}) }));
+      eq(sp.system, gen.system, 'mismo system');
+      eq(gen.slide_pass, null, 'sin la clave, sin encargo');
+      eq(sp.slide_pass?.cta_options.length, 3, 'el encargo con sus opciones');
+      eq(sp.user_image_url, null, 'sin imagen');
+    } finally { fx.restore(); }
+  });
+
+  await test('F3·LÁMINAS·cableado: plan ilegible ⇒ 422; encargo mal formado o con otra pasada ⇒ 400 sin llamada', async () => {
+    for (const texto of ['Aqui está o plano', '{"images":[]}']) {
+      const fx = vmFetch({ content: [{ text: texto }], usage: { input_tokens: 5, output_tokens: 6 } });
+      try {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES } }) }) } as any, r as any);
+        eq(r._out._status, 422, `${texto} ⇒ HTTP 422`);
+        eq(r._out._json.error, 'COPYLAB_SLIDE_PLAN_UNPARSABLE', 'nombre propio');
+        eq(r._out._json.usage.output_tokens, 6, 'y el consumo');
+      } finally { fx.restore(); }
+    }
+    const fx = vmFetch();
+    try {
+      const casos: Array<[any, string]> = [
+        [{ slide_pass: { piece_text: SP_PIECE, slides: [] } }, 'COPYLAB_SLIDE_PASS_SLIDES_REQUIRED'],
+        [{ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES }, format_pass: { piece_text: 'p' } }, 'COPYLAB_SLIDE_PASS_WITH_FORMAT_PASS'],
+        [{ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES }, image_pass: { piece_text: 'p', max_images: 1 } }, 'COPYLAB_SLIDE_PASS_WITH_IMAGE_PASS'],
+        [{ slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES }, repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }, 'COPYLAB_SLIDE_PASS_WITH_REPAIR'],
+      ];
+      for (const [extra, code] of casos) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI(extra) }) } as any, r as any);
         eq(r._out._status, 400, `${code} ⇒ HTTP 400`);
         assert(String(r._out._json.error).includes(code), r._out._json.error);
       }
