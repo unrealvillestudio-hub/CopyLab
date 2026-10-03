@@ -1373,6 +1373,11 @@ const SLIDE_PASS_CONTRACT_MAX_SLIDES = 20;
 const SLIDE_ROLES = ['cover', 'body', 'closing'] as const;
 type SlideRole = typeof SLIDE_ROLES[number];
 const SLIDE_EYEBROW_MAX_CHARS = 28;
+// La maqueta v4 rotula cada lámina con su TEMA en una o dos palabras («El clima», «La diferencia»).
+// Medido el 2026-10-03, segunda vuelta del barrido: aun con la regla escrita, el modelo devolvió
+// «Cierre: paso siguiente», «Apertura: el síntoma», «La solución del mercado». Dos podas que no
+// dependen de juicio ni de idioma: más de 3 palabras, o un rótulo partido con dos puntos.
+const SLIDE_EYEBROW_MAX_WORDS = 3;
 const SLIDE_KEYWORD_MAX_WORDS = 4;
 const SLIDE_STEPS_MIN = 2;
 const SLIDE_STEPS_MAX = 5;
@@ -1507,15 +1512,16 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     + `- keyword: UNA palabra o expresión corta (hasta ${SLIDE_KEYWORD_MAX_WORDS} palabras) copiada LITERAL,`
     + ' carácter por carácter, del titular de ESA lámina: la que carga el sentido. Como mucho una por'
     + ' lámina, y nunca el titular entero.\n'
-    + `- eyebrow: etiqueta corta (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra la FUNCIÓN de`
-    + ` la lámina dentro del carrusel (el dato, la causa, el paso siguiente…), en el idioma de la marca`
-    + ` (${languageLabel}). No repite el titular.`
+    + `- eyebrow: rótulo de 1 a ${SLIDE_EYEBROW_MAX_WORDS} palabras (${SLIDE_EYEBROW_MAX_CHARS} caracteres o menos) que nombra el`
+    + ` TEMA de esa lámina, lo que el lector encuentra en ella, como el rótulo de una sección ("El clima",`
+    + ` "La diferencia"), en el idioma de la marca (${languageLabel}). No repite el titular.`
     // Medido el 2026-10-03 (barrido F3): «Dato clave del carrusel», «El contexto adversario», «El
-    // cierre», «Solución presentada». La etiqueta se publica: se escribe para quien lee, no para quien
+    // cierre», «Cierre: paso siguiente». La etiqueta se publica: se escribe para quien lee, no para quien
     // planificó el carrusel.
-    + ' La lee el público: nunca nombra el formato ni sus partes (carrusel, lámina, portada, cierre),'
-    + ' nunca usa el vocabulario del método con que se escribió la pieza, y no suena a nota de quien la'
-    + ' analiza. Si no hay una etiqueta que le diga algo al lector, null.\n'
+    + ' La lee el público: nunca nombra el papel de la lámina en la estructura (apertura, dato, causa,'
+    + ' solución, cierre, llamada), ni el formato ni sus partes (carrusel, lámina, portada), ni usa el'
+    + ' vocabulario del método con que se escribió la pieza; sin dos puntos. Si no hay un rótulo que le'
+    + ' diga algo al lector, null.\n'
     + '- figure: SÓLO si en el TEXTO DE LA PIEZA aparecen, literales, una cifra Y la fuente que la'
     + ' sostiene, nombrada. "value" copia la cifra tal como aparece; "source" copia el nombre de la'
     + ' fuente tal como aparece. "bar" sólo si la cifra es un porcentaje entre 0 y 100, y entonces'
@@ -1569,6 +1575,8 @@ function normalizeSlidePlan(
       const t = texto(o.eyebrow);
       if (!t) poda('eyebrow', 'SHAPE');
       else if (Array.from(t).length > SLIDE_EYEBROW_MAX_CHARS) poda('eyebrow', 'TOO_LONG');
+      else if (t.split(' ').length > SLIDE_EYEBROW_MAX_WORDS) poda('eyebrow', 'TOO_MANY_WORDS');
+      else if (t.includes(':')) poda('eyebrow', 'STRUCTURE');
       else eyebrow = t;
     }
 

@@ -1806,8 +1806,9 @@ async function run() {
     assert(!/descarta toda opción/.test(sin), 'sin opciones, no hay nada que descartar');
     assert(/siempre null/.test(sin) && !sin.includes('«'), 'sin opciones: cta null y ningún CTA escrito por el código');
     assert(con.includes('(português do Brasil)') && con.includes(`${PURE.SLIDE_EYEBROW_MAX_CHARS} caracteres o menos`), 'eyebrow en el idioma de la marca y con su tope');
-    assert(/nunca nombra el formato ni sus partes/.test(con) && /nunca usa el vocabulario del método/.test(con),
-      'eyebrow escrita para quien lee: sin nombrar el carrusel ni el método (barrido F3, 2026-10-03)');
+    assert(/nombra el\s+TEMA de esa lámina/.test(con) && /nunca nombra el papel de la lámina en la estructura/.test(con)
+      && /ni el formato ni sus partes/.test(con) && /vocabulario del método/.test(con) && /sin dos puntos/.test(con),
+      'eyebrow: el tema de la lámina, escrito para quien lee (maqueta v4; barrido F3, 2026-10-03)');
     assert(/Sólo vale una opción que le pide al lector una acción/.test(con) && /un lema,\s*una afirmación o una frase de búsqueda no es una llamada a la acción/.test(con),
       'el cierre elige una instrucción, no un lema ni una frase de búsqueda');
     assert(!/Sólo vale una opción/.test(sin), 'sin opciones, no hay nada que elegir');
@@ -1863,6 +1864,8 @@ async function run() {
     const casos: Array<[any, string, string]> = [
       [{ n: 2, eyebrow: 'x'.repeat(29) }, 'eyebrow', 'n2.eyebrow: TOO_LONG'],
       [{ n: 2, eyebrow: '  ' }, 'eyebrow', 'n2.eyebrow: SHAPE'],
+      [{ n: 2, eyebrow: 'A solução do mercado' }, 'eyebrow', 'n2.eyebrow: TOO_MANY_WORDS'],
+      [{ n: 2, eyebrow: 'Fecho: próximo passo' }, 'eyebrow', 'n2.eyebrow: STRUCTURE'],
       [{ n: 2, keyword: 'vacina atrasada' }, 'keyword', 'n2.keyword: NOT_IN_HEADLINE'],
       [{ n: 2, keyword: 'Seis em cada dez tutores' }, 'keyword', 'n2.keyword: TOO_LONG'],
       [{ n: 1, keyword: 'adiam a vacina' }, 'keyword', 'n1.keyword: NOT_IN_HEADLINE'],   // está en el titular de OTRA lámina
