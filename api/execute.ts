@@ -66,7 +66,7 @@ export const maxDuration = 300;
  *       una se escribe con su fuente NOMBRADA en el texto ("según Convert"), nunca con la URL.
  *       Eso es la "procedencia declarada" que pide HR-UNRLVL-01 (kind proof).
  *     · `buildWritingMaterialBlock` (puro) inyecta mecanismo y caso concreto entre las
- *       restricciones, con instrucción CONSTRUCTIVA — desarrollá, ilustrá — no una prohibición más.
+ *       restricciones, con instrucción CONSTRUCTIVA — desarrolla, ilustra — no una prohibición más.
  *     · cualquier campo ausente ⇒ sin bloque ⇒ prompt byte-idéntico al de hoy. Modo UI intacto.
  *
  * A1 · CAMBIO 8 (2026-08-18) — las CIFRAS dejan de ser palabra del modelo:
@@ -663,8 +663,8 @@ function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): s
     + `Escribe la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
     + ' alcanzar ni un límite del que convenga quedarse lejos: es el espacio TOTAL que tienes,'
     + ' cierre incluido.\n\n'
-    + 'Planificá antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
-    + ' Si el material no entra, achicá el ALCANCE —un caso en vez de dos, un ángulo en vez de'
+    + 'Planifica antes de escribir: apertura, desarrollo y CIERRE tienen que caber ahí adentro.'
+    + ' Si el material no entra, reduce el ALCANCE —un caso en vez de dos, un ángulo en vez de'
     + ' tres, una idea desarrollada en vez de tres enunciadas—, nunca el cierre ni la última'
     + ' frase. Una pieza que termina a media frase es el fallo que este presupuesto existe para'
     + ' impedir: vale más decir menos y cerrarlo, que decirlo todo y quedar cortado.';
@@ -1914,7 +1914,7 @@ function buildClaimsBlock(
 // Las reglas del Watcher ya se inyectan —HR-UNRLVL-01 y HR-GEN-08 entre ellas— y se violan igual,
 // porque decirle a un generador "no enuncies sin ilustrar" no le da CON QUÉ ilustrar. Este bloque
 // es lo otro: el mecanismo (cómo funciona el asunto por dentro) y un caso concreto del memo, con
-// su fuente. Instrucción CONSTRUCTIVA a propósito — desarrollá, ilustrá — y no una prohibición más.
+// su fuente. Instrucción CONSTRUCTIVA a propósito — desarrolla, ilustra — y no una prohibición más.
 //
 // Cualquiera de los dos puede faltar: se emite lo que haya. Sin ninguno ⇒ null ⇒ sin bloque, y el
 // prompt queda exactamente como hoy. El caso se exige DISTINTO del que abre la pieza: repetir el
@@ -1935,7 +1935,7 @@ function buildWritingMaterialBlock(
   const mech = String(mechanism ?? '').trim();
   if (mech) {
     parts.push(`MECANISMO (cómo funciona el asunto por dentro):\n${mech}\n`
-      + 'Desarrollalo en la pieza: los pasos, o la relación causal — qué provoca qué y por qué. Es'
+      + 'Desarrolla el mecanismo en la pieza: los pasos, o la relación causal — qué provoca qué y por qué. Es'
       + ' lo que separa una afirmación de una explicación, y es lo que la pieza tiene que dejar'
       + ' entendido.');
   }
@@ -1951,7 +1951,7 @@ function buildWritingMaterialBlock(
       .map((c, i) => `${i + 1}. [${c.source_name}] ${c.case} (${c.source_url})`)
       .join('\n');
     const comoUsarlos = casos.length >= 2
-      ? 'Usá el PRIMERO para abrir: es el caso con el que entrás. Usá el SEGUNDO más adelante, para'
+      ? 'Usa el PRIMERO para abrir: es el caso con el que entras. Usa el SEGUNDO más adelante, para'
         + ' mostrar que el patrón se repite — no basta con que algo haya pasado una vez. Cada uno con'
         + ' su especificidad y nombrando su fuente citable en el texto. No ilustres con el mismo caso'
         + ' con el que abriste: eso no ilustra, repite.'
@@ -2048,7 +2048,7 @@ const AUDIENCE_CTA: Record<AudienceFrame, string> = {
     + ' (contactar, agendar, cotizar, contratar, "nuestros servicios", "estamos para ayudarte").'
     + ' Ofrecerle comprar a quien no puede comprar es fallo del frente. El único cierre válido es lo'
     + ' que ese lector debe EXIGIR o recomendar donde sí tiene poder: ante quien decide, en la'
-    + ' instancia que decide, con su voto o dentro de su ámbito. Cerrá dándole esa exigencia formulada,'
+    + ' instancia que decide, con su voto o dentro de su ámbito. Cierra dándole esa exigencia formulada,'
     + ' no una invitación a comprar.',
   general:
     'Audiencia MIXTA: entre tus lectores hay quien firma y quien no, y la pieza no sabe cuál la está'

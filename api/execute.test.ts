@@ -1923,6 +1923,16 @@ async function run() {
     assert(/mismas reglas de esta marca/.test(con), 'las reglas de marca del system gobiernan lo nuevo');
   });
 
+  await test('IDIOMA·el código de CopyLab no lleva voseo en ningún texto (2026-10-03)', () => {
+    // Medido el 2026-10-03: «Planificá», «achicá», «Desarrollalo», «Usá… entrás», «Cerrá» viajaban al
+    // modelo dentro de instrucciones fuera de los bloques nuevos. Lo que el modelo lee, lo imita: se
+    // revisa el archivo ENTERO, no sólo las instrucciones del bloque puro.
+    const fuente = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const VOSEO_AMPLIO = /(?<!\p{L})(Planificá|achicá|Desarrollalo|desarrollá|ilustrá|entrás|Cerrá|cerrá|Usá|usá|Escribí|escribí|Elegí|Devolvé|Respondé|tenés|podés|querés|sabés|sos|vos)(?!\p{L})/u;
+    const hallado = fuente.split('\n').map((l, i) => [i + 1, l] as const).filter(([, l]) => VOSEO_AMPLIO.test(l));
+    eq(JSON.stringify(hallado.map(([n]) => n)), '[]', `voseo en api/execute.ts: ${hallado.map(([n, l]) => `${n}: ${l.trim().slice(0, 80)}`).join(' | ')}`);
+  });
+
   await test('F3·pure las instrucciones nuevas no nombran ninguna marca ni usan voseo', () => {
     const alt = PURE.normalizeAltPass({ image_url: VM_IMG, scene: 'escena', focus: 'foco' });
     const textos = [
