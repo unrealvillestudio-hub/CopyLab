@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError, sistemaEnBloques } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -123,6 +123,12 @@ function extractPure(): any {
 const PURE = extractPure();
 
 // ── mock fetch ──────────────────────────────────────────────────────────────
+// ECONOMÍA (2026-10-11) — el system viaja en bloques con punto de caché; su TEXTO es el de siempre. Las
+// pruebas que leen el system leen ese texto, no la forma de transporte.
+function sysText(body: any): string {
+  const s = body?.system;
+  return Array.isArray(s) ? s.map((b: any) => String(b?.text ?? '')).join('') : String(s ?? '');
+}
 const REAL_FETCH = globalThis.fetch;
 function res(data: any, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => data, text: async () => (typeof data === 'string' ? data : JSON.stringify(data)) } as any;
@@ -1014,7 +1020,7 @@ async function run() {
     const fx = installFetch({ snapshot: [{ cache_data: cache }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
     try {
       await runLiteralCopy('hola', 'EN', 'LucienSael', 'lucien_social');
-      const sys = String(fx.claudeBodies[0]?.system ?? '');
+      const sys = sysText(fx.claudeBodies[0]);
       assert(sys.includes('ANCHOR_SOCIAL') && !sys.includes('ANCHOR_EDITORIAL'), 'usa el genoma social, no el [0] del array');
     } finally { fx.restore(); }
   });
@@ -1795,7 +1801,7 @@ async function run() {
       eq(r._out._json.meta.alt_source, 'image', 'con visión, la imagen es la fuente');
       eq(r._out._json.meta.alt_chars, 53, 'el largo del alt, en caracteres');
       eq(r._out._json.usage.input_tokens, 900, 'el consumo viaja para que el carril lo asiente');
-      eq(r._out._json.meta.system_chars, fx.claudeBodies[0]?.system?.length, 'el tamaño del system que se pagó');
+      eq(r._out._json.meta.system_chars, sysText(fx.claudeBodies[0]).length, 'el tamaño del system que se pagó');
       assert(Number.isInteger(r._out._json.meta.layers_omitted), 'y cuántas capas de contenido no viajaron');
       assert(!('body' in r._out._json) && !('image_plan' in r._out._json), 'ni pieza ni plan');
       const body = fx.claudeBodies[0];
@@ -3443,6 +3449,58 @@ async function run() {
     eq(red.usage, null, 'sin consumo conocido');
     const nada = failureLedgerFields(new Error('brand roto'), null);
     eq(nada.provider_called, false, 'un Error a secas sin consumo no es una llamada');
+  });
+
+  // ── ECONOMÍA (2026-10-11) — caché del system y consumo de caché ────────────────────────────────
+  // Sam, 2026-10-11: «aplica cache si es posible». Cada pieza hace varias llamadas con el mismo comienzo
+  // del system; con punto de caché ese comienzo se cobra a la tarifa de lectura. El texto no cambia.
+  await test('ECONOMÍA·pure sistemaEnBloques: el texto unido es el mismo, byte a byte; puntos en los cortes', () => {
+    const cab = 'CAB\n\n', sep = '\n\n---\n\n', capas = ['idioma', 'marca', 'canal', 'genoma', 'material', 'cierre'];
+    const b = sistemaEnBloques(cab, capas, sep, [2, 4]);
+    eq(b.map(x => x.text).join(''), cab + capas.join(sep), 'mismo texto que el string de siempre');
+    eq(b.length, 3, 'dos cortes → tres bloques');
+    eq(JSON.stringify(b.map(x => !!x.cache_control)), '[true,true,false]', 'punto de caché en los cortes, nunca en lo variable');
+    assert(b[0].text.endsWith('marca') && b[1].text.endsWith('genoma'), 'cada corte termina donde se pidió');
+    const raros = sistemaEnBloques(cab, capas, sep, [0, 2, 2, 99]);
+    eq(raros.length, 2, 'cortes en 0, repetidos o fuera de rango se descartan');
+    eq(raros.map(x => x.text).join(''), cab + capas.join(sep), 'y el texto sigue intacto');
+    const sinCorte = sistemaEnBloques(cab, capas, sep, []);
+    eq(sinCorte.length, 1, 'sin cortes, un solo bloque');
+    eq(sinCorte[0].cache_control, undefined, 'sin punto de caché');
+  });
+
+  await test('ECONOMÍA·cableado: el system viaja en bloques con caché y su texto es el system construido', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 4000, cache_creation_input_tokens: 900 } } });
+    const r = makeRes();
+    await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any);
+    fx.restore();
+    eq(r._out._status, 200, '200');
+    const sys = fx.claudeBodies[0]?.system;
+    assert(Array.isArray(sys), 'el system viaja en bloques');
+    assert(sys.filter((x: any) => x.cache_control).length >= 1, 'con al menos un punto de caché');
+    eq(sys[sys.length - 1].cache_control, undefined, 'el último bloque (lo de la pieza) nunca se guarda');
+    assert(sys[0].text.includes('## MARCA') || sys[0].text.length > 0, 'el primer bloque es el comienzo estable');
+    eq(sysText(fx.claudeBodies[0]).startsWith('Eres CopyLab v9.7'), true, 'el texto empieza como siempre');
+    eq(r._out._json.usage.cache_read_input_tokens, 4000, 'la lectura de caché viaja al carril');
+    eq(r._out._json.usage.cache_creation_input_tokens, 900, 'la escritura de caché viaja al carril');
+  });
+
+  await test('ECONOMÍA·sin caché reportada, el consumo tiene la forma de siempre', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 10, output_tokens: 5 } } });
+    const r = makeRes();
+    await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any);
+    fx.restore();
+    eq(JSON.stringify(r._out._json.usage), JSON.stringify({ input_tokens: 10, output_tokens: 5 }), 'sin campos nuevos');
+  });
+
+  await test('ECONOMÍA·el motivo del proveedor viaja DESPUÉS del mensaje de siempre (crédito agotado)', async () => {
+    const fx = installFetch({ claude: { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }, claudeStatus: 400 });
+    const r = makeRes();
+    await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any);
+    fx.restore();
+    assert(String(r._out._json.error).startsWith('Claude API error: 400'), 'el prefijo que el carril lee, intacto');
+    assert(String(r._out._json.error).includes('credit balance is too low'), 'y el motivo, para que el libro abra el cortacorriente');
+    eq(r._out._json.provider_http_status, 400, 'el código, como dato');
   });
 
   const total = passed + xfails.length + failures.length;

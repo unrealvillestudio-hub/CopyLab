@@ -2862,6 +2862,7 @@ async function buildSequenceContext(req: ExecuteRequest): Promise<{
 
 export async function buildPrompt(req: ExecuteRequest): Promise<{
   system: string;
+  system_bloques: SystemBlock[];
   user: string;
   layers_applied: string[];
   voice_id: string | null;
@@ -3298,6 +3299,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   // ── CONTEXTO ──────────────────────────────────────────────────────────────
   layers.push(buildBrandBlock(brand));                                  // ## MARCA
+  // ECONOMÍA (2026-10-11) — primer punto de caché: idioma y marca no cambian entre las pasadas de una pieza
+  // ni entre piezas de la misma marca e idioma. Ver `sistemaEnBloques`.
+  const corteMarca = layers.length;
 
   const goalsBlock = buildGoalsBlock(goalsList as any[]);
   if (goalsBlock) capaDeContenido(goalsBlock);                              // ## OBJETIVOS ESTRATÉGICOS
@@ -3360,6 +3364,9 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (copyProfileBlock) layers.push(copyProfileBlock);               // ## VOZ DE MARCA — BP_COPY_1.0
 
   if (voiceLayer) layers.push(voiceLayer);                           // L1.5 genoma — override de ADN, DESPUÉS del copy profile
+  // ECONOMÍA (2026-10-11) — segundo punto de caché: hasta el genoma, todo depende de la marca, el idioma y
+  // el canal. Lo que sigue (reglas del juez, correcciones, material, motor creativo, forma) es de la pieza.
+  const corteGenoma = layers.length;
 
   if (watcherRulesBlock) layers.push(watcherRulesBlock);
   if (learnedCorrectionsBlock) layers.push(learnedCorrectionsBlock);   // cómo se corrigieron antes, en esta voz
@@ -3464,6 +3471,13 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     : 'no_cache';
   const capasDelSystem = altPass ? layers.filter((_, i) => !capasDeContenido.has(i)) : layers;
   const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${capasDelSystem.join('\n\n---\n\n')}`;
+  // ECONOMÍA — el MISMO texto en bloques con punto de caché. Los cortes se traducen a índices de las capas
+  // que de verdad viajan (la pasada del alt omite las de contenido).
+  const viajaAntes = (corte: number) => altPass ? layers.slice(0, corte).filter((_, i) => !capasDeContenido.has(i)).length : corte;
+  const systemBloques = sistemaEnBloques(
+    'Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n',
+    capasDelSystem, '\n\n---\n\n', [viajaAntes(corteMarca), viajaAntes(corteGenoma)],
+  );
 
   let userInstruction: string;
   if (isEmailSeq) {
@@ -3521,6 +3535,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   return {
     system,
+    // ECONOMÍA (2026-10-11) — `system` en bloques con punto de caché. Su texto unido es `system`, byte a byte.
+    system_bloques: systemBloques,
     user: userInstruction,
     layers_applied: appliedLayers,
     voice_id,
@@ -3748,7 +3764,33 @@ Generate now.`;
 
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
-interface ClaudeUsage { input_tokens: number; output_tokens: number; }
+// ECONOMÍA (2026-10-11) — la caché del proveedor viaja al carril, que la asienta a su tarifa (dato). Anthropic
+// la cuenta APARTE de input_tokens: sin estos dos campos el libro callaría ese gasto.
+interface ClaudeUsage { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; }
+
+type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
+
+/**
+ * ECONOMÍA (2026-10-11) — el system de CopyLab en bloques, con punto de caché en cada corte. El texto unido
+ * es EXACTAMENTE `cabecera + capas.join(sep)`: el modelo lee lo mismo; sólo cambia lo que se cobra al
+ * repetirse. Cada pieza hace varias llamadas con el mismo comienzo (generación, formato, imagen, alt,
+ * lámina, reparación) y las piezas de una marca comparten idioma, marca y canal: ese comienzo se lee de
+ * la caché a la décima parte del precio de entrada (tarifa medida 2026-10-11). Los cortes vacíos o
+ * repetidos se descartan; un corte en 0 no aporta nada.
+ */
+export function sistemaEnBloques(cabecera: string, capas: string[], sep: string, cortes: number[]): SystemBlock[] {
+  const validos = [...new Set(cortes.filter(c => c > 0 && c < capas.length))].sort((a, b) => a - b);
+  const bloques: SystemBlock[] = [];
+  let desde = 0;
+  for (const c of validos) {
+    const texto = (desde === 0 ? cabecera : sep) + capas.slice(desde, c).join(sep);
+    bloques.push({ type: 'text', text: texto, cache_control: { type: 'ephemeral' } });
+    desde = c;
+  }
+  const resto = capas.slice(desde).join(sep);
+  bloques.push({ type: 'text', text: (desde === 0 ? cabecera : sep) + resto });
+  return bloques;
+}
 
 // ── CONTRATO DE FALLO PARA EL LIBRO MAYOR (2026-10-01) ─────────────────────────────────────────
 // Un 500 de este endpoint ya no es sólo un texto: dice si la llamada paga se hizo, con qué código
@@ -3788,7 +3830,8 @@ export function failureLedgerFields(err: unknown, usage: ClaudeUsage | null): {
 // ── FALLO:END ──
 
 export async function callClaude(
-  system: string,
+  // ECONOMÍA (2026-10-11) — un string (como siempre) o bloques de texto con punto de caché.
+  system: string | SystemBlock[],
   user: string,
   maxTokens = 1600,
   // F2/F3 · pasada del alt — la imagen que el modelo tiene que MIRAR. Va por URL: la API de Mensajes
@@ -3830,7 +3873,13 @@ export async function callClaude(
     throw new ProviderCallError(`Claude API unreachable: ${err instanceof Error ? err.message : String(err)}`, null);
   }
   // El MISMO mensaje de siempre —el carril y las alertas lo leen—, ahora con el código como dato.
-  if (!res.ok) throw new ProviderCallError(`Claude API error: ${res.status}`, res.status);
+  // ECONOMÍA (2026-10-11) — el motivo del proveedor viaja DESPUÉS del mensaje de siempre (el prefijo
+  // `Claude API error: <código>` no cambia). Sin él, el carril no podía saber que el rechazo era crédito
+  // agotado, y el cortacorriente del libro no se abría con los fallos de CopyLab.
+  if (!res.ok) {
+    const motivo = await res.text().then(t => { try { return String(JSON.parse(t)?.error?.message ?? '').slice(0, 160); } catch { return ''; } }).catch(() => '');
+    throw new ProviderCallError(`Claude API error: ${res.status}${motivo ? ` — ${motivo}` : ''}`, res.status);
+  }
   let data: any;
   try {
     data = await res.json();
@@ -3842,7 +3891,11 @@ export async function callClaude(
   const usage = data.usage ?? {};
   return {
     text: data.content?.[0]?.text ?? '',
-    usage: { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 },
+    usage: {
+      input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
+      ...(usage.cache_read_input_tokens ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
+      ...(usage.cache_creation_input_tokens ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
+    },
   };
 }
 
@@ -3925,7 +3978,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const built = await buildPrompt(body);
 
     console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} alt_pass=${built.alt_pass ? built.alt_pass.source : 'no'} slide_pass=${built.slide_pass ? built.slide_pass.input.slides.length : 'no'} — calling Claude`);
-    const { text: output, usage } = await callClaude(built.system, built.user, built.max_tokens, built.user_image_url);
+    const { text: output, usage } = await callClaude(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url);
     usoDeLaLlamada = usage;
 
     // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
