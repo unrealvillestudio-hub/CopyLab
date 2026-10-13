@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1076,6 +1076,89 @@ async function run() {
       eq(o._json.meta.voice_id, 'v1', 'meta.voice_id');
       eq(o._json.meta.rules_count, 1, 'meta.rules_count — sólo la imperativa (la firma se surfacea, no se inyecta)');
       assert(!(o._json.meta.rules_injected ?? []).includes('SIG-1'), 'la regla firma NO entra en rules_injected');
+    } finally { fx.restore(); }
+  });
+
+  // ── ÉNFASIS (Sam, 2026-10-13): las palabras clave del texto de la imagen ──
+  await test('ÉNFASIS·pure sin la clave, el formato y el system quedan IDÉNTICOS', () => {
+    for (const destino of ['social', 'editorial']) for (const modo of ['echo', 'dialogue']) for (const bf of [null, 'markdown_min']) {
+      eq(String(PURE.buildCarrilFormatBlock(destino, modo, bf)), String(PURE.buildCarrilFormatBlock(destino, modo, bf, false)), `${destino}/${modo}/${bf}`);
+    }
+    eq(PURE.readImageEmphasis(undefined), false, 'ausente ⇒ falso');
+    eq(PURE.readImageEmphasis('true'), false, 'sólo el booleano true activa');
+    eq(PURE.readImageEmphasis(true), true, 'true ⇒ activo');
+  });
+  await test('ÉNFASIS·pure el formato pide la línea ÉNFASIS después del TÍTULO, contra el texto que va sobre la imagen', () => {
+    const eco = String(PURE.buildCarrilFormatBlock('social', 'echo', null, true));
+    const dia = String(PURE.buildCarrilFormatBlock('social', 'dialogue', null, true));
+    assert(eco.indexOf('"TÍTULO:') < eco.indexOf('"ÉNFASIS:') && eco.indexOf('"ÉNFASIS:') < eco.indexOf('línea en blanco'), 'eco: TÍTULO → ÉNFASIS → cuerpo');
+    assert(/LITERALES del TÍTULO/.test(eco), 'en eco se resalta el título');
+    assert(/LITERALES del GANCHO/.test(dia), 'en diálogo se resalta el gancho');
+    assert(dia.indexOf('"TÍTULO:') < dia.indexOf('"ÉNFASIS:'), 'diálogo: después del TÍTULO');
+    const b = String(PURE.buildImageEmphasisBlock('dialogue'));
+    assert(b.startsWith('## PALABRAS CLAVE DE LA IMAGEN') && /del GANCHO/.test(b) && /LETRA POR LETRA/.test(b), 'bloque del system');
+    assert(/del TÍTULO/.test(String(PURE.buildImageEmphasisBlock('echo'))), 'en eco nombra el título');
+  });
+  await test('ÉNFASIS·pure parsePiece consume la línea ÉNFASIS (antes o después del TÍTULO) y sin ella devuelve lo de siempre', () => {
+    const tras = PURE.parsePiece('GANCHO: Siete mil dólares. Esa fue la multa.\nTÍTULO: La junta pagó por no leer\nÉNFASIS: Siete mil dólares | multa\n\nEl cuerpo.');
+    eq(tras.image_emphasis_raw, 'Siete mil dólares | multa', 'después del título');
+    eq(tras.title, 'La junta pagó por no leer', 'título intacto');
+    eq(tras.body, 'El cuerpo.', 'la línea no se cuela en el cuerpo');
+    const antes = PURE.parsePiece('ÉNFASIS: multa\nTÍTULO: Un título\n\nCuerpo.');
+    eq(antes.image_emphasis_raw, 'multa', 'antes del título');
+    eq(antes.title, 'Un título', 'título');
+    eq(PURE.parsePiece('TÍTULO: T\nENFASIS: x\n\nC').image_emphasis_raw, 'x', 'sin tilde también');
+    const sin = PURE.parsePiece('TÍTULO: Un título\n\nEste es el cuerpo.');
+    eq(JSON.stringify(Object.keys(sin)), JSON.stringify(['title', 'image_hook', 'image_support', 'body']), 'sin la línea: las claves de siempre');
+  });
+  await test('ÉNFASIS·pure pruneEmphasis: sólo tramos literales, cortos, que no sean el texto entero, como mucho dos', () => {
+    const H = 'Siete mil dólares. Esa fue la multa.';
+    const r = PURE.pruneEmphasis('**Siete mil dólares** | "multa" | Multa | la multa de siempre que nadie leyó | Siete mil dólares. Esa fue la multa. | Esa', H);
+    eq(JSON.stringify(r.terms), JSON.stringify(['Siete mil dólares', 'multa']), 'los dos primeros válidos, sin asteriscos ni comillas');
+    const motivos = Object.fromEntries(r.dropped.map((d: any) => [d.term, d.reason]));
+    eq(motivos['Multa'], 'NOT_IN_TEXT', 'literal: mayúsculas cuentan');
+    eq(motivos['la multa de siempre que nadie leyó'], 'TOO_LONG', 'más de 4 palabras');
+    eq(motivos['Esa'], 'TOO_MANY', 'tope de dos');
+    eq(PURE.pruneEmphasis('Siete mil dólares. Esa fue la multa', H).dropped[0].reason, 'TOO_LONG', 'el texto entero tampoco entra');
+    eq(PURE.pruneEmphasis('dólares', 'dólares.').dropped[0].reason, 'IS_TEXT', 'un tramo que ES el texto no resalta nada');
+    eq(PURE.pruneEmphasis(null, H).terms.length, 0, 'sin línea ⇒ ningún tramo');
+    eq(PURE.pruneEmphasis('multa', null).dropped[0].reason, 'NOT_IN_TEXT', 'sin texto de imagen ⇒ nada');
+  });
+  await test('ÉNFASIS·carril handler: con la clave, el system lleva el bloque y la respuesta los tramos podados contra el gancho', async () => {
+    const out = 'GANCHO: Siete mil dólares. Esa fue la multa.\nTÍTULO: La junta pagó por no leer el reglamento\nÉNFASIS: Siete mil dólares | reglamento\n\nCuerpo de la pieza.';
+    const fx = installFetch({ claude: { content: [{ text: out }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      const r = makeRes();
+      const body = reqWith(
+        { brandContext: { brands: [{ id: 'B', language_primary: 'es' }], brand_voice_genome: [GENOME_V1] } },
+        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'es', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null, image_title_mode: 'dialogue', image_emphasis: true } },
+      );
+      await handler({ method: 'POST', body } as any, r as any);
+      const o = r._out;
+      eq(o._status, 200, 'HTTP 200');
+      eq(JSON.stringify(o._json.image_emphasis), JSON.stringify(['Siete mil dólares']), '«reglamento» está en el título, no en el gancho: se poda');
+      eq(o._json.meta.image_emphasis_requested, true, 'eco: pedido');
+      eq(o._json.meta.image_emphasis_missing, false, 'eco: la línea vino');
+      eq(o._json.meta.image_emphasis_dropped[0].reason, 'NOT_IN_TEXT', 'eco: motivo de la poda');
+      eq(o._json.body, 'Cuerpo de la pieza.', 'el cuerpo sin la línea');
+      assert(sysText(fx.claudeBodies[0]).includes('## PALABRAS CLAVE DE LA IMAGEN'), 'el system lleva el bloque');
+    } finally { fx.restore(); }
+  });
+  await test('ÉNFASIS·carril handler: sin la clave, ni bloque, ni línea, ni claves nuevas en la respuesta', async () => {
+    const fx = installFetch({ claude: { content: [{ text: 'TÍTULO: Un título\n\nCuerpo.' }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      const r = makeRes();
+      const body = reqWith(
+        { brandContext: { brands: [{ id: 'B', language_primary: 'es' }], brand_voice_genome: [GENOME_V1] } },
+        { builder_input: { domain: 'd', voice_id: 'v1', destination: 'social', platform: 'meta_ig', language: 'es', psycho_preset: null, rules: [], iid_brief: 'b', angle: null, audience_frame: null } },
+      );
+      await handler({ method: 'POST', body } as any, r as any);
+      const o = r._out;
+      assert(!('image_emphasis' in o._json), 'sin clave en la respuesta');
+      assert(!('image_emphasis_requested' in o._json.meta), 'sin clave en el meta');
+      const sys = sysText(fx.claudeBodies[0]);
+      const user = JSON.stringify(fx.claudeBodies[0].messages);
+      assert(!sys.includes('PALABRAS CLAVE DE LA IMAGEN') && !user.includes('ÉNFASIS'), 'ni bloque ni línea');
     } finally { fx.restore(); }
   });
 

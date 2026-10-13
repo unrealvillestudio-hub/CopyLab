@@ -201,6 +201,11 @@ interface BuilderInput {
   // contrato que `title_budget_chars` y `max_tokens`: el carril resuelve, CopyLab obedece. Ausente
   // o desconocido ⇒ el modo que REPITE, que es el comportamiento vigente.
   image_title_mode?: string | null;
+  // ÉNFASIS (Sam, 2026-10-13: «que en los textos de las imágenes se resalten las palabras clave») —
+  // el carril declara que el overlay de ESTA pieza pinta tramos con énfasis. CopyLab escribe, además
+  // del texto que va sobre la imagen, qué tramos LITERALES de ese texto se resaltan. Ausente o falso ⇒
+  // el prompt y la respuesta quedan byte a byte como antes.
+  image_emphasis?: boolean | null;
   // F1 (Sam, 2026-10-02: «markdown mínimo») — el FORMATO DEL CUERPO que pinta el canal de ESTA
   // pieza, resuelto por el carril contra el proveedor del canal en `intel.brand_publish_channels`.
   // Llega sólo como 'markdown_min' y sólo cuando el canal lo pinta; ausente o desconocido ⇒ el
@@ -863,6 +868,62 @@ function buildTitleBlock(
     + publicacion;
 }
 
+// ── ÉNFASIS · LAS PALABRAS CLAVE DEL TEXTO DE LA IMAGEN (Sam, 2026-10-13) ───────────────────────
+//
+// El compositor de ImageLab (1.4.0) pinta tramos del titular con otro peso, tamaño, mayúsculas y
+// color de la marca. QUÉ tramos lo decide quien escribe, porque es una decisión de sentido: la palabra
+// que carga la tensión. CÓMO se ven es dato de la marca en ImageLab: acá no hay ni un estilo.
+//
+// Los tramos son subcadenas LITERALES del texto de la imagen (el gancho en diálogo, el título en
+// eco). Nunca se reescribe el texto para que el tramo quepa: si no está literal, se poda.
+const EMPHASIS_MAX_TERMS = 2;
+const EMPHASIS_MAX_WORDS = 4;
+const EMPHASIS_MAX_CHARS = 40;
+
+function readImageEmphasis(v: unknown): boolean {
+  return v === true;
+}
+
+function buildImageEmphasisBlock(mode: ImageTitleMode): string {
+  const donde = mode === 'dialogue' ? 'del GANCHO' : 'del TÍTULO';
+  return '## PALABRAS CLAVE DE LA IMAGEN\n'
+    + `El texto que va sobre la imagen se compone con jerarquía: una o dos palabras clave ${donde} se`
+    + ' pintan más grandes, con otro peso y en el color de la marca, y el resto queda en segundo plano.'
+    + ' Elige esas palabras.\n\n'
+    + 'Son las que cargan la TENSIÓN: el objeto concreto, la cifra, el verbo del cambio, la consecuencia.'
+    + ' Si alguien sólo leyera esas palabras, tendría que adivinar de qué va la pieza.\n\n'
+    + `- Una o dos, nunca más. Cada una es una palabra o una expresión corta (hasta ${EMPHASIS_MAX_WORDS}`
+    + ' palabras), copiada LETRA POR LETRA de ese texto, con sus mayúsculas y sus tildes.\n'
+    + '- Nunca artículos, preposiciones ni conectores sueltos, y nunca el texto entero.\n'
+    + '- No cambies el texto para que una palabra encaje: se eligen palabras que ya están.';
+}
+
+/**
+ * Poda los tramos que propuso el escritor contra el texto de la imagen. PURO. Un tramo sobrevive si
+ * aparece LITERAL en el texto, tiene como máximo `EMPHASIS_MAX_WORDS` palabras y `EMPHASIS_MAX_CHARS`
+ * caracteres y no es el texto entero; quedan como máximo `EMPHASIS_MAX_TERMS`. Cada descarte lleva su
+ * motivo, para el eco.
+ */
+function pruneEmphasis(raw: string | null | undefined, target: string | null | undefined): {
+  terms: string[]; dropped: Array<{ term: string; reason: 'NOT_IN_TEXT' | 'TOO_LONG' | 'IS_TEXT' | 'TOO_MANY' | 'EMPTY' }>;
+} {
+  const terms: string[] = [];
+  const dropped: Array<{ term: string; reason: 'NOT_IN_TEXT' | 'TOO_LONG' | 'IS_TEXT' | 'TOO_MANY' | 'EMPTY' }> = [];
+  const text = String(target ?? '');
+  const core = (x: string) => x.trim().replace(/[\s.,;:!?¡¿…"'«»]+$/u, '').replace(/^[\s¡¿"'«»]+/u, '');
+  for (const piece of String(raw ?? '').split('|')) {
+    const term = piece.trim().replace(/^\*+|\*+$/g, '').replace(/^["'«“]+|["'»”]+$/g, '').trim();
+    if (!term) { if (piece.trim()) dropped.push({ term: piece.trim(), reason: 'EMPTY' }); continue; }
+    if (terms.includes(term)) continue;
+    if (term.split(/\s+/).length > EMPHASIS_MAX_WORDS || term.length > EMPHASIS_MAX_CHARS) { dropped.push({ term, reason: 'TOO_LONG' }); continue; }
+    if (!text.includes(term)) { dropped.push({ term, reason: 'NOT_IN_TEXT' }); continue; }
+    if (core(term) === core(text)) { dropped.push({ term, reason: 'IS_TEXT' }); continue; }
+    if (terms.length >= EMPHASIS_MAX_TERMS) { dropped.push({ term, reason: 'TOO_MANY' }); continue; }
+    terms.push(term);
+  }
+  return { terms, dropped };
+}
+
 // ── F1 · EL FORMATO MÍNIMO DEL CUERPO ─────────────────────────────────────────────────────────────
 //
 // QUÉ ES. El contrato que pintan los publicadores de los canales editoriales —los `api/_inline.js`
@@ -895,6 +956,9 @@ const BODY_FORMAT_MARKDOWN_MIN =
   + ' textual o casi, la frase más filosa de la pieza.\n'
   + '- Ninguna otra marca: sin listas, viñetas, tablas, enlaces, "#" sueltos ni "###".';
 
+const EMPHASIS_FORMAT_LINE = (de: string) =>
+  `- Luego la línea EXACTA: "ÉNFASIS: <palabra clave> | <palabra clave>" — una o dos, copiadas LITERALES del ${de} (ver ## PALABRAS CLAVE DE LA IMAGEN).\n`;
+
 // El bloque FORMATO de la instrucción de usuario. Función pura del destino — el ternario que vivía
 // suelto dentro de buildPrompt, ahora testeable y con el título obligatorio en las DOS ramas.
 // Lo único que separa a los destinos es DÓNDE vive el título: en editorial encabeza la pieza
@@ -902,6 +966,8 @@ const BODY_FORMAT_MARKDOWN_MIN =
 function buildCarrilFormatBlock(
   destination: string | null | undefined, mode: ImageTitleMode = 'echo',
   bodyFormat: BodyFormat | null = null,
+  // ÉNFASIS — parámetro con default al final: sin él, el bloque es el de siempre, byte a byte.
+  emphasis = false,
 ): string {
   // En diálogo la salida trae TRES cadenas antes del cuerpo, cada una en su centinela. El apoyo es
   // el único omitible: si no matiza el gancho, su línea no se escribe (ver ## IMAGEN Y TÍTULO).
@@ -910,8 +976,10 @@ function buildCarrilFormatBlock(
       + '- Segunda línea EXACTA: "APOYO: <el matiz del gancho>". Si el apoyo no aporta nada, OMITE'
       + ' esta línea entera — no la escribas vacía.\n'
       + '- Luego la línea EXACTA: "TÍTULO: <el título que responde al gancho>".\n'
+      + (emphasis ? EMPHASIS_FORMAT_LINE('GANCHO') : '')
       + '- Luego una línea en blanco y el cuerpo.\n'
     : '- Primera línea EXACTA: "TÍTULO: <título de la pieza>".\n'
+      + (emphasis ? EMPHASIS_FORMAT_LINE('TÍTULO') : '')
       + '- Luego una línea en blanco y el cuerpo.\n';
   return String(destination ?? '').trim() === 'editorial'
     ? 'FORMATO (editorial):\n'
@@ -936,6 +1004,9 @@ function titleCharCount(title: string | null | undefined): number {
 // and never parses again. body is trimmed and never carries a trailing signature.
 function parsePiece(output: string): {
   title: string | null; image_hook: string | null; image_support: string | null; body: string;
+  // ÉNFASIS — la línea cruda, sin podar (la poda necesita saber contra qué texto). Sólo existe si la
+  // salida trae la línea: sin ella, el resultado es el de siempre, clave por clave.
+  image_emphasis_raw?: string | null;
 } {
   let text = String(output ?? '').trim();
 
@@ -952,12 +1023,25 @@ function parsePiece(output: string): {
   const image_hook = comer(/^\s*GANCHO:\s*(.+?)\s*(?:\n|$)/i);
   const image_support = comer(/^\s*APOYO:\s*(.+?)\s*(?:\n|$)/i);
 
+  const ENFASIS = /^\s*[EÉ]NFASIS:\s*(.*?)\s*(?:\n|$)/i;
+  let emphasisRaw: string | null | undefined;
+  const comerEnfasis = () => {
+    const e = text.match(ENFASIS);
+    if (!e) return;
+    text = text.slice(e[0].length).trimStart();
+    emphasisRaw = e[1].trim() || null;
+  };
+  comerEnfasis();
   const m = text.match(/^\s*T[IÍ]TULO:\s*(.+?)\s*(?:\n|$)/i);
   if (m) {
     const title = m[1].trim();
-    return { title: title || null, image_hook, image_support, body: text.slice(m[0].length).trim() };
+    text = text.slice(m[0].length);
+    if (emphasisRaw === undefined) comerEnfasis();
+    return { title: title || null, image_hook, image_support, body: text.trim(),
+      ...(emphasisRaw !== undefined ? { image_emphasis_raw: emphasisRaw } : {}) };
   }
-  return { title: null, image_hook, image_support, body: text };
+  return { title: null, image_hook, image_support, body: text,
+    ...(emphasisRaw !== undefined ? { image_emphasis_raw: emphasisRaw } : {}) };
 }
 
 // The signature travels WITHOUT stamping (§4.3): stampSignature runs in the
@@ -2888,6 +2972,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   title_budget_chars: number | null;
   title_budget_source: string | null;
   image_title_mode: ImageTitleMode;
+  image_emphasis: boolean;
   body_format: 'markdown_min' | 'plain';
   audience_cta_applied: AudienceCtaApplied;
   signature: { text: string; rule: string } | null;
@@ -3438,6 +3523,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     capaDeContenido(buildImageDialogueBlock(titleBudgetChars));                 // ## IMAGEN Y TÍTULO
   }
   if (bi) capaDeContenido(buildTitleBlock(titleBudgetChars, bi.destination, imageTitleMode));   // ## TÍTULO
+  // ÉNFASIS — sólo si el carril declara que el overlay de esta pieza lo pinta. Sin la clave, el system
+  // queda byte a byte como antes.
+  const imageEmphasis = bi ? readImageEmphasis(bi.image_emphasis) : false;
+  if (bi && imageEmphasis) capaDeContenido(buildImageEmphasisBlock(imageTitleMode));  // ## PALABRAS CLAVE DE LA IMAGEN
 
   // A1 — sustituir variables del template ANTES de inyectarlo; nunca {{...}} crudo. El template
   // dice QUÉ FORMA tiene la salida → va al final, cerrando las capas creativas, no compitiendo.
@@ -3516,7 +3605,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // literalmente «Sin título, sin la etiqueta "TÍTULO:"»: el overlay no tenía qué componer porque
     // el escritor tenía prohibido escribirlo. Ahora lo que cambia entre destinos es DÓNDE vive el
     // título, no si existe.
-    const fmt = buildCarrilFormatBlock(bi.destination, imageTitleMode, readBodyFormat(bi.body_format));
+    const fmt = buildCarrilFormatBlock(bi.destination, imageTitleMode, readBodyFormat(bi.body_format), imageEmphasis);
     // G2-F — lo ÚNICO que cambia en modo reparación: la tarea. El mismo bloque de formato (la pieza
     // vuelve con la forma con la que salió) y el mismo system de arriba —voz, genoma, reglas,
     // presupuesto—; en lugar de la materia prima, la pieza escrita y las instrucciones que violó.
@@ -3581,6 +3670,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // BRIEF-04 — el modo con el que se ESCRIBIÓ, para que el eco diga en qué régimen salió la pieza
     // y no haya que deducirlo de si vinieron las cadenas.
     image_title_mode: imageTitleMode,
+    image_emphasis: imageEmphasis,
     // F1 — el formato con el que se ESCRIBIÓ el cuerpo. 'plain' también para social: el bloque sólo
     // se aplica en editorial, y el eco dice lo que se pidió de verdad.
     body_format: (bi && String(bi.destination ?? '').trim() === 'editorial' && readBodyFormat(bi.body_format)) ? 'markdown_min' : 'plain',
@@ -4047,13 +4137,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
     if (carril) {
-      const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsePiece(output);
+      const parsed = parsePiece(output);
+      const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsed;
       // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
       // siempre y el eco dice cuánto midió. Un título ausente ahora es un INCUMPLIMIENTO del
       // escritor (la sección ## TÍTULO lo pide en los dos destinos), no un caso normal: se grita,
       // se marca en el meta y la pieza sigue viva — el carril decide qué hacer con una pieza sin
       // título, y hoy hace lo correcto: no compone y conserva la imagen limpia.
       const tituloFinal = built.repair ? (title ?? built.repair.original_title) : title;
+      // ÉNFASIS — se poda contra el texto que de verdad va sobre la imagen.
+      const emphasisOut = built.image_emphasis
+        ? pruneEmphasis(parsed.image_emphasis_raw, built.image_title_mode === 'dialogue' ? imageHook : tituloFinal)
+        : null;
+      if (emphasisOut && emphasisOut.dropped.length) {
+        console.warn(`[CopyLab][ÉNFASIS] brand=${body.brandId} tramos podados: ${JSON.stringify(emphasisOut.dropped)}`);
+      }
       if (!tituloFinal) {
         console.error(
           `[CopyLab][BRIEF8] COPYLAB_TITLE_MISSING brand=${body.brandId} destination=${body.builder_input?.destination ?? '∅'} ` +
@@ -4072,6 +4170,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // preguntó. En `echo` son null y el carril compone como hasta hoy.
         image_hook: imageHook,
         image_support: imageSupport,
+        // ÉNFASIS — los tramos ya podados contra el texto que va sobre la imagen (el gancho en diálogo,
+        // el título en eco). La clave viaja sólo si el carril la pidió: sin `image_emphasis`, la
+        // respuesta es la de siempre, clave por clave.
+        ...(built.image_emphasis ? { image_emphasis: emphasisOut!.terms } : {}),
         body: pieceBody,
         signature: built.signature,
         usage,
@@ -4113,6 +4215,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           image_hook_chars: titleCharCount(imageHook),
           image_hook_missing: built.image_title_mode === 'dialogue' && !imageHook,
           image_support_present: !!imageSupport,
+          ...(built.image_emphasis ? {
+            image_emphasis_requested: true,
+            image_emphasis_missing: parsed.image_emphasis_raw === undefined,
+            image_emphasis_dropped: emphasisOut!.dropped,
+          } : {}),
           // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
           // 'decide' | 'influye' | 'general' | 'none'.
           audience_cta_applied: built.audience_cta_applied,
