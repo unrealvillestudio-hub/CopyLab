@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -1870,6 +1870,70 @@ async function run() {
       eq(r._out._json.meta.location_in_alt, true, 'el eco del lugar');
       eq(r._out._json.meta.location_offered, true, 'el lugar se ofreció');
     } finally { fx.restore(); }
+  });
+
+  // ── ÉNFASIS · PASADA DE PALABRAS CLAVE (2026-10-13) ─────────────────────────────────────────────
+  await test('ÉNFASIS-PASS·pure normalizeEmphasisPass: ausente ⇒ null; sin texto o con forma rota ⇒ error con nombre', () => {
+    eq(PURE.normalizeEmphasisPass(undefined), null, 'ausente');
+    eq(PURE.normalizeEmphasisPass(null), null, 'null');
+    eq(PURE.normalizeEmphasisPass({ image_text: '  Siete mil dólares.  ' }).image_text, 'Siete mil dólares.', 'recorta los bordes');
+    for (const [v, codigo] of [[[], 'MALFORMED'], ['texto', 'MALFORMED'], [{}, 'TEXT_REQUIRED'], [{ image_text: '   ' }, 'TEXT_REQUIRED'], [{ image_text: 'x'.repeat(401) }, 'TEXT_TOO_LONG']] as Array<[unknown, string]>) {
+      let msg = '';
+      try { PURE.normalizeEmphasisPass(v); } catch (e) { msg = String((e as Error).message); }
+      assert(msg.startsWith(`COPYLAB_EMPHASIS_PASS_${codigo}`), `${JSON.stringify(v).slice(0, 30)} ⇒ ${codigo} (recibido: ${msg.slice(0, 60)})`);
+    }
+  });
+
+  await test('ÉNFASIS-PASS·pure la instrucción lleva el texto y pide JSON; la lectura poda contra el texto', () => {
+    const ins = PURE.buildEmphasisPassInstruction({ image_text: 'Siete mil dólares. Esa fue la multa.' });
+    assert(ins.includes('Siete mil dólares. Esa fue la multa.'), 'el texto viaja literal');
+    assert(ins.includes('{"emphasis":'), 'pide el JSON');
+    assert(ins.includes(`hasta ${PURE.EMPHASIS_MAX_WORDS}`), 'mismo tope de palabras que la generación');
+    const T = 'Siete mil dólares. Esa fue la multa.';
+    const ok = PURE.readEmphasisPassResult({ emphasis: ['Siete mil dólares', 'multa', 'sanción'] }, T);
+    eq(JSON.stringify(ok.terms), JSON.stringify(['Siete mil dólares', 'multa']), 'sólo los literales');
+    eq(ok.dropped[0].reason, 'NOT_IN_TEXT', 'el inventado se poda con su motivo');
+    eq(ok.reason, null, 'sin motivo de fallo');
+    eq(PURE.readEmphasisPassResult(null, T).reason, 'UNPARSABLE', 'sin JSON');
+    eq(PURE.readEmphasisPassResult({ emphasis: 'multa' }, T).reason, 'UNPARSABLE', 'emphasis que no es lista');
+    eq(PURE.readEmphasisPassResult({ emphasis: ['sanción'] }, T).reason, 'EMPTY', 'ningún tramo sobrevive');
+  });
+
+  await test('ÉNFASIS-PASS·cableado: 200 con los tramos podados, su techo, sin capas de contenido y con el consumo', async () => {
+    const fx = vmFetch({ content: [{ text: '{"emphasis":["vacina","nunca existiu"]}' }], usage: { input_tokens: 700, output_tokens: 12 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(JSON.stringify(r._out._json.image_emphasis), JSON.stringify(['vacina']), 'sólo el tramo literal');
+      eq(r._out._json.meta.emphasis_pass, true, 'el eco');
+      eq(r._out._json.meta.image_emphasis_dropped?.[0]?.reason, 'NOT_IN_TEXT', 'el podado viaja con su motivo');
+      eq(r._out._json.usage.input_tokens, 700, 'el consumo viaja para que el carril lo asiente');
+      assert(Number.isInteger(r._out._json.meta.layers_omitted), 'cuántas capas de contenido no viajaron');
+      assert(!('body' in r._out._json) && !('alt' in r._out._json), 'ni pieza ni alt');
+      const body = fx.claudeBodies[0];
+      eq(body?.max_tokens, PURE.EMPHASIS_PASS_MAX_TOKENS, 'el techo de la pasada');
+      assert(JSON.stringify(body?.messages ?? []).includes('PALABRAS CLAVE DEL TEXTO DE UNA IMAGEN'), 'la instrucción de la pasada');
+    } finally { fx.restore(); }
+  });
+
+  await test('ÉNFASIS-PASS·cableado: ningún tramo literal ⇒ 422 COPYLAB_EMPHASIS_UNUSABLE con el consumo; con otra pasada ⇒ 400', async () => {
+    const fx = vmFetch({ content: [{ text: '{"emphasis":["inventado"]}' }], usage: { input_tokens: 700, output_tokens: 8 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }) } as any, r as any);
+      eq(r._out._status, 422, 'HTTP 422');
+      eq(r._out._json.error, 'COPYLAB_EMPHASIS_UNUSABLE', 'con nombre propio');
+      eq(r._out._json.reason, 'EMPTY', 'y su motivo');
+      eq(r._out._json.usage.output_tokens, 8, 'el consumo viaja también en el fallo');
+    } finally { fx.restore(); }
+    const fx2 = vmFetch({ content: [{ text: '{}' }], usage: { input_tokens: 1, output_tokens: 1 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'texto' }, alt_pass: { image_url: VM_IMG } }) }) } as any, r as any);
+      eq(r._out._status, 400, 'dos pasadas a la vez ⇒ 400');
+      eq(fx2.claudeBodies.length, 0, 'sin llamar al modelo');
+    } finally { fx2.restore(); }
   });
 
   await test('F3·ALT·cableado: con visión la imagen viaja por URL en el user; 200 con el alt, su techo y alt_source', async () => {

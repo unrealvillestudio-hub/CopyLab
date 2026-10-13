@@ -241,6 +241,11 @@ interface BuilderInput {
     piece_text: string;
     slides: Array<{ n: number; role: 'cover' | 'body' | 'closing'; headline: string; subheadline?: string | null }>;
   } | null;
+  // ÉNFASIS · PASADA DE PALABRAS CLAVE (Sam, 2026-10-13: «que salgan ya tal y como queremos») — hermana
+  // de `alt_pass`: el texto que YA va sobre la imagen de una pieza escrita antes del énfasis. CopyLab no
+  // toca ese texto: devuelve qué tramos LITERALES se resaltan, con la misma poda que en la generación.
+  // Ausente ⇒ nada de esto corre.
+  emphasis_pass?: { image_text: string } | null;
   // F1 / G1-C — el TECHO de generación, ya resuelto por el carril contra
   // public.content_type_registry (cascada voz+plataforma > voz > BASE+plataforma > BASE), y QUIÉN lo
   // resolvió. `null` = nadie lo declaró ⇒ CopyLab aplica su default por destino, byte-idéntico a
@@ -922,6 +927,60 @@ function pruneEmphasis(raw: string | null | undefined, target: string | null | u
     terms.push(term);
   }
   return { terms, dropped };
+}
+
+// ── ÉNFASIS · PASADA DE PALABRAS CLAVE (2026-10-13) ─────────────────────────────────────────────
+//
+// POR QUÉ EXISTE: las piezas escritas antes del énfasis no tienen tramos elegidos, y el carril no puede
+// elegirlos por su cuenta (los labs escriben; el carril llama al lab). Esta pasada recibe el texto que
+// ya va sobre la imagen y devuelve SÓLO los tramos: mismo criterio que `buildImageEmphasisBlock`, misma
+// poda (`pruneEmphasis`), system sin las capas de contenido (como el alt) y techo propio.
+const EMPHASIS_PASS_MAX_TOKENS = 120;
+const EMPHASIS_PASS_TEXT_MAX_CHARS = 400;
+interface EmphasisPassInput { image_text: string }
+
+function normalizeEmphasisPass(v: unknown): EmphasisPassInput | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_EMPHASIS_PASS_MALFORMED: builder_input.emphasis_pass debe ser un objeto { image_text } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const raw = (v as any).image_text;
+  const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+  if (!text) {
+    throw new CopyLabRequestError('COPYLAB_EMPHASIS_PASS_TEXT_REQUIRED: builder_input.emphasis_pass.image_text debe ser el texto que va sobre la imagen — sin texto no hay qué resaltar');
+  }
+  if (Array.from(text).length > EMPHASIS_PASS_TEXT_MAX_CHARS) {
+    throw new CopyLabRequestError(`COPYLAB_EMPHASIS_PASS_TEXT_TOO_LONG: builder_input.emphasis_pass.image_text pasa de ${EMPHASIS_PASS_TEXT_MAX_CHARS} caracteres — eso no es el texto de una imagen`);
+  }
+  // El texto se conserva TAL CUAL llegó (sin colapsar espacios): la poda compara literal contra él.
+  return { image_text: raw.trim() };
+}
+
+function buildEmphasisPassInstruction(input: EmphasisPassInput): string {
+  return 'TAREA — PALABRAS CLAVE DEL TEXTO DE UNA IMAGEN YA ESCRITA (no es una pieza nueva):\n'
+    + 'El texto de abajo ya va sobre la imagen y NO se cambia. Se compone con jerarquía: una o dos palabras'
+    + ' clave se pintan más grandes, con otro peso y en el color de la marca, y el resto queda en segundo'
+    + ' plano. Elige esas palabras.\n\n'
+    + 'Responde SOLO con un objeto JSON, sin texto alrededor y sin bloque de código:\n'
+    + '{"emphasis":["…","…"]}\n\n'
+    + 'REGLAS:\n'
+    + '- Son las que cargan la TENSIÓN: el objeto concreto, la cifra, el verbo del cambio, la consecuencia.'
+    + ' Si alguien sólo leyera esas palabras, tendría que adivinar de qué va la pieza.\n'
+    + `- Una o dos, nunca más. Cada una es una palabra o una expresión corta (hasta ${EMPHASIS_MAX_WORDS}`
+    + ' palabras), copiada LETRA POR LETRA del texto, con sus mayúsculas y sus tildes.\n'
+    + '- Nunca artículos, preposiciones ni conectores sueltos, y nunca el texto entero.\n'
+    + '- No cambies el texto para que una palabra encaje: se eligen palabras que ya están.\n\n'
+    + `TEXTO DE LA IMAGEN:\n${input.image_text}`;
+}
+
+/** Lee la respuesta de la pasada y la poda contra el texto. PURO. */
+function readEmphasisPassResult(raw: Record<string, unknown> | null, imageText: string): {
+  terms: string[]; dropped: ReturnType<typeof pruneEmphasis>['dropped']; reason: 'UNPARSABLE' | 'EMPTY' | null;
+} {
+  if (!raw || !Array.isArray((raw as any).emphasis)) return { terms: [], dropped: [], reason: 'UNPARSABLE' };
+  const propuestos = ((raw as any).emphasis as unknown[]).filter((x): x is string => typeof x === 'string');
+  const { terms, dropped } = pruneEmphasis(propuestos.join(' | '), imageText);
+  return { terms, dropped, reason: terms.length ? null : 'EMPTY' };
 }
 
 // ── F1 · EL FORMATO MÍNIMO DEL CUERPO ─────────────────────────────────────────────────────────────
@@ -2993,6 +3052,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // `layers_omitted`: cuántas capas de contenido NO viajaron en el system del alt (ver `capaDeContenido`).
   alt_pass: { source: AltSource; image_url: string; layers_omitted: number; input: AltPassInput } | null;
   slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
+  // ÉNFASIS · pasada de palabras clave — el encargo ya leído y cuántas capas de contenido no viajaron.
+  emphasis_pass: { input: EmphasisPassInput; layers_omitted: number } | null;
   // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
   user_image_url: string | null;
 }> {
@@ -3020,6 +3081,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   let altPass: AltPassInput | null = null;
   let altSource: AltSource | null = null;
   let slidePass: SlidePassInput | null = null;
+  let emphasisPass: EmphasisPassInput | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -3048,10 +3110,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     }
     altPass = normalizeAltPass(bi.alt_pass);
     slidePass = normalizeSlidePass(bi.slide_pass);
+    emphasisPass = normalizeEmphasisPass(bi.emphasis_pass);
     const otrasTareas: Array<[string, boolean]> = [
       ['format_pass', !!formatPass], ['image_pass', !!imagePass], ['repair', !!repair],
     ];
-    for (const [propia, presente] of [['alt_pass', !!altPass], ['slide_pass', !!slidePass]] as Array<[string, boolean]>) {
+    for (const [propia, presente] of [['alt_pass', !!altPass], ['slide_pass', !!slidePass], ['emphasis_pass', !!emphasisPass]] as Array<[string, boolean]>) {
       if (!presente) continue;
       const otra = otrasTareas.find(([, p]) => p);
       if (otra) {
@@ -3558,11 +3621,14 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   const cacheMode = bcShape === 'snapshot' ? 'v2.0_per_slice'
     : bcShape === 'context_json' ? 'context_json_per_slice'
     : 'no_cache';
-  const capasDelSystem = altPass ? layers.filter((_, i) => !capasDeContenido.has(i)) : layers;
+  // Las pasadas cortas sobre una pieza ya escrita (alt, énfasis) viajan sin las capas que sólo sirven
+  // para escribir: las reglas de marca siguen íntegras y en el mismo orden.
+  const pasadaSinContenido = !!altPass || !!emphasisPass;
+  const capasDelSystem = pasadaSinContenido ? layers.filter((_, i) => !capasDeContenido.has(i)) : layers;
   const system = `Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n${capasDelSystem.join('\n\n---\n\n')}`;
   // ECONOMÍA — el MISMO texto en bloques con punto de caché. Los cortes se traducen a índices de las capas
   // que de verdad viajan (la pasada del alt omite las de contenido).
-  const viajaAntes = (corte: number) => altPass ? layers.slice(0, corte).filter((_, i) => !capasDeContenido.has(i)).length : corte;
+  const viajaAntes = (corte: number) => pasadaSinContenido ? layers.slice(0, corte).filter((_, i) => !capasDeContenido.has(i)).length : corte;
   const systemBloques = sistemaEnBloques(
     'Eres CopyLab v9.7, el motor de copy de UNRLVL Studio. Content Pipeline v2.6.\n\n',
     capasDelSystem, '\n\n---\n\n', [viajaAntes(corteMarca), viajaAntes(corteGenoma)],
@@ -3615,6 +3681,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
       ? buildAltPassInstruction(altPass, altSource, languageDirective.label)
       : slidePass
       ? buildSlidePassInstruction(slidePass, slideCtaOptions, languageDirective.label)
+      : emphasisPass
+      ? buildEmphasisPassInstruction(emphasisPass)
       : imagePass
       ? buildImagePassInstruction(imagePass.piece_text, imagePass.max_images, languageDirective.label)
       : repair
@@ -3649,7 +3717,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // prompt; esto es lo que evita que una pieza bien planificada muera a dos palabras del final.
     // F1 · pasada de formato — el plan es corto; el techo de generación no aplica. Ídem F2.
     max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : imagePass ? IMAGE_PASS_MAX_TOKENS
-      : altPass ? ALT_PASS_MAX_TOKENS : slidePass ? SLIDE_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
+      : altPass ? ALT_PASS_MAX_TOKENS : slidePass ? SLIDE_PASS_MAX_TOKENS
+      : emphasisPass ? EMPHASIS_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
     max_tokens_source: bi?.max_tokens_source ?? null,
@@ -3701,6 +3770,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     image_pass: imagePass,
     alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size, input: altPass } : null,
     slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
+    emphasis_pass: emphasisPass ? { input: emphasisPass, layers_omitted: capasDeContenido.size } : null,
     user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
 }
@@ -4117,6 +4187,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(422).json({ status: 'error', error: 'COPYLAB_ALT_UNUSABLE', reason, raw: output.slice(0, 600), usage, meta: metaAlt });
       }
       return res.status(200).json({ status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length, ...altHintsEcho(alt, built.alt_pass.input) } });
+    }
+    // ÉNFASIS · pasada de palabras clave — la respuesta son los tramos, podados contra el texto. Sin
+    // ninguno que sobreviva ⇒ 422 con nombre propio y con el consumo: el carril compone sin énfasis.
+    if (carril && built.emphasis_pass) {
+      const imageText = built.emphasis_pass.input.image_text;
+      const leido = readEmphasisPassResult(extractJsonObject(output), imageText);
+      const metaEnfasis = {
+        emphasis_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+        system_chars: built.system.length, layers_omitted: built.emphasis_pass.layers_omitted,
+        ...(leido.dropped.length ? { image_emphasis_dropped: leido.dropped } : {}),
+      };
+      if (!leido.terms.length) {
+        console.error(`[CopyLab][EMPHASIS-PASS] COPYLAB_EMPHASIS_UNUSABLE brand=${body.brandId} reason=${leido.reason} — ${output.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_EMPHASIS_UNUSABLE', reason: leido.reason, raw: output.slice(0, 600), usage, meta: metaEnfasis });
+      }
+      return res.status(200).json({ status: 'ok', image_emphasis: leido.terms, usage, meta: metaEnfasis });
     }
     // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
     // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
