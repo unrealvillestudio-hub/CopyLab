@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError, sistemaEnBloques } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError, sistemaEnBloques, clavesAnthropic, creditoNoSirve } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -3648,6 +3648,59 @@ async function run() {
     assert(String(r._out._json.error).startsWith('Claude API error: 400'), 'el prefijo que el carril lee, intacto');
     assert(String(r._out._json.error).includes('credit balance is too low'), 'y el motivo, para que el libro abra el cortacorriente');
     eq(r._out._json.provider_http_status, 400, 'el código, como dato');
+  });
+
+  // ── CRÉDITO (2026-10-15) — una clave opcional con crédito a favor, primero; la de siempre si no sirve ──
+  await test('CRÉDITO·orden de claves: crédito primero; sin ella, apartada o igual a la principal, sólo la principal', async () => {
+    eq(JSON.stringify(clavesAnthropic('kc', 'kp', 10, 0).map(c => c.cuenta)), JSON.stringify(['credito', 'principal']), 'las dos');
+    eq(JSON.stringify(clavesAnthropic('', 'kp', 10, 0).map(c => c.cuenta)), JSON.stringify(['principal']), 'sin crédito');
+    eq(JSON.stringify(clavesAnthropic('kc', 'kp', 10, 11).map(c => c.cuenta)), JSON.stringify(['principal']), 'apartada');
+    eq(JSON.stringify(clavesAnthropic('kp', 'kp', 10, 0).map(c => c.cuenta)), JSON.stringify(['principal']), 'la misma clave no se intenta dos veces');
+  });
+
+  await test('CRÉDITO·sólo saldo agotado o clave que no autentica apartan la de crédito', async () => {
+    eq(creditoNoSirve(400, 'Your credit balance is too low to access the Anthropic API.'), true, 'saldo');
+    eq(creditoNoSirve(401, 'invalid x-api-key'), true, '401');
+    eq(creditoNoSirve(403, ''), true, '403');
+    eq(creditoNoSirve(400, 'max_tokens: too large'), false, 'error de la petición: no se repite');
+    eq(creditoNoSirve(429, 'rate limited'), false, '429 no aparta');
+    eq(creditoNoSirve(500, ''), false, '500 no aparta');
+  });
+
+  const restoreEnv = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+  await test('CRÉDITO·un error de la petición con la de crédito NO gasta una segunda llamada', async () => {
+    const prevC = process.env.ANTHROPIC_API_KEY_CREDITO;
+    process.env.ANTHROPIC_API_KEY_CREDITO = 'k-credito-2';
+    const keys: string[] = [];
+    globalThis.fetch = (async (_u: any, init?: any) => { keys.push(init?.headers?.['x-api-key']); return res({ type: 'error', error: { message: 'max_tokens: too large' } }, 400); }) as any;
+    try {
+      let msg = '';
+      try { await callClaude('s', 'u', 10); } catch (e) { msg = String((e as Error).message); }
+      assert(msg.startsWith('Claude API error: 400'), 'el error de siempre');
+      eq(JSON.stringify(keys), JSON.stringify(['k-credito-2']), 'una sola llamada, con la de crédito');
+    } finally { globalThis.fetch = REAL_FETCH; restoreEnv('ANTHROPIC_API_KEY_CREDITO', prevC); }
+  });
+
+  await test('CRÉDITO·saldo agotado en la de crédito ⇒ la misma llamada se repite con la de siempre, y la de crédito queda apartada', async () => {
+    const prevC = process.env.ANTHROPIC_API_KEY_CREDITO, prevP = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY_CREDITO = 'k-credito'; process.env.ANTHROPIC_API_KEY = 'k-principal';
+    const keys: string[] = [];
+    globalThis.fetch = (async (_u: any, init?: any) => {
+      const k = init?.headers?.['x-api-key']; keys.push(k);
+      return k === 'k-credito'
+        ? res({ type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }, 400)
+        : res({ content: [{ text: 'ok' }], usage: { input_tokens: 3, output_tokens: 2 } });
+    }) as any;
+    try {
+      const r1 = await callClaude('s', 'u', 10);
+      eq(r1.text, 'ok', 'responde la de siempre');
+      eq(JSON.stringify(keys), JSON.stringify(['k-credito', 'k-principal']), 'una sola repetición');
+      keys.length = 0;
+      await callClaude('s', 'u', 10);
+      eq(JSON.stringify(keys), JSON.stringify(['k-principal']), 'apartada: ya no se intenta en esta instancia');
+    } finally {
+      globalThis.fetch = REAL_FETCH; restoreEnv('ANTHROPIC_API_KEY_CREDITO', prevC); restoreEnv('ANTHROPIC_API_KEY', prevP);
+    }
   });
 
   const total = passed + xfails.length + failures.length;
