@@ -117,7 +117,7 @@ export const maxDuration = 300;
  * v9.4 (2026-05-20) — Dual mode async/sync
  * v9.3 (2026-05-20) — L1.5 VOICE_GENOME_INJECTION
  *
- * Env vars: ANTHROPIC_API_KEY · SUPABASE_URL · SUPABASE_ANON_KEY
+ * Env vars: ANTHROPIC_API_KEY · ANTHROPIC_API_KEY_CREDITO (opcional) · SUPABASE_URL · SUPABASE_ANON_KEY
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -151,6 +151,11 @@ function normalizeSupabaseUrl(raw: string | undefined): string {
 const SB_URL  = () => normalizeSupabaseUrl(process.env.SUPABASE_URL);
 const SB_KEY  = () => process.env.SUPABASE_ANON_KEY ?? '';
 const ANT_KEY = () => process.env.ANTHROPIC_API_KEY ?? '';
+// CRÉDITO (2026-10-15) — una segunda clave, OPCIONAL, de una organización con crédito a favor (Sam). Si está,
+// se usa primero; cuando el proveedor dice que su saldo se acabó o que la clave no sirve, la llamada se repite
+// UNA vez con la clave de siempre y la de crédito se aparta unas horas en esta instancia. Sin la variable, el
+// comportamiento es byte-idéntico al de antes.
+const ANT_KEY_CREDITO = () => process.env.ANTHROPIC_API_KEY_CREDITO ?? '';
 
 // ── ASYNC MODE HELPERS v9.4 ───────────────────────────────────────────────
 
@@ -3989,6 +3994,24 @@ export function failureLedgerFields(err: unknown, usage: ClaudeUsage | null): {
 }
 // ── FALLO:END ──
 
+// ── CREDITO:BEGIN ──
+// CRÉDITO (2026-10-15) — qué claves se intentan y en qué orden. Puro: el reloj y el estado entran como dato.
+const CREDITO_PAUSA_MS = 6 * 60 * 60 * 1000;
+let creditoApartadoHasta = 0;
+export function clavesAnthropic(credito: string, principal: string, ahora: number, apartadoHasta = creditoApartadoHasta): Array<{ clave: string; cuenta: 'credito' | 'principal' }> {
+  const out: Array<{ clave: string; cuenta: 'credito' | 'principal' }> = [];
+  if (credito && credito !== principal && ahora >= apartadoHasta) out.push({ clave: credito, cuenta: 'credito' });
+  out.push({ clave: principal, cuenta: 'principal' });
+  return out;
+}
+// La clave de crédito «no sirve» cuando el saldo de su organización se acabó (400 con ese motivo) o cuando la
+// clave misma no autentica o no tiene permiso (401/403). Cualquier otro error es de la petición, no de la
+// clave: se devuelve tal cual, sin gastar una segunda llamada.
+export function creditoNoSirve(status: number, motivo: string): boolean {
+  return status === 401 || status === 403 || (status === 400 && /credit balance/i.test(motivo));
+}
+// ── CREDITO:END ──
+
 export async function callClaude(
   // ECONOMÍA (2026-10-11) — un string (como siempre) o bloques de texto con punto de caché.
   system: string | SystemBlock[],
@@ -4000,45 +4023,55 @@ export async function callClaude(
 ): Promise<{ text: string; usage: ClaudeUsage }> {
   // La clave se resuelve ANTES de la llamada: si falta, la llamada paga no se hizo, y el error
   // sale como Error a secas (no ProviderCallError) — `provider_called: false`.
-  const apiKey = ANT_KEY();
-  let res: Response;
-  try {
-    res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
-        // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
-        max_tokens: maxTokens,
-        // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
-        // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
-        // any non-default sampling value with a 400.
-        thinking: { type: 'disabled' },
-        system,
-        messages: [{
-          role: 'user',
-          content: imageUrl
-            ? [{ type: 'image', source: { type: 'url', url: imageUrl } }, { type: 'text', text: user }]
-            : user,
-        }],
-      }),
-    });
-  } catch (err) {
-    // La petición salió y no hubo respuesta: no sabemos qué cobró el proveedor.
-    throw new ProviderCallError(`Claude API unreachable: ${err instanceof Error ? err.message : String(err)}`, null);
-  }
-  // El MISMO mensaje de siempre —el carril y las alertas lo leen—, ahora con el código como dato.
-  // ECONOMÍA (2026-10-11) — el motivo del proveedor viaja DESPUÉS del mensaje de siempre (el prefijo
-  // `Claude API error: <código>` no cambia). Sin él, el carril no podía saber que el rechazo era crédito
-  // agotado, y el cortacorriente del libro no se abría con los fallos de CopyLab.
-  if (!res.ok) {
-    const motivo = await res.text().then(t => { try { return String(JSON.parse(t)?.error?.message ?? '').slice(0, 160); } catch { return ''; } }).catch(() => '');
-    throw new ProviderCallError(`Claude API error: ${res.status}${motivo ? ` — ${motivo}` : ''}`, res.status);
+  const claves = clavesAnthropic(ANT_KEY_CREDITO(), ANT_KEY(), Date.now());
+  let res!: Response;
+  for (let i = 0; i < claves.length; i++) {
+    const { clave, cuenta } = claves[i];
+    try {
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': clave,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL,
+          // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
+          // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
+          max_tokens: maxTokens,
+          // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
+          // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
+          // any non-default sampling value with a 400.
+          thinking: { type: 'disabled' },
+          system,
+          messages: [{
+            role: 'user',
+            content: imageUrl
+              ? [{ type: 'image', source: { type: 'url', url: imageUrl } }, { type: 'text', text: user }]
+              : user,
+          }],
+        }),
+      });
+    } catch (err) {
+      // La petición salió y no hubo respuesta: no sabemos qué cobró el proveedor. No se repite con otra clave.
+      throw new ProviderCallError(`Claude API unreachable: ${err instanceof Error ? err.message : String(err)}`, null);
+    }
+    // El MISMO mensaje de siempre —el carril y las alertas lo leen—, ahora con el código como dato.
+    // ECONOMÍA (2026-10-11) — el motivo del proveedor viaja DESPUÉS del mensaje de siempre (el prefijo
+    // `Claude API error: <código>` no cambia). Sin él, el carril no podía saber que el rechazo era crédito
+    // agotado, y el cortacorriente del libro no se abría con los fallos de CopyLab.
+    if (!res.ok) {
+      const motivo = await res.text().then(t => { try { return String(JSON.parse(t)?.error?.message ?? '').slice(0, 160); } catch { return ''; } }).catch(() => '');
+      if (cuenta === 'credito' && i + 1 < claves.length && creditoNoSirve(res.status, motivo)) {
+        creditoApartadoHasta = Date.now() + CREDITO_PAUSA_MS;
+        console.warn(`[callClaude] clave de crédito apartada ${CREDITO_PAUSA_MS / 3_600_000} h (${res.status}${motivo ? ` — ${motivo}` : ''}); se repite con la clave de siempre`);
+        continue;
+      }
+      throw new ProviderCallError(`Claude API error: ${res.status}${motivo ? ` — ${motivo}` : ''}`, res.status);
+    }
+    if (cuenta === 'credito') console.info('[callClaude] llamada pagada con la clave de crédito');
+    break;
   }
   let data: any;
   try {
