@@ -922,7 +922,14 @@ function pruneEmphasis(raw: string | null | undefined, target: string | null | u
   const text = String(target ?? '');
   const core = (x: string) => x.trim().replace(/[\s.,;:!?¡¿…"'«»]+$/u, '').replace(/^[\s¡¿"'«»]+/u, '');
   for (const piece of String(raw ?? '').split('|')) {
-    const term = piece.trim().replace(/^\*+|\*+$/g, '').replace(/^["'«“]+|["'»”]+$/g, '').trim();
+    let term = piece.trim().replace(/^\*+|\*+$/g, '').replace(/^["'«“]+|["'»”]+$/g, '').trim();
+    // CASO (2026-10-17) — el mismo tramo con otra mayúscula («cada tres semanas» en «Cada tres semanas…»)
+    // se toma TAL COMO ESTÁ en el texto: el compositor pinta lo que encuentra, letra por letra. Sólo si
+    // pasar a minúsculas no cambia la longitud del texto (si no, las posiciones no corresponden).
+    if (term && !text.includes(term) && text.toLowerCase().length === text.length) {
+      const i = text.toLowerCase().indexOf(term.toLowerCase());
+      if (i >= 0) term = text.slice(i, i + term.length);
+    }
     if (!term) { if (piece.trim()) dropped.push({ term: piece.trim(), reason: 'EMPTY' }); continue; }
     if (terms.includes(term)) continue;
     if (term.split(/\s+/).length > EMPHASIS_MAX_WORDS || term.length > EMPHASIS_MAX_CHARS) { dropped.push({ term, reason: 'TOO_LONG' }); continue; }
@@ -976,6 +983,39 @@ function buildEmphasisPassInstruction(input: EmphasisPassInput): string {
     + '- Nunca artículos, preposiciones ni conectores sueltos, y nunca el texto entero.\n'
     + '- No cambies el texto para que una palabra encaje: se eligen palabras que ya están.\n\n'
     + `TEXTO DE LA IMAGEN:\n${input.image_text}`;
+}
+
+// REINTENTO (2026-10-17) — lo que se le dice al modelo cuando su primera respuesta no dejó ningún tramo.
+// Medido el 2026-10-17 en producción: 28 de 154 pasadas (4 días) terminaron sin tramo, y en 13 de los 15
+// fallos de los últimos 2 días el modelo eligió una expresión de 5 o 6 palabras que SÍ estaba en el texto
+// («morir dentro de tres años»). Se le dice exactamente por qué no sirvió y se le pide el núcleo. PURO.
+function buildEmphasisRetryNote(prev: { dropped: Array<{ term: string; reason: string }>; reason: string | null }): string {
+  const motivos = (prev.dropped ?? []).map((d) => {
+    const palabras = d.term.split(/\s+/).filter(Boolean).length;
+    if (d.reason === 'TOO_LONG') {
+      return palabras > EMPHASIS_MAX_WORDS
+        ? `«${d.term}» tiene ${palabras} palabras y el máximo es ${EMPHASIS_MAX_WORDS}`
+        : `«${d.term}» pasa de ${EMPHASIS_MAX_CHARS} caracteres`;
+    }
+    if (d.reason === 'NOT_IN_TEXT') return `«${d.term}» no está escrito así en el texto`;
+    if (d.reason === 'IS_TEXT') return `«${d.term}» es el texto entero`;
+    return `«${d.term}» no sirve`;
+  });
+  const porQue = prev.reason === 'UNPARSABLE' || !motivos.length
+    ? 'no era un objeto JSON {"emphasis":[…]} con tramos del texto'
+    : motivos.join('; ');
+  return `\n\nTU RESPUESTA ANTERIOR NO SIRVE: ${porQue}. Elige de nuevo una o dos expresiones de hasta`
+    + ` ${EMPHASIS_MAX_WORDS} palabras, copiadas letra por letra del texto. Si la que querías es más larga, quédate`
+    + ' con su núcleo: el objeto, la cifra o el verbo del cambio. Responde SOLO con el objeto JSON.';
+}
+
+function sumarUso(a: ClaudeUsage, b: ClaudeUsage): ClaudeUsage {
+  const out: ClaudeUsage = { input_tokens: (a?.input_tokens ?? 0) + (b?.input_tokens ?? 0), output_tokens: (a?.output_tokens ?? 0) + (b?.output_tokens ?? 0) };
+  const cr = (a?.cache_read_input_tokens ?? 0) + (b?.cache_read_input_tokens ?? 0);
+  const cw = (a?.cache_creation_input_tokens ?? 0) + (b?.cache_creation_input_tokens ?? 0);
+  if (cr) out.cache_read_input_tokens = cr;
+  if (cw) out.cache_creation_input_tokens = cw;
+  return out;
 }
 
 /** Lee la respuesta de la pasada y la poda contra el texto. PURO. */
@@ -4225,17 +4265,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ninguno que sobreviva ⇒ 422 con nombre propio y con el consumo: el carril compone sin énfasis.
     if (carril && built.emphasis_pass) {
       const imageText = built.emphasis_pass.input.image_text;
-      const leido = readEmphasisPassResult(extractJsonObject(output), imageText);
+      let leido = readEmphasisPassResult(extractJsonObject(output), imageText);
+      let salida = output;
+      let uso = usage;
+      // REINTENTO (2026-10-17) — sin ningún tramo, UNA segunda llamada con el motivo exacto. Las dos se
+      // cobraron: el consumo que viaja es la suma (y si la segunda falla, `usoDeLaLlamada` ya tiene la primera).
+      const primera = leido.terms.length ? null : { dropped: leido.dropped, reason: leido.reason };
+      if (primera) {
+        console.warn(`[CopyLab][EMPHASIS-PASS] sin tramo en el primer intento brand=${body.brandId} reason=${leido.reason} — ${output.slice(0, 200)}; se repite una vez`);
+        const r2 = await callClaude(built.system_bloques ?? built.system, built.user + buildEmphasisRetryNote(primera), built.max_tokens, built.user_image_url);
+        uso = sumarUso(usage, r2.usage);
+        usoDeLaLlamada = uso;
+        salida = r2.text;
+        leido = readEmphasisPassResult(extractJsonObject(salida), imageText);
+      }
       const metaEnfasis = {
         emphasis_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
         system_chars: built.system.length, layers_omitted: built.emphasis_pass.layers_omitted,
         ...(leido.dropped.length ? { image_emphasis_dropped: leido.dropped } : {}),
+        ...(primera ? { emphasis_retry: { first_dropped: primera.dropped, first_reason: primera.reason } } : {}),
       };
       if (!leido.terms.length) {
-        console.error(`[CopyLab][EMPHASIS-PASS] COPYLAB_EMPHASIS_UNUSABLE brand=${body.brandId} reason=${leido.reason} — ${output.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_EMPHASIS_UNUSABLE', reason: leido.reason, raw: output.slice(0, 600), usage, meta: metaEnfasis });
+        console.error(`[CopyLab][EMPHASIS-PASS] COPYLAB_EMPHASIS_UNUSABLE brand=${body.brandId} reason=${leido.reason} — ${salida.slice(0, 200)}`);
+        return res.status(422).json({ status: 'error', error: 'COPYLAB_EMPHASIS_UNUSABLE', reason: leido.reason, raw: salida.slice(0, 600), usage: uso, meta: metaEnfasis });
       }
-      return res.status(200).json({ status: 'ok', image_emphasis: leido.terms, usage, meta: metaEnfasis });
+      return res.status(200).json({ status: 'ok', image_emphasis: leido.terms, usage: uso, meta: metaEnfasis });
     }
     // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
     // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
