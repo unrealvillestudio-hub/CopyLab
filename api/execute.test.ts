@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, buildEmphasisRetryNote, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -134,7 +134,7 @@ function res(data: any, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => data, text: async () => (typeof data === 'string' ? data : JSON.stringify(data)) } as any;
 }
 type TableReply = any[] | ((url: string) => any);
-function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; snapshot?: any[]; claudeStatus?: number }) {
+function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any; claudeSeq?: any[]; snapshot?: any[]; claudeStatus?: number }) {
   const calls: string[] = [];
   const claudeBodies: any[] = [];
   globalThis.fetch = (async (url: any, init?: any) => {
@@ -142,7 +142,10 @@ function installFetch(opts: { tables?: Record<string, TableReply>; claude?: any;
     calls.push(u);
     if (u.includes('api.anthropic.com')) {
       try { claudeBodies.push(JSON.parse(init?.body ?? '{}')); } catch { /* ignore */ }
-      return res(opts.claude ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } }, opts.claudeStatus ?? 200);
+      // `claudeSeq`: una respuesta por llamada, en orden (la última se repite si hay más llamadas).
+      const seq = opts.claudeSeq;
+      const reply = seq && seq.length ? seq[Math.min(claudeBodies.length - 1, seq.length - 1)] : opts.claude;
+      return res(reply ?? { content: [{ text: '' }], usage: { input_tokens: 0, output_tokens: 0 } }, opts.claudeStatus ?? 200);
     }
     if (u.includes('unrlvl-context.vercel.app')) return res('', 404);
     if (u.includes('/rest/v1/')) {
@@ -1116,7 +1119,7 @@ async function run() {
     const r = PURE.pruneEmphasis('**Siete mil dólares** | "multa" | Multa | la multa de siempre que nadie leyó | Siete mil dólares. Esa fue la multa. | Esa', H);
     eq(JSON.stringify(r.terms), JSON.stringify(['Siete mil dólares', 'multa']), 'los dos primeros válidos, sin asteriscos ni comillas');
     const motivos = Object.fromEntries(r.dropped.map((d: any) => [d.term, d.reason]));
-    eq(motivos['Multa'], 'NOT_IN_TEXT', 'literal: mayúsculas cuentan');
+    eq(motivos['Multa'], undefined, 'otra mayúscula (Sam, 2026-10-17): se toma el literal del texto, «multa», que ya estaba: no se duplica ni se poda');
     eq(motivos['la multa de siempre que nadie leyó'], 'TOO_LONG', 'más de 4 palabras');
     eq(motivos['Esa'], 'TOO_MANY', 'tope de dos');
     eq(PURE.pruneEmphasis('Siete mil dólares. Esa fue la multa', H).dropped[0].reason, 'TOO_LONG', 'el texto entero tampoco entra');
@@ -1668,7 +1671,7 @@ async function run() {
     brand_voice_genome: [GENOME_V1], ctas: VM_CTAS,
   } };
   const vmBI = (extra: any) => lbBI({ language: 'pt', ...extra });
-  const vmFetch = (claude?: any) => installFetch({ tables: { language_directives: [VM_DIRECTIVA] }, ...(claude ? { claude } : {}) });
+  const vmFetch = (claude?: any) => installFetch({ tables: { language_directives: [VM_DIRECTIVA] }, ...(Array.isArray(claude) ? { claudeSeq: claude } : claude ? { claude } : {}) });
   const VM_IMG = 'https://cdn.vetmar.example/pieces/abc/clean.png';
   const VM_SCENE = 'Veterinária examina um cachorro labrador sobre uma mesa de aço, luz suave de janela.';
   // Voseo: las formas que una instrucción en español podría colar. Marcas: las que viven en la base
@@ -1925,7 +1928,9 @@ async function run() {
       eq(r._out._status, 422, 'HTTP 422');
       eq(r._out._json.error, 'COPYLAB_EMPHASIS_UNUSABLE', 'con nombre propio');
       eq(r._out._json.reason, 'EMPTY', 'y su motivo');
-      eq(r._out._json.usage.output_tokens, 8, 'el consumo viaja también en el fallo');
+      eq(fx.claudeBodies.length, 2, 'REINTENTO: una segunda llamada, y sólo una');
+      eq(r._out._json.usage.output_tokens, 16, 'el consumo de las DOS llamadas viaja también en el fallo');
+      eq(r._out._json.meta.emphasis_retry?.first_dropped?.[0]?.reason, 'NOT_IN_TEXT', 'el motivo del primer intento viaja');
     } finally { fx.restore(); }
     const fx2 = vmFetch({ content: [{ text: '{}' }], usage: { input_tokens: 1, output_tokens: 1 } });
     try {
@@ -1934,6 +1939,56 @@ async function run() {
       eq(r._out._status, 400, 'dos pasadas a la vez ⇒ 400');
       eq(fx2.claudeBodies.length, 0, 'sin llamar al modelo');
     } finally { fx2.restore(); }
+  });
+
+  await test('ÉNFASIS-PASS·REINTENTO: un tramo de 5 palabras se descarta, se repite UNA vez con el motivo, y el segundo sirve', async () => {
+    const T = 'Un acta puede pasar hoy y morir dentro de tres años.';
+    const fx = vmFetch([
+      { content: [{ text: '{"emphasis":["morir dentro de tres años"]}' }], usage: { input_tokens: 700, output_tokens: 12 } },
+      { content: [{ text: '{"emphasis":["morir"]}' }], usage: { input_tokens: 720, output_tokens: 6 } },
+    ]);
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: T } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200 tras el reintento');
+      eq(JSON.stringify(r._out._json.image_emphasis), JSON.stringify(['morir']), 'el tramo del segundo intento');
+      eq(fx.claudeBodies.length, 2, 'dos llamadas');
+      const segundo = JSON.stringify(fx.claudeBodies[1]?.messages ?? []);
+      assert(segundo.includes('TU RESPUESTA ANTERIOR NO SIRVE'), 'el segundo pedido lleva la nota');
+      assert(segundo.includes(`tiene 5 palabras y el máximo es ${PURE.EMPHASIS_MAX_WORDS}`), 'y el motivo exacto');
+      eq(r._out._json.usage.input_tokens, 1420, 'el consumo es la suma de las dos llamadas');
+      eq(r._out._json.meta.emphasis_retry?.first_dropped?.[0]?.reason, 'TOO_LONG', 'el motivo del primer intento viaja');
+    } finally { fx.restore(); }
+  });
+
+  await test('ÉNFASIS-PASS·REINTENTO: con un tramo útil en el primer intento NO se repite', async () => {
+    const fx = vmFetch({ content: [{ text: '{"emphasis":["vacina"]}' }], usage: { input_tokens: 700, output_tokens: 5 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(fx.claudeBodies.length, 1, 'una sola llamada');
+      assert(!('emphasis_retry' in r._out._json.meta), 'sin eco de reintento');
+    } finally { fx.restore(); }
+  });
+
+  await test('ÉNFASIS·pure: la mayúscula distinta ya no descarta el tramo; se devuelve tal como está en el texto', () => {
+    const r = PURE.pruneEmphasis('cada tres semanas', 'Cada tres semanas repites el mismo ritual.');
+    eq(JSON.stringify(r.terms), JSON.stringify(['Cada tres semanas']), 'el literal del texto');
+    eq(r.dropped.length, 0, 'nada podado');
+    eq(PURE.pruneEmphasis('inventado', 'Cada tres semanas').dropped[0].reason, 'NOT_IN_TEXT', 'lo que no está, sigue fuera');
+  });
+
+  await test('ÉNFASIS·pure: la nota del reintento nombra cada motivo y no tiene voseo', () => {
+    const n = PURE.buildEmphasisRetryNote({ dropped: [
+      { term: 'morir dentro de tres años', reason: 'TOO_LONG' }, { term: 'casi un año', reason: 'NOT_IN_TEXT' },
+      { term: 'x'.repeat(41), reason: 'TOO_LONG' }, { term: 'Todo', reason: 'IS_TEXT' } ], reason: 'EMPTY' });
+    assert(n.includes('«morir dentro de tres años» tiene 5 palabras'), 'demasiadas palabras');
+    assert(n.includes('«casi un año» no está escrito así en el texto'), 'no está');
+    assert(n.includes(`pasa de ${PURE.EMPHASIS_MAX_CHARS} caracteres`), 'demasiados caracteres');
+    assert(n.includes('«Todo» es el texto entero'), 'el texto entero');
+    assert(PURE.buildEmphasisRetryNote({ dropped: [], reason: 'UNPARSABLE' }).includes('no era un objeto JSON'), 'sin JSON');
+    assert(!VOSEO.test(n), 'sin voseo');
   });
 
   await test('F3·ALT·cableado: con visión la imagen viaja por URL en el user; 200 con el alt, su techo y alt_source', async () => {
