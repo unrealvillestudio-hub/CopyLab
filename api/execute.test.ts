@@ -3692,7 +3692,8 @@ async function run() {
     const r = makeRes();
     await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any);
     fx.restore();
-    eq(JSON.stringify(r._out._json.usage), JSON.stringify({ input_tokens: 10, output_tokens: 5 }), 'sin campos nuevos');
+    // CUENTAS (2026-10-20) — el único campo añadido es `cuentas_api` (contrato con el carril); los de caché no aparecen.
+    eq(JSON.stringify(r._out._json.usage), JSON.stringify({ input_tokens: 10, output_tokens: 5, cuentas_api: { credito: 0, principal: 1 } }), 'sin campos de caché; sólo la cuenta que pagó');
   });
 
   await test('ECONOMÍA·el motivo del proveedor viaja DESPUÉS del mensaje de siempre (crédito agotado)', async () => {
@@ -3756,6 +3757,98 @@ async function run() {
     } finally {
       globalThis.fetch = REAL_FETCH; restoreEnv('ANTHROPIC_API_KEY_CREDITO', prevC); restoreEnv('ANTHROPIC_API_KEY', prevP);
     }
+  });
+
+  // ── CUENTAS (2026-10-20) — la respuesta dice qué organización de Anthropic pagó ─────────────────
+  // Contrato con el carril: `usage.cuentas_api = { credito, principal }`, número de llamadas que RESPONDIERON con
+  // cada clave, sumado sobre todas las llamadas de la petición. El carril lo lee para etiquetar el asiento
+  // (`CREDITO:…` / `MIXTA:…`); sin él, el gasto de CopyLab no se puede conciliar contra su factura.
+  // El reloj se adelanta en cada test: la clave de crédito apartada por un test anterior no contamina el siguiente.
+  let relojDesplazado = 0;
+  const enOtroMomento = () => {
+    relojDesplazado += 24;
+    const real = Date.now, off = relojDesplazado * 3_600_000;
+    Date.now = () => real() + off;
+    return () => { Date.now = real; };
+  };
+  // Envuelve un fetch de prueba: las llamadas a Anthropic responden según la clave usada (`porClave`).
+  const porClaveFetch = (base: { restore: () => void }, porClave: (clave: string, n: number) => any) => {
+    const interior = globalThis.fetch;
+    const claves: string[] = [];
+    globalThis.fetch = (async (u: any, init?: any) => {
+      if (String(u).includes('api.anthropic.com')) {
+        const k = init?.headers?.['x-api-key']; claves.push(k);
+        return porClave(k, claves.length);
+      }
+      return interior(u, init);
+    }) as any;
+    return { claves, restore: () => base.restore() };
+  };
+  const conClaves = async (credito: string | undefined, fn: () => Promise<void>) => {
+    const prevC = process.env.ANTHROPIC_API_KEY_CREDITO, prevP = process.env.ANTHROPIC_API_KEY;
+    restoreEnv('ANTHROPIC_API_KEY_CREDITO', credito); process.env.ANTHROPIC_API_KEY = 'k-principal';
+    const volver = enOtroMomento();
+    try { await fn(); } finally { volver(); restoreEnv('ANTHROPIC_API_KEY_CREDITO', prevC); restoreEnv('ANTHROPIC_API_KEY', prevP); }
+  };
+  const SALDO_AGOTADO = { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } };
+
+  await test('CUENTAS·pieza pagada con la clave de crédito ⇒ usage.cuentas_api = {credito:1, principal:0}; el resto del usage intacto', async () => {
+    await conClaves('k-credito', async () => {
+      const f = porClaveFetch(installFetch({}), () => res({ content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 10, output_tokens: 5 } }));
+      const r = makeRes();
+      try { await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any); } finally { f.restore(); }
+      eq(r._out._status, 200, '200');
+      eq(JSON.stringify(f.claves), JSON.stringify(['k-credito']), 'una llamada, con la de crédito');
+      eq(JSON.stringify(r._out._json.usage), JSON.stringify({ input_tokens: 10, output_tokens: 5, cuentas_api: { credito: 1, principal: 0 } }), 'la cuenta que pagó viaja dentro de usage');
+    });
+  });
+
+  await test('CUENTAS·sin clave de crédito ⇒ todas las llamadas son de la principal', async () => {
+    await conClaves(undefined, async () => {
+      const f = porClaveFetch(installFetch({}), () => res({ content: [{ text: 'Cuerpo.' }], usage: { input_tokens: 10, output_tokens: 5 } }));
+      const r = makeRes();
+      try { await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any); } finally { f.restore(); }
+      eq(JSON.stringify(f.claves), JSON.stringify(['k-principal']), 'sólo la de siempre');
+      eq(JSON.stringify(r._out._json.usage.cuentas_api), JSON.stringify({ credito: 0, principal: 1 }), 'principal');
+    });
+  });
+
+  await test('CUENTAS·dos llamadas en una petición, cada una en su organización ⇒ {credito:1, principal:1} (MIXTA)', async () => {
+    // Primera llamada con crédito: sin tramo útil ⇒ reintento. En el reintento la de crédito se queda sin saldo
+    // y la MISMA llamada se repite con la de siempre. Se cobraron dos llamadas, una en cada organización.
+    await conClaves('k-credito', async () => {
+      const f = porClaveFetch(vmFetch(), (k, n) => n === 1
+        ? res({ content: [{ text: '{"emphasis":["inventado"]}' }], usage: { input_tokens: 700, output_tokens: 8 } })
+        : k === 'k-credito' ? res(SALDO_AGOTADO, 400)
+        : res({ content: [{ text: '{"emphasis":["vacina"]}' }], usage: { input_tokens: 720, output_tokens: 6 } }));
+      const r = makeRes();
+      try { await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }) } as any, r as any); } finally { f.restore(); }
+      eq(r._out._status, 200, '200 tras el reintento');
+      eq(JSON.stringify(f.claves), JSON.stringify(['k-credito', 'k-credito', 'k-principal']), 'crédito, crédito sin saldo, principal');
+      eq(r._out._json.usage.input_tokens, 1420, 'el consumo es la suma de las dos llamadas que respondieron');
+      eq(JSON.stringify(r._out._json.usage.cuentas_api), JSON.stringify({ credito: 1, principal: 1 }), 'una en cada organización; el rechazo no cuenta');
+    });
+  });
+
+  await test('CUENTAS·el cuerpo de un fallo lleva la cuenta de la llamada que SÍ respondió; sin llamada que responda, no hay campo', async () => {
+    await conClaves('k-credito', async () => {
+      // Primera llamada con crédito responde; el reintento falla con un error de la petición (no aparta la clave).
+      const f = porClaveFetch(vmFetch(), (_k, n) => n === 1
+        ? res({ content: [{ text: '{"emphasis":["inventado"]}' }], usage: { input_tokens: 700, output_tokens: 8 } })
+        : res({ type: 'error', error: { type: 'rate_limit_error', message: 'rate limited' } }, 429));
+      const r = makeRes();
+      try { await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }) } as any, r as any); } finally { f.restore(); }
+      eq(r._out._status, 500, '500 como hasta hoy');
+      eq(r._out._json.provider_http_status, 429, 'el código del proveedor');
+      eq(JSON.stringify(r._out._json.usage), JSON.stringify({ input_tokens: 700, output_tokens: 8, cuentas_api: { credito: 1, principal: 0 } }), 'la llamada cobrada, con su organización');
+    });
+    await conClaves(undefined, async () => {
+      const f = porClaveFetch(installFetch({}), () => res({ type: 'error', error: { type: 'rate_limit_error' } }, 429));
+      const r = makeRes();
+      try { await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any); } finally { f.restore(); }
+      eq(r._out._status, 500, '500');
+      eq(r._out._json.usage, null, 'sin llamada pagada: usage null, sin cuentas_api');
+    });
   });
 
   const total = passed + xfails.length + failures.length;

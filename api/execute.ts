@@ -1015,6 +1015,13 @@ function sumarUso(a: ClaudeUsage, b: ClaudeUsage): ClaudeUsage {
   const cw = (a?.cache_creation_input_tokens ?? 0) + (b?.cache_creation_input_tokens ?? 0);
   if (cr) out.cache_read_input_tokens = cr;
   if (cw) out.cache_creation_input_tokens = cw;
+  // CUENTAS (2026-10-20) — las dos llamadas se cobraron, cada una en su organización: se suman.
+  if (a?.cuentas_api || b?.cuentas_api) {
+    out.cuentas_api = {
+      credito: (a?.cuentas_api?.credito ?? 0) + (b?.cuentas_api?.credito ?? 0),
+      principal: (a?.cuentas_api?.principal ?? 0) + (b?.cuentas_api?.principal ?? 0),
+    };
+  }
   return out;
 }
 
@@ -3971,7 +3978,13 @@ Generate now.`;
 
 // ECONOMÍA (2026-10-11) — la caché del proveedor viaja al carril, que la asienta a su tarifa (dato). Anthropic
 // la cuenta APARTE de input_tokens: sin estos dos campos el libro callaría ese gasto.
-interface ClaudeUsage { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; }
+interface ClaudeUsage { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; cuentas_api?: CuentasApi; }
+// CUENTAS (2026-10-20) — qué organización de Anthropic pagó: cuántas llamadas que RESPONDIERON se hicieron con
+// la clave de crédito y cuántas con la de siempre. Sumado sobre todas las llamadas de la petición. Sin él, el
+// carril asienta `EXTERNAL:copylab` sin decir qué factura lo trae, y la de la organización principal no se
+// puede conciliar contra el libro (reportado por la sesión coordinadora, 2026-10-20: 10-16..19 lo pagó la de crédito y el libro no lo dice).
+type CuentaAnthropic = 'credito' | 'principal';
+interface CuentasApi { credito: number; principal: number; }
 
 type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 
@@ -4060,11 +4073,12 @@ export async function callClaude(
   // F2/F3 · pasada del alt — la imagen que el modelo tiene que MIRAR. Va por URL: la API de Mensajes
   // la descarga ella misma. Ausente ⇒ el user viaja como texto, byte-idéntico a antes.
   imageUrl: string | null = null,
-): Promise<{ text: string; usage: ClaudeUsage }> {
+): Promise<{ text: string; usage: ClaudeUsage; cuenta: CuentaAnthropic }> {
   // La clave se resuelve ANTES de la llamada: si falta, la llamada paga no se hizo, y el error
   // sale como Error a secas (no ProviderCallError) — `provider_called: false`.
   const claves = clavesAnthropic(ANT_KEY_CREDITO(), ANT_KEY(), Date.now());
   let res!: Response;
+  let pago!: CuentaAnthropic;
   for (let i = 0; i < claves.length; i++) {
     const { clave, cuenta } = claves[i];
     try {
@@ -4111,6 +4125,7 @@ export async function callClaude(
       throw new ProviderCallError(`Claude API error: ${res.status}${motivo ? ` — ${motivo}` : ''}`, res.status);
     }
     if (cuenta === 'credito') console.info('[callClaude] llamada pagada con la clave de crédito');
+    pago = cuenta;
     break;
   }
   let data: any;
@@ -4128,7 +4143,10 @@ export async function callClaude(
       input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
       ...(usage.cache_read_input_tokens ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
       ...(usage.cache_creation_input_tokens ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
+      // CUENTAS (2026-10-20) — la organización que respondió (y por tanto cobró) esta llamada.
+      cuentas_api: { credito: pago === 'credito' ? 1 : 0, principal: pago === 'principal' ? 1 : 0 },
     },
+    cuenta: pago,
   };
 }
 
