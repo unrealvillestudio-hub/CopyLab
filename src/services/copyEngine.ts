@@ -83,12 +83,12 @@ export async function generateCopyFromInput(
   const promptResult = await buildCopyPromptFromSupabase(input)
 
   const systemPrompt = [
-    `Eres el motor de copy de ${promptResult.brandName} — generás copy auténtico, estratégico y listo para publicar.`,
+    `Eres el motor de copy de ${promptResult.brandName} — generas copy auténtico, estratégico y listo para publicar.`,
     ``,
     `REGLAS ABSOLUTAS:`,
-    `- Entregá SOLO el copy solicitado. Sin explicaciones, sin comentarios meta.`,
-    `- Seguí la estructura del template al pie de la letra.`,
-    `- Aplicá HUMANIZE F2.5 y COMPLIANCE sin excepción.`,
+    `- Entrega SOLO el copy solicitado. Sin explicaciones, sin comentarios meta.`,
+    `- Sigue la estructura del template al pie de la letra.`,
+    `- Aplica HUMANIZE F2.5 y COMPLIANCE sin excepción.`,
     `- Nunca uses: "innovador", "revolucionario", "transformador", "es importante destacar".`,
   ].join('\n')
 

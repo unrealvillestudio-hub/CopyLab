@@ -9,9 +9,9 @@
 // generar CTAs desde un objetivo libre, adaptar texto a un canal) — transformaciones de
 // texto arbitrario, no generación con identidad de marca.
 //
-// NADA con brand_id debe pasar por acá. El copy de marca va por /api/execute (motor único:
+// NADA con brand_id debe pasar por aquí. El copy de marca va por /api/execute (motor único:
 // registro + voice genome + compatibilidad + compliance). Si aparece la tentación de mandar
-// brand_id o armar un system con contexto de marca acá, es la señal de que ese caso pertenece
+// brand_id o armar un system con contexto de marca aquí, es la señal de que ese caso pertenece
 // a /api/execute — así nació el motor paralelo que este refactor está retirando. (Verificado
 // 2026-08-04: las 3 sub-tools de CopyToolsModule son genéricas; ninguna usa el motor de marca.)
 // ============================================================

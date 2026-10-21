@@ -364,7 +364,7 @@ async function run() {
 
   // B2 (pure) — el mapa del carril: destino + plataforma → content_type + canal
   // A2 (2026-08-18) — `platform_canal_map` tal cual las 9 filas de producción, leídas en vivo.
-  // El canal editorial sale de ACÁ, no de un objeto literal con el nombre de una marca dentro.
+  // El canal editorial sale de AQUÍ, no de un objeto literal con el nombre de una marca dentro.
   const CANAL_MAP = [
     { platform: 'blog',               traffic_type: 'organic', canal_block_id: 'BLOG',               content_type: null, active: true },
     { platform: 'blog_forumphs',      traffic_type: 'organic', canal_block_id: 'BLOG',               content_type: null, active: true },
@@ -541,7 +541,7 @@ async function run() {
       assertOrdered(block, [c.claim, c.value, c.source_name, c.source_url]);
     assert(/s[oó]lo de esta lista/i.test(block), 'la instrucción dice que las cifras salen sólo de la lista');
     assert(/NO se escribe/.test(block), 'la instrucción dice que una cifra sin claim no se escribe');
-    // El orden de la lista es el que mandó el carril: la fila decide, no un re-ordenamiento de acá.
+    // El orden de la lista es el que mandó el carril: la fila decide, no un re-ordenamiento de aquí.
     assertOrdered(block, [CLAIM_A.claim, CLAIM_B.claim]);
   });
 
@@ -942,7 +942,7 @@ async function run() {
       eq(singular.language, plural.language, 'ambas formas dan el mismo idioma');
       assert(singular.system.includes('## MARCA: UNRLVL') && singular.system.includes('Mercado: Miami'), 'display_name y market desde la forma singular');
       eq(singular.system, plural.system, 'system byte-idéntico entre ambas formas');
-      // FIX-LANG-01 — una query de `language_directives` por build (dos builds acá);
+      // FIX-LANG-01 — una query de `language_directives` por build (dos builds aquí);
       // ninguna otra: el cache completo sigue cancelando el resto.
       eq(fx.calls.length, 2, 'con el registro resuelto y el cache completo: sólo la query de idioma, una por build');
       assert(fx.calls.every(u => u.includes('/rest/v1/language_directives')), `sólo language_directives — obtenido: ${fx.calls.join(', ')}`);
@@ -1206,7 +1206,7 @@ async function run() {
 
       // G1-D — el techo declarado sigue mandando, pero a la API va CON margen: ceil(1400 × 1,2).
       // La pieza corta la garantiza el PRESUPUESTO del prompt; la API es red de seguridad, no
-      // guillotina. Lo que se fija acá es que el declarado gobierne el número, no el default (640).
+      // guillotina. Lo que se fija aquí es que el declarado gobierne el número, no el default (640).
       const declarado = await buildPrompt(reqWith(bctx, { builder_input: bi({ max_tokens: 1400, max_tokens_source: 'base_platform' }) }));
       eq(declarado.max_tokens, 1680, 'el techo declarado gobierna el número con el que se llama a Claude (con margen G1-D)');
       eq(declarado.max_tokens_source, 'base_platform', 'la procedencia viaja al meta');

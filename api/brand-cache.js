@@ -152,7 +152,7 @@ const CACHE_SECRET = () => process.env.CLAUDE_BRIDGE_SECRET ?? '';
 // PRIMERO a propósito: un lab que necesita service_role para tener contexto está mal cableado.
 const CRON_SECRET  = () => process.env.IID_CRON_SECRET ?? '';
 
-// El constructor, a nivel ecosistema. NO vive en este repo y no debe volver a vivir acá.
+// El constructor, a nivel ecosistema. NO vive en este repo y no debe volver a vivir aquí.
 const BUILDER_FN = 'brand-snapshot-builder';
 
 // Las capas GLOBALES: exactamente las que el builder consulta SIN predicado de marca alguno.
@@ -163,7 +163,7 @@ const BUILDER_FN = 'brand-snapshot-builder';
 // cosas: se traga una global vacía suelta (justo el modo de fallo que ya ocurrió: creative_vectors
 // presente y vacío durante semanas) y a la vez grita por marcas legítimamente flacas.
 //
-// PARIDAD CON EL BUILDER: si brand-snapshot-builder suma una tabla global, va también acá, o el
+// PARIDAD CON EL BUILDER: si brand-snapshot-builder suma una tabla global, va también aquí, o el
 // detector queda ciego en la capa nueva. Las tres claves que mezclan mitad global/DEFAULT con
 // mitad de marca quedan FUERA de esta lista y se cubren aparte, con SENTINELS.
 const GLOBAL_LAYERS = [
@@ -198,7 +198,7 @@ const SENTINELS = [
   // PISA a la global con la misma clave. Una marca que defina un preset por cada canal global deja
   // el array sin ninguna fila brand_id=null aunque la mitad global se haya leído perfecta.
   // Se reporta igual: es un centinela ausente de verdad, y el log dice cuál. Si aparece ruido por
-  // esto, el arreglo es del lado del builder (emitir la mitad global sin pisar), no de acá.
+  // esto, el arreglo es del lado del builder (emitir la mitad global sin pisar), no de aquí.
   { layer: 'imagelab_presets',  label: 'imagelab_presets[brand_id=null]',       match: (r) => r?.brand_id === null },
 ];
 
@@ -393,7 +393,7 @@ export default async function handler(req) {
     return serveSnapshot(brandId, snapshot, 'HIT');
   }
 
-  // 2. Ausente, stale, o refresh forzado → DELEGAR. Nunca construir acá.
+  // 2. Ausente, stale, o refresh forzado → DELEGAR. Nunca construir aquí.
   let delegationError = null;
   try {
     await invokeBuilder(brandId);

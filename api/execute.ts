@@ -197,7 +197,7 @@ interface BuilderInput {
   psycho_preset: string | null;
   // BRIEF 8 · A — el presupuesto del TÍTULO, en caracteres, ya resuelto por el carril contra la
   // física real del overlay (los `fit_steps` de los tokens de la marca) o su fallback declarado.
-  // Opcional: su ausencia deja la sección ## TÍTULO sin cifra, nunca sin título. Acá no se decide
+  // Opcional: su ausencia deja la sección ## TÍTULO sin cifra, nunca sin título. Aquí no se decide
   // el número — mismo contrato que `max_tokens`: el carril resuelve, CopyLab obedece y hace eco.
   title_budget_chars?: number | null;
   title_budget_source?: string | null;   // de qué nivel salió el número, verbatim del carril
@@ -259,7 +259,7 @@ interface BuilderInput {
   max_tokens_source?: string | null;
   // LA INSTRUCCIÓN DE FORMATO DEL ARTEFACTO (2026-09-18). Sale de
   // `public.content_type_registry.format_instruction` por la MISMA cascada de cinco niveles que el
-  // techo, resuelta por el carril; acá no se decide nada, se obedece — mismo contrato que
+  // techo, resuelta por el carril; aquí no se decide nada, se obedece — mismo contrato que
   // `max_tokens` y `title_budget_chars`.
   //
   // POR QUÉ APARECE AHORA. La columna existía desde el 2026-08-08 y estaba sembrada, pero el carril
@@ -596,8 +596,8 @@ function selectHumanize(rows: any[] | null | undefined, brandId: string): any | 
 // una declaración: cae al default y se avisa, porque un techo roto que silenciosamente
 // alarga o acorta la pieza es el fallo que este cambio viene a cerrar.
 //
-// Acá NO se decide CUÁNTO: el número es dato de tabla, resuelto por el carril. Lo que
-// vive acá es que el techo declarado se aplique — eje, no instancia.
+// Aquí NO se decide CUÁNTO: el número es dato de tabla, resuelto por el carril. Lo que
+// vive aquí es que el techo declarado se aplique — eje, no instancia.
 const CARRIL_DESTINATION_MAX_TOKENS: Record<string, number> = { editorial: 4000, social: 640 };
 const MAX_TOKENS_UI_DEFAULT = 1600;
 // G1-D — el lector del techo declarado, SILENCIOSO y en un solo lugar. Tres cifras salen del
@@ -607,7 +607,7 @@ const MAX_TOKENS_UI_DEFAULT = 1600;
 // veces del mismo valor roto es ruido, no observabilidad.
 // `max_tokens` entra como `unknown` a propósito: el CONTRATO lo declara `number | null`
 // (interface BuilderInput) pero lo que llega es JSON de la red, y esta función es justamente la
-// que decide si ese valor es una declaración. Tiparlo `number` acá sería asumir lo que se valida.
+// que decide si ese valor es una declaración. Tiparlo `number` aquí sería asumir lo que se valida.
 function readDeclaredMaxTokens(declared: unknown): number | null {
   if (declared === null || declared === undefined) return null;
   // `Number()` a secas convierte `true` en 1 y `[7]` en 7: un techo de UN token, aplicado en
@@ -620,7 +620,7 @@ function readDeclaredMaxTokens(declared: unknown): number | null {
 }
 
 // El techo con el que se PLANIFICA la pieza: el declarado si lo hay, el default por destino si no.
-// Contrato intacto desde G1-C — G1-D no cambia ni un número acá.
+// Contrato intacto desde G1-C — G1-D no cambia ni un número aquí.
 function maxTokensFor(
   builderInput: { destination?: string; max_tokens?: unknown; max_tokens_source?: string | null } | null | undefined,
 ): number {
@@ -649,7 +649,7 @@ function maxTokensFor(
 // token 320. La tesis de G1-C era "una pieza ESCRITA corta cierra bien; una pieza larga RECORTADA
 // no", y G1-C implementó el corte sin implementar lo que hace que la pieza se escriba corta. Es
 // el patrón que este archivo ya documenta en A1 y C1: darle al modelo la orden sin darle el
-// material — acá, darle el corte sin darle el número. LinkedIn lo confirma por contraste: su
+// material — aquí, darle el corte sin darle el número. LinkedIn lo confirma por contraste: su
 // largo natural cabe en 700 tokens y truncó sólo 3/16.
 //
 // El ratio es EMPÍRICO, no teórico: 320 tokens rindieron 1.045 caracteres medidos (≈3,27) en
@@ -706,7 +706,7 @@ function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): s
 // palabra sobre cuánto espacio hay la tiene el bloque que se calcula, no el que se sembró.
 //
 // ESO NO ARREGLA LA CONTRADICCIÓN, SÓLO LA ORDENA. La corrección de verdad es que las instrucciones
-// sembradas dejen de hablar de longitud y hablen sólo de forma. Va en su propia migración; acá
+// sembradas dejen de hablar de longitud y hablen sólo de forma. Va en su propia migración; aquí
 // queda escrito para que quien lea el prompt sepa por qué el orden es ése.
 //
 // Sin nombrar plataformas ni marcas: el TEXTO llega como dato, el bloque es motor.
@@ -743,12 +743,12 @@ function apiMaxTokensFor(
 //       último no es retórica: desde el BRIEF 8-B el Watcher juzga el título con las mismas reglas,
 //       así que un título que las rompe REPRUEBA la pieza entera.
 //   2 · PRESUPUESTO — `title_budget_chars` llega por builder_input, resuelto por el carril contra
-//       la física real del overlay (los `fit_steps` de la marca). Acá no se decide CUÁNTO: el
+//       la física real del overlay (los `fit_steps` de la marca). Aquí no se decide CUÁNTO: el
 //       número es dato, igual que `max_tokens`. Sin número, la sección sale igual pero sin cifra.
 //   3 · SEPARACIÓN — en social el título NO se publica en el cuerpo: es el texto del overlay. Hay
 //       que decírselo, o el escritor lo repite en la primera línea y la pieza sale duplicada.
 //
-// CERO MARCAS Y CERO PLATAFORMAS acá: el destino es un eje del sistema ('editorial' | 'social') y
+// CERO MARCAS Y CERO PLATAFORMAS aquí: el destino es un eje del sistema ('editorial' | 'social') y
 // el número llega como dato. Test de la marca N+1 en `api/execute.test.ts`.
 
 // Piso del presupuesto de título. Un número diminuto (o negativo, o basura) no es un presupuesto:
@@ -783,7 +783,7 @@ function readTitleBudgetChars(declared: unknown): number | null {
 // EL MODO ES DEL CANAL Y LLEGA COMO DATO. Donde el título es la primera línea de un caption, el
 // diálogo funciona; donde es un H1 que indexa o el asunto de un correo, un gancho suelto es un
 // desastre de búsqueda. Eso depende de la SUPERFICIE, no de quién publica, y por eso NO se decide
-// acá: llega resuelto en `builder_input`. Cero marcas y cero canales en este archivo.
+// aquí: llega resuelto en `builder_input`. Cero marcas y cero canales en este archivo.
 //
 // LA REGLA QUE HACE EL MODO SEGURO: LA RESPUESTA CONTIENE SU PREMISA. El texto sobre la imagen no
 // distribuye —las plataformas rankean, buscan y previsualizan sobre el caption, y un lector de
@@ -882,7 +882,7 @@ function buildTitleBlock(
 //
 // El compositor de ImageLab (1.4.0) pinta tramos del titular con otro peso, tamaño, mayúsculas y
 // color de la marca. QUÉ tramos lo decide quien escribe, porque es una decisión de sentido: la palabra
-// que carga la tensión. CÓMO se ven es dato de la marca en ImageLab: acá no hay ni un estilo.
+// que carga la tensión. CÓMO se ven es dato de la marca en ImageLab: aquí no hay ni un estilo.
 //
 // Los tramos son subcadenas LITERALES del texto de la imagen (el gancho en diálogo, el título en
 // eco). Nunca se reescribe el texto para que el tramo quepa: si no está literal, se poda.
@@ -1044,7 +1044,7 @@ function readEmphasisPassResult(raw: Record<string, unknown> | null, imageText: 
 // CUÁNDO. Sólo cuando el carril declara `body_format: 'markdown_min'`, que hace únicamente para un
 // canal cuyo publicador lo pinta. El mismo artefacto editorial sale también por canales de texto
 // plano (LinkedIn, TikTok), donde un `##` se publicaría tal cual: por eso la decisión es del canal y
-// no de este archivo. Cero marcas y cero plataformas acá.
+// no de este archivo. Cero marcas y cero plataformas aquí.
 //
 // SIN la clave, `buildCarrilFormatBlock` devuelve el bloque de siempre, byte a byte.
 type BodyFormat = 'markdown_min';
@@ -1179,7 +1179,7 @@ function deriveSignature(
 // instrucciones que violó, un único reintento, y se re-juzga con el mismo gate. No afloja ningún
 // gate —el juez sigue decidiendo con las mismas reglas— y convierte la cola larga en PASS.
 //
-// Lo que cambia acá es la TAREA, no la VOZ. El system queda EXACTAMENTE como el de generación
+// Lo que cambia aquí es la TAREA, no la VOZ. El system queda EXACTAMENTE como el de generación
 // —voz, genoma, reglas del Watcher, presupuesto de longitud— porque la pieza reparada tiene que
 // seguir cumpliendo todo lo que ya cumplía: quitarle las 17 reglas que sí cumple para dejarle sólo
 // las 2 violadas es invitarla a romper las otras 17. Lo que se reemplaza es la INSTRUCCIÓN DE
@@ -1188,7 +1188,7 @@ function deriveSignature(
 // Sin `builder_input.repair` no corre nada de esto y el prompt queda byte-idéntico al de hoy (modo
 // UI y carril de generación intactos) — el mismo contrato de aditividad de A1 / C1 / G1-D.
 //
-// Cero marcas y cero plataformas acá: las violaciones son DATO del payload (código + instruction,
+// Cero marcas y cero plataformas aquí: las violaciones son DATO del payload (código + instruction,
 // las mismas que el juez usó para rechazar), no una enumeración escrita en el motor.
 interface RepairViolation { code: string; instruction: string }
 interface RepairInput { piece_text: string; violations: RepairViolation[] }
@@ -1228,9 +1228,9 @@ function normalizeRepair(repair: unknown): RepairInput | null {
 //   · MÍNIMO NECESARIO — sin esto el modelo reescribe la pieza entera y rompe las reglas que ya
 //     cumplía, que es exactamente lo que la segunda pasada viene a evitar.
 //   · PRESUPUESTO — el techo de G1-D sigue vigente: reparar no puede ser agregar. El número se
-//     repite acá porque la orden de esta pasada es "corrige sin crecer", no "escribe en N".
+//     repite aquí porque la orden de esta pasada es "corrige sin crecer", no "escribe en N".
 //   · TÍTULO — sólo se menciona si la pieza original TRAE título (editorial): en social no hay
-//     título y nombrarlo sería invitar a inventar uno. Lo decide el dato, no el destino escrito acá.
+//     título y nombrarlo sería invitar a inventar uno. Lo decide el dato, no el destino escrito aquí.
 function buildRepairInstruction(
   formatBlock: string,
   repair: RepairInput,
@@ -1342,12 +1342,12 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
 //
 // EL REPARTO es el mismo que en la pasada de formato: CopyLab devuelve un PLAN y no reescribe nada.
 // Los bloques se numeran con el MISMO corte (`splitPieceParagraphs`) y el plan se parsea con el
-// MISMO lector (`extractJsonObject`). A diferencia del plan de formato, éste se NORMALIZA acá
+// MISMO lector (`extractJsonObject`). A diferencia del plan de formato, éste se NORMALIZA aquí
 // (`normalizeImagePlan`): la respuesta del contrato promete como mucho `max_images` entradas, y lo
 // que incumple una regla del contrato se descarta y se dice, para que el carril no tenga que
 // adivinar por qué llegó menos de lo pedido.
 //
-// LAS REGLAS DE MARCA DEL ALT no se escriben acá: el `alt` se publica, así que lo gobiernan las
+// LAS REGLAS DE MARCA DEL ALT no se escriben aquí: el `alt` se publica, así que lo gobiernan las
 // mismas reglas inyectadas en el system que ya gobiernan el título y el cuerpo (idioma,
 // tratamiento, prohibiciones). La instrucción sólo lo declara, igual que `## TÍTULO`.
 //
@@ -1827,7 +1827,7 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
       + ' una afirmación o una frase de búsqueda no es una llamada a la acción.'
       // F3 (Sam, 2026-10-03, opción b): una opción del DATO no queda exenta de las reglas de la marca.
       // Medido: el cierre de 85517171 eligió «… AHORA» de las opciones de su marca. Las reglas viven en el
-      // system (mismo que la generación); acá sólo se declara que también filtran las opciones.
+      // system (mismo que la generación); aquí sólo se declara que también filtran las opciones.
       + ' Antes de elegir, descarta toda opción que incumpla alguna regla de esta marca del system: en'
       + ' particular la presión de compra por urgencia (un apremio de tiempo: «ahora», «hoy», «ya» y sus'
       + ' equivalentes en el idioma de la pieza) o por escasez. Que la opción venga de la marca no la'
@@ -2077,7 +2077,7 @@ function buildLearnedCorrectionsBlock(items: LearnedCorrection[] | null | undefi
 
 // ── B2 · el mapa del carril ─────────────────────────────────────────────────
 // resolveCarrilContentType(destination, platform, canalMap) → { content_type, canal }. En
-// modo carril, content_type y canal salen de ACÁ (no del pack ni del `?? 'instagram'`
+// modo carril, content_type y canal salen de AQUÍ (no del pack ni del `?? 'instagram'`
 // mudo del modo UI). El destino manda; la plataforma afina el canal:
 //   social (x/meta_fb/meta_ig/tiktok/linkedin)      → social_post,     canal = la plataforma
 //   editorial (canal por platform_canal_map)        → editorial_post,  canal = canal_blocks.id
@@ -2104,7 +2104,7 @@ const CARRIL_SOCIAL_PLATFORMS = new Set(['x', 'meta_fb', 'meta_ig', 'tiktok', 'l
 // (traffic_type=organic → canal_block BLOG, el mismo que `blog` genérico) y su retiro como alias
 // es un PR posterior, según MULTIBRAND_RULE.
 //
-// El mapa llega COMO DATO (parámetro), no se consulta acá: la función sigue siendo PURA y
+// El mapa llega COMO DATO (parámetro), no se consulta aquí: la función sigue siendo PURA y
 // testeable. Plataforma sin fila → warn nominal que la nombra + par de su destination ('blog'),
 // exactamente el mismo comportamiento observable que hoy. Sin default silencioso.
 function resolveCarrilContentType(
@@ -2117,7 +2117,7 @@ function resolveCarrilContentType(
 
   // El email de divulgación se ancla en la PLATAFORMA, no en el destino.
   // ⚠️ DEUDA MULTIMARCA REMANENTE (no es el alcance de este PR): `email_propietarios` también es
-  // el nombre de la plataforma de UNA marca. A diferencia del canal editorial, acá lo que se
+  // el nombre de la plataforma de UNA marca. A diferencia del canal editorial, aquí lo que se
   // decide es el CONTENT_TYPE, y el puente que lo resolvería por dato —platform_canal_map.
   // content_type— hoy está en NULL en las 9 filas (es el gancho de ADS, sin cablear). Queda
   // anotado y se retira cuando esa columna sea la fuente.
@@ -2154,13 +2154,13 @@ function filterCarrilImperativeRules(
 
 // ── claims · las cifras y su procedencia (contraparte de A1·CAMBIO 8) ────────────────────────
 // `builder_input.claims` llega del carril con la forma {claim, value, source_url}: cada cifra ATADA
-// a la URL de la lista cerrada del memo que la sostiene. Acá se vuelve BLOQUE CITABLE, con la misma
+// a la URL de la lista cerrada del memo que la sostiene. Aquí se vuelve BLOQUE CITABLE, con la misma
 // gramática que las reglas del Watcher (lista + instrucción que la hace exigible), y la instrucción
 // cierra el grifo: las cifras salen SÓLO de esta lista, y una cifra sin claim no se escribe.
 // Sin claims → null → sin bloque: el prompt queda exactamente como hoy. La entrada incompleta (sin
 // dato, sin valor o sin fuente) NO viaja: un número sin procedencia es justo lo que este bloque
 // viene a impedir. La función se llama como el dato que consume y no conoce plataformas ni marcas:
-// lo que decide es la fila, no una enumeración escrita acá.
+// lo que decide es la fila, no una enumeración escrita aquí.
 //
 // C1 (2026-08-18) — el claim gana `source_name`: el NOMBRE citable de la entidad ("Convert",
 // "Adobe", "Ley 284"), no el dominio de la URL. Con él la instrucción deja de ser sólo prohibitiva
@@ -2168,7 +2168,7 @@ function filterCarrilImperativeRules(
 // URL. Eso es exactamente lo que HR-UNRLVL-01 (kind proof) llama "cifra con procedencia declarada"
 // — el juez ve la lista de fuentes y puede cotejar el nombre. Un claim sin `source_name` (fila
 // anterior a C1) sigue viajando y se lista igual: lo que pierde es la atribución nominal, que es
-// justamente lo que no se puede inventar acá.
+// justamente lo que no se puede inventar aquí.
 function buildClaimsBlock(
   claims: Array<{ claim: string; value: string; source_url: string; source_name?: string }> | null | undefined,
 ): string | null {
@@ -2184,13 +2184,13 @@ function buildClaimsBlock(
   const anyName = usable.some(c => String(c.source_name ?? '').trim());
   return 'CIFRAS CITABLES (lista cerrada — cada una atada a la fuente que la sostiene):\n'
     + lines.join('\n')
-    + '\n\nToda cifra que escribas sale SÓLO de esta lista, con el valor tal como figura acá y sin'
+    + '\n\nToda cifra que escribas sale SÓLO de esta lista, con el valor tal como figura aquí y sin'
     + ' redondearlo. Una cifra que no esté en la lista NO se escribe: ni estimada, ni inferida del'
     + ' brief, ni deducida de otra. Si la frase la necesita y no está, la frase va sin cifra.'
     + (anyName
       ? '\n\nCada cifra que uses se escribe CON su fuente citable nombrada en el texto — "según'
         + ' <fuente citable>", "de acuerdo con <fuente citable>" — dentro de la misma frase o la'
-        + ' inmediata. Nunca pegues la URL en el copy: la URL está acá para que el dato sea'
+        + ' inmediata. Nunca pegues la URL en el copy: la URL está aquí para que el dato sea'
         + ' verificable, el nombre es lo que se publica. Una cifra sin su fuente nombrada es una'
         + ' cifra sin procedencia declarada, y así no se puede escribir.'
       : '');
@@ -2252,7 +2252,7 @@ function buildWritingMaterialBlock(
 // ── BRIEF-N02 · LA OFERTA DISPONIBLE ────────────────────────────────────────
 // Es MATERIAL DE ESCRITURA, no una restricción: va con el mecanismo y los casos, no con las reglas.
 // El carril ya decidió QUÉ elementos entran (selector del dominio, filtro de canal y techo de
-// ítems); acá sólo se le enseñan al escritor y se le dice qué hacer con ellos.
+// ítems); aquí sólo se le enseñan al escritor y se le dice qué hacer con ellos.
 //
 // LA INSTRUCCIÓN ES DE PESO, NO DE PRESENCIA. Nombrar un producto de pasada es lo que las piezas
 // ya hacían cuando el operador las corregía a mano: "le falta fuerza a la parte de Neurone", "no le
@@ -2317,7 +2317,7 @@ function buildOfferBlock(
 //
 // Ningún nombre de marca ni vocabulario de una jurisdicción: el eje es funcional (poder de decisión
 // del lector) y describe a cualquier marca de servicios. La instancia —qué frente tiene cada topic—
-// vive en el dato (`intel.brand_topics.audience_frame`), no acá.
+// vive en el dato (`intel.brand_topics.audience_frame`), no aquí.
 type AudienceFrame = 'decide' | 'influye' | 'general';
 // Lo que se REPORTA: los tres frentes más 'none' (frente no declarado). No hay cuarto valor:
 // un frente que no resuelve no llega a reportarse, corta el request.
@@ -2351,7 +2351,7 @@ const AUDIENCE_CTA: Record<AudienceFrame, string> = {
 //     `?? ''`: emitía "POLÍTICA DE CTA [audiencia: influye]:" y nada debajo — una sección que
 //     anuncia contenido y no lo entrega, mientras el juez evalúa contra la regla completa. Un
 //     frente que el mapa no cubre es un error de contrato entre el carril y CopyLab, y tiene que
-//     doler acá, no aguas abajo en el veredicto.
+//     doler aquí, no aguas abajo en el veredicto.
 // Normaliza igual que gate7 (trim + lowercase) para que la frontera no invente un desconocido por
 // diferencia de capitalización; el valor que reporta el error es el que llegó.
 function resolveAudienceCta(frame: string | null | undefined): { key: AudienceCtaApplied; block: string | null } {
@@ -2366,7 +2366,7 @@ function resolveAudienceCta(frame: string | null | undefined): { key: AudienceCt
 }
 
 // ── Cambio 2 · precedencia por voz en la compatibilidad ─────────────────────
-// La precedencia es LÓGICA, no I/O, así que vive acá (pura) y sirve a los dos
+// La precedencia es LÓGICA, no I/O, así que vive aquí (pura) y sirve a los dos
 // caminos: la query directa (que trae voz + BASE de una vez) y el .filter() del
 // snapshot (que traía TODAS las reglas y filtraba sólo por content_type, quedando
 // desalineado si sólo se arreglaba la query). Reglas:
@@ -2507,7 +2507,7 @@ function ensureArray(val: any): string[] {
 // Modelar una variante que ninguna marca declara no es previsión: es un camino
 // vivo que nadie prueba y que ablanda el fail-loud.
 //
-// Un código que no esté acá y no tenga fila en `language_directives` DETIENE la
+// Un código que no esté aquí y no tenga fila en `language_directives` DETIENE la
 // generación. Es lo correcto: si mañana entra una marca lituana, la generación
 // se para hasta que su fila esté sembrada, en vez de mandarle al escritor una
 // instrucción que no dice nada.
@@ -2884,7 +2884,7 @@ async function sbArray<T>(path: string): Promise<T[]> {
 // El orden inviolable del corte es: PR de código → deploy → DDL → siembra. Entre el
 // deploy y el DDL la tabla NO existe, y `sbArray` convierte ese 404 de PostgREST en
 // throw: sin esta tolerancia, el PR que repara el idioma detendría el 100 % de las
-// generaciones durante esa ventana. Acá el fallo de LECTURA del catálogo degrada al
+// generaciones durante esa ventana. Aquí el fallo de LECTURA del catálogo degrada al
 // alias legacy y lo DECLARA con su error; el fail-loud sigue vivo donde importa —
 // si además no hay alias que cubra el código, `resolveLanguageDirective` lanza.
 async function fetchLanguageDirectives(): Promise<any[]> {
@@ -3116,7 +3116,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // ── Modo carril (§3.3): la PRESENCIA de builder_input activa el carril.
   //    Consumo obligatorio y validación fail-fast en §3.4 — nada de defaults.
   const bi = req.builder_input ?? null;
-  // G2-F — el encargo de reparación se lee ACÁ, con el resto de la validación fail-fast: un
+  // G2-F — el encargo de reparación se lee AQUÍ, con el resto de la validación fail-fast: un
   // encargo roto tiene que cortar antes de gastar queries y una llamada a Claude. `null` = modo
   // generación, y entonces nada de G2-F corre.
   let repair: RepairInput | null = null;
@@ -3197,7 +3197,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     console.warn(`[CopyLab] cache de marca con forma desconocida para ${brandId} — keys=[${cacheKeys.join(', ')}]; se ignora el cache y se consultan las fuentes directas`);
   }
 
-  // A2 (2026-08-18) — `platform_canal_map` sale del Promise.all y se resuelve ACÁ, porque ahora es
+  // A2 (2026-08-18) — `platform_canal_map` sale del Promise.all y se resuelve AQUÍ, porque ahora es
   // la fuente del canal editorial y `resolveCarrilContentType` corre ANTES del Promise.all (su
   // content_type es la llave de dos de sus queries: creative_compatibility_rules y
   // content_type_registry). Con el snapshot presente es lectura de memoria y no cuesta un viaje;
@@ -3266,7 +3266,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     sliceOf(bc, 'pipeline_skills'),
     sliceOf(bc, 'output_templates'),
     sliceOf(bc, 'content_type_registry') ?? sbArray<ContentTypeRegistry>(`content_type_registry?content_type=in.(${encodeURIComponent(creativeContentType)},${encodeURIComponent(pipelineContentType)})&active=eq.true&select=*`),
-    // A2·a — canal_blocks (block_text por id). `platform_canal_map` ya NO está acá: A2 (2026-08-18)
+    // A2·a — canal_blocks (block_text por id). `platform_canal_map` ya NO está aquí: A2 (2026-08-18)
     // lo subió antes del Promise.all porque el canal editorial se resuelve con él y esa resolución
     // corre antes (ver el bloque `carril`). Sólo se leen en modo carril.
     sliceOf(bc, 'canal_blocks') ?? sbArray<any>(`canal_blocks?active=eq.true&select=*`),
@@ -3276,7 +3276,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // indexa por CÓDIGO DE IDIOMA y una marca nueva de otro país entra con un
     // INSERT, sin tocar este archivo. Va en el Promise.all —como creative_vectors
     // o aggro_presets— para no añadir un viaje serializado: el código de idioma
-    // todavía no está resuelto acá, pero la tabla es pequeña y se filtra en memoria.
+    // todavía no está resuelto aquí, pero la tabla es pequeña y se filtra en memoria.
     sliceOf(bc, 'language_directives') ?? fetchLanguageDirectives(),
     isEmailSeq ? buildSequenceContext(req) : Promise.resolve({ previousMechanism: 'none', previousPiece: '', spPool: '' }),
   ]);
@@ -3410,7 +3410,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
 
   // Watcher rules → bloque citable por código (§3.4). [] es legítimo. Una regla
   // sin statement se registra en rules_skipped en vez de inyectarse muda.
-  // B2 — PR-1 manda TODAS las reglas del Watcher (sin filtrar por kind); acá se filtran a las IMPERATIVAS
+  // B2 — PR-1 manda TODAS las reglas del Watcher (sin filtrar por kind); aquí se filtran a las IMPERATIVAS
   // (prohibition|requirement|proof) antes de inyectar: las órdenes. Las de similitud/duplicación se
   // verifican aguas abajo, no se prescriben — no se inyectan ni cuentan como skipped.
   //
@@ -3533,7 +3533,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   layers.push(canalLayer);                                             // ## CANAL / genérico
 
   // Humanize — A2·b: NO se armoniza al formato buildCopyPrompt a propósito. El modelo de
-  // datos difiere: acá humanize_profiles trae tone/personality/authenticity_rules/anti_patterns
+  // datos difiere: aquí humanize_profiles trae tone/personality/authenticity_rules/anti_patterns
   // (selectHumanize); buildCopyPrompt.buildHumanizeBlock espera humanize.value/notes. Portarlo
   // a ciegas rompería. Se conserva este formato hasta unificar el modelo de datos aguas arriba.
   if (hum) {
@@ -4020,7 +4020,7 @@ export function sistemaEnBloques(cabecera: string, capas: string[], sep: string,
 // «el proveedor rechazó y no cobró» de «no sabemos qué cobró». El código del proveedor viajaba sólo
 // dentro de la prosa del mensaje.
 //
-// Ninguna regla de facturación vive acá: este archivo informa lo que pasó; el asiento lo decide el
+// Ninguna regla de facturación vive aquí: este archivo informa lo que pasó; el asiento lo decide el
 // carril con la tarifa, que es dato.
 // ── FALLO:BEGIN ── bloque puro (sin red): lo ejerce `api/execute.test.ts`.
 export class ProviderCallError extends Error {
