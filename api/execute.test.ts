@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError, sistemaEnBloques, clavesAnthropic, creditoNoSirve } from './execute.ts';
+import handler, { buildPrompt, callClaude, runLiteralCopy, failureLedgerFields, ProviderCallError, sistemaEnBloques, clavesAnthropic, creditoNoSirve, peticionDeLlamada, leerPedidoDeLote, leerTerminoDeLote, LOTE_PETICION, LOTE_VERSION } from './execute.ts';
 
 // ── mini runner ────────────────────────────────────────────────────────────
 let passed = 0;
@@ -3848,6 +3848,142 @@ async function run() {
       try { await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any); } finally { f.restore(); }
       eq(r._out._status, 500, '500');
       eq(r._out._json.usage, null, 'sin llamada pagada: usage null, sin cuentas_api');
+    });
+  });
+
+  // ── LOTE (2026-10-21) — la escritura del carril en la Message Batches API (fase 2b del plan de Batch) ─────────
+  // Contrato con el carril (content-run-stage): «preparar» devuelve la petición a Anthropic SIN llamarla y el estado
+  // que la respuesta necesita; «terminar» recibe el mensaje del lote y responde EXACTAMENTE lo que la llamada directa
+  // habría respondido con ese mismo mensaje. Sin `lote`, nada cambia (lo fijan los 202 tests anteriores, intactos).
+  // El prompt lleva azar (`selectCreativeCombo`): las dos vías corren con la misma secuencia de `Math.random`, que es
+  // lo que pasa en producción al viajar el estado en vez de reconstruirlo.
+  const azarFijo = () => { let i = 0; return () => ((i++ * 0.6180339887) % 1); };
+  const clon = (o: any) => JSON.parse(JSON.stringify(o));
+  async function porLasDosVias(cuerpo: any, fetchCon: (replies: any[]) => { claudeBodies: any[]; restore: () => void }, replies: any[]) {
+    const realRandom = Math.random;
+    const out: any = {};
+    try {
+      // 1 · la llamada directa de hoy.
+      Math.random = azarFijo();
+      const f1 = fetchCon(replies);
+      const r1 = makeRes();
+      try { await handler({ method: 'POST', body: clon(cuerpo) } as any, r1 as any); } finally { f1.restore(); }
+      out.directa = r1._out; out.enviadas = f1.claudeBodies;
+      // 2 · preparar: misma secuencia de azar, ninguna llamada a Claude.
+      Math.random = azarFijo();
+      const f2 = fetchCon(replies);
+      const r2 = makeRes();
+      try { await handler({ method: 'POST', body: { ...clon(cuerpo), lote: { modo: 'preparar' } } } as any, r2 as any); } finally { f2.restore(); }
+      out.preparar = r2._out; out.llamadasAlPreparar = f2.claudeBodies.length;
+      // 3 · terminar: el estado viaja por JSON (como en `intel.trabajo_diferido.payload`); la respuesta 1 es la del lote.
+      const f3 = fetchCon(replies.slice(1));
+      const r3 = makeRes();
+      const estado = clon(r2._out._json?.lote?.estado ?? null);
+      try {
+        await handler({ method: 'POST', body: { ...clon(cuerpo), lote: { modo: 'terminar', estado, respuestas: { [LOTE_PETICION]: clon(replies[0]) }, cuenta: 'principal' } } } as any, r3 as any);
+      } finally { f3.restore(); }
+      out.terminar = r3._out; out.llamadasAlTerminar = f3.claudeBodies;
+    } finally { Math.random = realRandom; }
+    return out;
+  }
+  const igualQueLaDirecta = (o: any) => {
+    eq(o.llamadasAlPreparar, 0, '«preparar» no llama a Claude');
+    eq(o.preparar._status, 200, '«preparar» responde 200');
+    eq(o.preparar._json.status, 'prepared', 'status prepared');
+    eq(o.preparar._json.lote.v, LOTE_VERSION, 'versión del contrato');
+    eq(o.preparar._json.lote.peticiones.length, 1, 'una petición');
+    eq(o.preparar._json.lote.peticiones[0].id, LOTE_PETICION, 'su id');
+    eq(JSON.stringify(o.preparar._json.lote.peticiones[0].params), JSON.stringify(o.enviadas[0]), 'la petición del lote es BYTE A BYTE la que la directa envió');
+    eq(o.terminar._status, o.directa._status, 'mismo código HTTP');
+    eq(JSON.stringify(o.terminar._json), JSON.stringify(o.directa._json), '«terminar» con el resultado X == la directa con el resultado X');
+    eq(o.llamadasAlTerminar.length, o.enviadas.length - 1, '«terminar» sólo llama por lo que la directa llamó DESPUÉS de la primera');
+  };
+  const MSG_PIEZA = { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5', stop_reason: 'end_turn',
+    content: [{ type: 'text', text: 'TÍTULO: Un título de prueba\n\nLa primera frase de la pieza. Y un cierre entero.' }],
+    usage: { input_tokens: 1200, output_tokens: 180, cache_read_input_tokens: 900, cache_creation_input_tokens: 40 } };
+
+  await test('LOTE·escritura del carril: preparar + terminar con el resultado X == llamada directa con X (pieza, usage con caché y cuenta)', async () => {
+    await conClaves(undefined, async () => {
+      const o = await porLasDosVias(reqWith(RP_BCTX, { builder_input: rpBI({}) }), (rs) => installFetch({ claudeSeq: rs }), [MSG_PIEZA]);
+      igualQueLaDirecta(o);
+      eq(o.directa._status, 200, 'la directa responde 200');
+      eq(JSON.stringify(o.terminar._json.usage), JSON.stringify({ input_tokens: 1200, output_tokens: 180, cache_read_input_tokens: 900, cache_creation_input_tokens: 40, cuentas_api: { credito: 0, principal: 1 } }), 'usage del lote, con la cuenta que envió');
+    });
+  });
+
+  await test('LOTE·reparación G2-F por la misma vía: misma respuesta (el título del original se conserva igual)', async () => {
+    await conClaves(undefined, async () => {
+      const sinTitulo = { ...MSG_PIEZA, content: [{ type: 'text', text: 'La pieza reparada, entera. Con su cierre.' }] };
+      const o = await porLasDosVias(reqWith(RP_BCTX, { builder_input: rpBI({ repair: REPARACION }) }), (rs) => installFetch({ claudeSeq: rs }), [sinTitulo]);
+      igualQueLaDirecta(o);
+      eq(o.terminar._json.meta.repair, true, 'marca de reparación');
+    });
+  });
+
+  await test('LOTE·un 422 de una pasada también es el mismo (formato ilegible: mismo error, mismo consumo)', async () => {
+    await conClaves(undefined, async () => {
+      const ilegible = { ...MSG_PIEZA, content: [{ type: 'text', text: 'no es JSON' }] };
+      const o = await porLasDosVias(reqWith(LB_BCTX, { builder_input: lbBI({ destination: 'editorial', format_pass: { piece_text: FP_PIECE } }) }), (rs) => installFetch({ claudeSeq: rs }), [ilegible]);
+      igualQueLaDirecta(o);
+      eq(o.directa._status, 422, 'la directa responde 422');
+    });
+  });
+
+  await test('LOTE·la segunda llamada de una pasada (reintento del énfasis) va INMEDIATA al terminar, y el consumo suma igual', async () => {
+    await conClaves(undefined, async () => {
+      const sinTramo = { ...MSG_PIEZA, content: [{ type: 'text', text: '{"emphasis":["inventado"]}' }], usage: { input_tokens: 700, output_tokens: 8 } };
+      const conTramo = { ...MSG_PIEZA, content: [{ type: 'text', text: '{"emphasis":["vacina"]}' }], usage: { input_tokens: 720, output_tokens: 9 } };
+      const o = await porLasDosVias(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ emphasis_pass: { image_text: 'A vacina que o seu cão precisa' } }) }), (rs) => vmFetch(rs), [sinTramo, conTramo]);
+      eq(o.enviadas.length, 2, 'la directa hizo dos llamadas');
+      igualQueLaDirecta(o);
+      eq(o.terminar._json.usage.input_tokens, 1420, 'el consumo es la suma de la del lote y la inmediata');
+    });
+  });
+
+  await test('LOTE·sin modo lote ⇒ la llamada directa envía exactamente `peticionDeLlamada` (una sola forma para las dos vías)', async () => {
+    const realRandom = Math.random;
+    try {
+      Math.random = azarFijo();
+      const built = await (async () => { const f = installFetch({}); try { return await buildPrompt(reqWith(RP_BCTX, { builder_input: rpBI({}) })); } finally { f.restore(); } })();
+      Math.random = azarFijo();
+      await conClaves(undefined, async () => {
+        const f = installFetch({ claude: MSG_PIEZA });
+        const r = makeRes();
+        try { await handler({ method: 'POST', body: reqWith(RP_BCTX, { builder_input: rpBI({}) }) } as any, r as any); } finally { f.restore(); }
+        eq(JSON.stringify(f.claudeBodies[0]), JSON.stringify(peticionDeLlamada(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url)), 'mismo cuerpo');
+        eq(Object.keys(f.claudeBodies[0]).join(','), 'model,max_tokens,thinking,system,messages', 'mismas claves, mismo orden que antes del cambio');
+      });
+    } finally { Math.random = realRandom; }
+  });
+
+  await test('LOTE·pure: pedidos y estados inválidos fallan en voz alta con COPYLAB_LOTE_*', () => {
+    eq(JSON.stringify(leerPedidoDeLote(undefined)), JSON.stringify({ ok: true, pedido: null }), 'sin lote ⇒ nada');
+    assert(!leerPedidoDeLote('x').ok, 'no objeto');
+    assert(String((leerPedidoDeLote({ modo: 'otro' }) as any).error).startsWith('COPYLAB_LOTE_MODO_DESCONOCIDO'), 'modo desconocido');
+    const estado = { v: LOTE_VERSION, brandId: 'B', destination: 'social', built: { system: 's', user: 'u', max_tokens: 10, rules_injected: [] } };
+    assert(leerTerminoDeLote({ estado, respuestas: { [LOTE_PETICION]: MSG_PIEZA }, cuenta: 'credito' }).ok, 'completo');
+    assert(String((leerTerminoDeLote({ estado: { ...estado, v: 99 }, respuestas: { [LOTE_PETICION]: MSG_PIEZA }, cuenta: 'credito' }) as any).error).startsWith('COPYLAB_LOTE_ESTADO_INVALIDO'), 'versión');
+    assert(String((leerTerminoDeLote({ estado: { ...estado, built: { system: 's' } }, respuestas: { [LOTE_PETICION]: MSG_PIEZA }, cuenta: 'credito' }) as any).error).includes('built.user'), 'built incompleto');
+    assert(String((leerTerminoDeLote({ estado, respuestas: {}, cuenta: 'credito' }) as any).error).startsWith('COPYLAB_LOTE_SIN_RESPUESTA'), 'sin respuesta');
+    assert(String((leerTerminoDeLote({ estado, respuestas: { [LOTE_PETICION]: MSG_PIEZA }, cuenta: 'otra' }) as any).error).startsWith('COPYLAB_LOTE_CUENTA_INVALIDA'), 'cuenta');
+  });
+
+  await test('LOTE·handler: terminar sin respuesta ⇒ 400 COPYLAB_LOTE_SIN_RESPUESTA sin llamar a Claude; lote en modo asíncrono o sin builder_input ⇒ 400', async () => {
+    await conClaves(undefined, async () => {
+      const f = installFetch({ claude: MSG_PIEZA });
+      try {
+        const r1 = makeRes();
+        await handler({ method: 'POST', body: { ...reqWith(RP_BCTX, { builder_input: rpBI({}) }), lote: { modo: 'terminar', estado: { v: LOTE_VERSION, built: { system: 's', user: 'u', max_tokens: 1, rules_injected: [] } }, respuestas: {}, cuenta: 'principal' } } } as any, r1 as any);
+        eq(r1._out._status, 400, '400'); assert(String(r1._out._json.error).startsWith('COPYLAB_LOTE_SIN_RESPUESTA'), 'con nombre propio');
+        eq(r1._out._json.provider_called, false, 'nada cobrado');
+        const r2 = makeRes();
+        await handler({ method: 'POST', body: { ...reqWith(RP_BCTX, { builder_input: rpBI({}) }), async: true, lote: { modo: 'preparar' } } } as any, r2 as any);
+        eq(r2._out._status, 400, 'asíncrono'); assert(String(r2._out._json.error).startsWith('COPYLAB_LOTE_MODO_NO_ADMITIDO'), 'nombre');
+        const r3 = makeRes();
+        await handler({ method: 'POST', body: { ...reqWith(RP_BCTX, {}), lote: { modo: 'preparar' } } } as any, r3 as any);
+        eq(r3._out._status, 400, 'sin builder_input'); assert(String(r3._out._json.error).startsWith('COPYLAB_LOTE_SOLO_CARRIL'), 'nombre');
+        eq(f.claudeBodies.length, 0, 'ninguna llamada a Claude');
+      } finally { f.restore(); }
     });
   });
 
