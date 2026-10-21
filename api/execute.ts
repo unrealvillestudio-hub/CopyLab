@@ -4089,23 +4089,9 @@ export async function callClaude(
           'x-api-key': clave,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({
-          model: CLAUDE_MODEL,
-          // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
-          // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
-          max_tokens: maxTokens,
-          // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
-          // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
-          // any non-default sampling value with a 400.
-          thinking: { type: 'disabled' },
-          system,
-          messages: [{
-            role: 'user',
-            content: imageUrl
-              ? [{ type: 'image', source: { type: 'url', url: imageUrl } }, { type: 'text', text: user }]
-              : user,
-          }],
-        }),
+        // LOTE (2026-10-21) — la petición sale de `peticionDeLlamada`, la MISMA que el modo «preparar» devuelve
+        // al carril para el lote: lo que se pide en inmediato y lo que se pide en lote no pueden divergir.
+        body: JSON.stringify(peticionDeLlamada(system, user, maxTokens, imageUrl)),
       });
     } catch (err) {
       // La petición salió y no hubo respuesta: no sabemos qué cobró el proveedor. No se repite con otra clave.
@@ -4134,11 +4120,48 @@ export async function callClaude(
   } catch (err) {
     throw new ProviderCallError(`Claude API body unreadable: ${err instanceof Error ? err.message : String(err)}`, res.status);
   }
+  return leerMensajeDeClaude(data, pago);
+}
+
+// ── LOTE:BEGIN ── (2026-10-21) bloque PURO (sin red, sin env): lo ejerce `api/execute.test.ts`.
+// La escritura del carril puede ir en la Message Batches API de Anthropic, que cobra la mitad. CopyLab no
+// envía ni recoge lotes: eso es del carril (content-run-stage), que ya tiene la recogida y la clave de crédito
+// primero. CopyLab hace dos cosas, y ninguna llama a Claude:
+//   · «preparar» devuelve la petición EXACTA que haría hoy (`peticionDeLlamada`) y el estado que la respuesta
+//     necesita después (`built`, que lleva azar: el prompt no se puede reconstruir, tiene que viajar);
+//   · «terminar» recibe la respuesta del lote y produce la MISMA respuesta que la llamada directa, con el mismo
+//     código (`responderTrasLaLlamada`) y el mismo `usage` (`leerMensajeDeClaude`).
+// Sin `lote` en el cuerpo, nada de esto se ejecuta y la respuesta es la de siempre.
+
+/** La petición a la API de Mensajes. La usan la llamada directa y el lote: una sola forma. */
+export function peticionDeLlamada(system: string | SystemBlock[], user: string, maxTokens: number, imageUrl: string | null): Record<string, unknown> {
+  return {
+    model: CLAUDE_MODEL,
+    // Token ceiling by destination (§3.5): editorial 4000 · social 640 en modo
+    // carril; 1600 en modo UI (Sonnet 5 corre ~30% más pesado que sonnet-4).
+    max_tokens: maxTokens,
+    // Sonnet 5: copy is deterministic → keep thinking off so it doesn't eat
+    // max_tokens. `temperature` is omitted intentionally — Sonnet 5 rejects
+    // any non-default sampling value with a 400.
+    thinking: { type: 'disabled' },
+    system,
+    messages: [{
+      role: 'user',
+      content: imageUrl
+        ? [{ type: 'image', source: { type: 'url', url: imageUrl } }, { type: 'text', text: user }]
+        : user,
+    }],
+  };
+}
+
+/** Lo que CopyLab lee de un mensaje de Claude, venga de la llamada directa o del lote. `pago` es la cuenta que
+ *  respondió: en directo, la clave con la que respondió; en lote, la cuenta con la que el carril envió el lote. */
+export function leerMensajeDeClaude(data: any, pago: CuentaAnthropic): { text: string; usage: ClaudeUsage; cuenta: CuentaAnthropic } {
   // usage is asserted by the carril to log real copylab cost (§4.1/§4.3) — it
   // was silently discarded before.
-  const usage = data.usage ?? {};
+  const usage = data?.usage ?? {};
   return {
-    text: data.content?.[0]?.text ?? '',
+    text: data?.content?.[0]?.text ?? '',
     usage: {
       input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0,
       ...(usage.cache_read_input_tokens ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
@@ -4148,6 +4171,332 @@ export async function callClaude(
     },
     cuenta: pago,
   };
+}
+
+export const LOTE_VERSION = 1;
+// El id de la única petición de una escritura. Una respuesta que necesite una segunda llamada (el reintento del
+// énfasis) la hace en inmediato al terminar: es rara y pequeña, y una segunda ronda de lote sumaría horas.
+export const LOTE_PETICION = 'llamada_1';
+
+export type PedidoDeLote =
+  | { modo: 'preparar' }
+  | { modo: 'terminar'; estado: unknown; respuestas: unknown; cuenta: unknown };
+
+/** Lee `body.lote`. `null` = sin modo lote (el de siempre). Fail-loud ante un pedido que no sabe tratar. */
+export function leerPedidoDeLote(v: unknown): { ok: true; pedido: PedidoDeLote | null } | { ok: false; error: string } {
+  if (v === undefined || v === null) return { ok: true, pedido: null };
+  if (typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'COPYLAB_LOTE_PEDIDO_INVALIDO: `lote` tiene que ser un objeto' };
+  const o = v as Record<string, unknown>;
+  if (o.modo === 'preparar') return { ok: true, pedido: { modo: 'preparar' } };
+  if (o.modo === 'terminar') return { ok: true, pedido: { modo: 'terminar', estado: o.estado, respuestas: o.respuestas, cuenta: o.cuenta } };
+  return { ok: false, error: `COPYLAB_LOTE_MODO_DESCONOCIDO: ${JSON.stringify(o.modo ?? null).slice(0, 40)}` };
+}
+
+/** Lo que «terminar» necesita para responder, leído del estado que devolvió «preparar». Fail-loud: lo que falta
+ *  no se rellena. El carril trata todo `COPYLAB_LOTE_*` como «el lote no sirve» y repite en inmediato. */
+export function leerTerminoDeLote(p: { estado: unknown; respuestas: unknown; cuenta: unknown }):
+  { ok: true; built: any; brandId: string | null; destination: string | null; mensaje: any; cuenta: CuentaAnthropic } | { ok: false; error: string } {
+  const e = (p.estado ?? {}) as Record<string, any>;
+  if (e.v !== LOTE_VERSION) return { ok: false, error: `COPYLAB_LOTE_ESTADO_INVALIDO: versión ${JSON.stringify(e.v ?? null)} (se espera ${LOTE_VERSION})` };
+  const b = e.built;
+  const falta: string[] = [];
+  if (!b || typeof b !== 'object') falta.push('built');
+  else {
+    if (typeof b.system !== 'string') falta.push('built.system');
+    if (typeof b.user !== 'string') falta.push('built.user');
+    if (typeof b.max_tokens !== 'number') falta.push('built.max_tokens');
+    if (!Array.isArray(b.rules_injected)) falta.push('built.rules_injected');
+  }
+  if (falta.length) return { ok: false, error: `COPYLAB_LOTE_ESTADO_INVALIDO: falta ${falta.join(', ')}` };
+  if (p.cuenta !== 'credito' && p.cuenta !== 'principal') return { ok: false, error: `COPYLAB_LOTE_CUENTA_INVALIDA: ${JSON.stringify(p.cuenta ?? null).slice(0, 40)}` };
+  const r = (p.respuestas ?? {}) as Record<string, any>;
+  const m = r[LOTE_PETICION];
+  if (!m || typeof m !== 'object' || !Array.isArray(m.content)) return { ok: false, error: `COPYLAB_LOTE_SIN_RESPUESTA: falta el mensaje de ${LOTE_PETICION}` };
+  return { ok: true, built: b, brandId: typeof e.brandId === 'string' ? e.brandId : null,
+    destination: typeof e.destination === 'string' ? e.destination : null, mensaje: m, cuenta: p.cuenta };
+}
+
+/** El estado que «preparar» devuelve y «terminar» recibe. Viaja por JSON: lo que no viaja no se lee después. */
+export function estadoDeLote(built: Record<string, unknown>, brandId: string | null, destination: string | null): Record<string, unknown> {
+  return { v: LOTE_VERSION, brandId, destination, built };
+}
+// ── LOTE:END ──
+
+// ── RESPUESTA TRAS LA LLAMADA (2026-10-21) ─────────────────────────────────────────────────────────────────
+// Todo lo que el modo sync hace DESPUÉS de que Claude respondió, sacado del handler SIN cambiar una sentencia:
+// cada `res.status(N).json(X)` pasó a `responder(N, X)`, que devuelve lo mismo para que el handler lo envíe.
+// La usan la llamada directa y el modo lote «terminar»: la respuesta no puede depender de cómo llegó el texto.
+// `llamar` es la segunda llamada que alguna pasada hace (el reintento del énfasis): siempre inmediata.
+// `registro.uso` es el consumo ya cobrado, que el cuerpo de un fallo tiene que llevar.
+type LlamadaAClaude = (system: string | SystemBlock[], user: string, maxTokens?: number, imageUrl?: string | null) => Promise<{ text: string; usage: ClaudeUsage }>;
+async function responderTrasLaLlamada(
+  ctx: { brandId: string | null | undefined; destination: string | null | undefined },
+  built: Awaited<ReturnType<typeof buildPrompt>>,
+  carril: boolean,
+  primera: { text: string; usage: ClaudeUsage },
+  llamar: LlamadaAClaude,
+  registro: { uso: ClaudeUsage | null },
+): Promise<{ status: number; json: any }> {
+  const responder = (status: number, json: any) => ({ status, json });
+  const output = primera.text;
+  const usage = primera.usage;
+  // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
+  //    SIN estampar, usage real. El modo UI conserva su forma histórica.
+  // F1 · pasada de formato — la respuesta es un PLAN, no una pieza. Sin JSON legible se dice con
+  // nombre propio y con el consumo, para que el carril lo asiente igual.
+  if (carril && built.format_pass) {
+    const plan = extractJsonObject(output);
+    const metaFormato = { format_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language };
+    if (!plan) {
+      console.error(`[CopyLab][F1-FORMAT] COPYLAB_FORMAT_PLAN_UNPARSABLE brand=${ctx.brandId} — ${output.slice(0, 200)}`);
+      return responder(422, { status: 'error', error: 'COPYLAB_FORMAT_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaFormato });
+    }
+    return responder(200, { status: 'ok', format_plan: plan, usage, meta: metaFormato });
+  }
+  // F2 · pasada de imágenes — mismo patrón: la respuesta es un PLAN, ya normalizado al contrato
+  // (como mucho `max_images` entradas). Lo descartado viaja en el meta con su motivo.
+  if (carril && built.image_pass) {
+    const metaImagen = {
+      image_pass: true, max_images: built.image_pass.max_images,
+      voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+    };
+    const normalizado = normalizeImagePlan(extractJsonObject(output), built.image_pass.piece_text, built.image_pass.max_images);
+    if (!normalizado) {
+      console.error(`[CopyLab][F2-IMAGES] COPYLAB_IMAGE_PLAN_UNPARSABLE brand=${ctx.brandId} — ${output.slice(0, 200)}`);
+      return responder(422, { status: 'error', error: 'COPYLAB_IMAGE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaImagen });
+    }
+    return responder(200, {
+      status: 'ok', image_plan: normalizado.plan, usage,
+      meta: { ...metaImagen, image_plan_dropped: normalizado.dropped },
+    });
+  }
+  // F2/F3 · pasada del alt — la respuesta es UN alt de lo que se ve. Inservible (sin JSON, vacío o
+  // largo) ⇒ 422 con nombre propio y con el consumo: el carril conserva el alt del plan.
+  if (carril && built.alt_pass) {
+    const metaAlt = {
+      alt_pass: true, alt_source: built.alt_pass.source,
+      voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      // El tamaño del system que se pagó, y cuántas capas de contenido no viajaron: sin los dos, el
+      // ahorro no se puede leer contra el ledger (`inline_image_alt` frente a `inline_image_plan`).
+      system_chars: built.system.length, layers_omitted: built.alt_pass.layers_omitted,
+    };
+    const { alt, reason } = normalizeAltResult(extractJsonObject(output));
+    if (!alt) {
+      console.error(`[CopyLab][F3-ALT] COPYLAB_ALT_UNUSABLE brand=${ctx.brandId} reason=${reason} — ${output.slice(0, 200)}`);
+      return responder(422, { status: 'error', error: 'COPYLAB_ALT_UNUSABLE', reason, raw: output.slice(0, 600), usage, meta: metaAlt });
+    }
+    return responder(200, { status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length, ...altHintsEcho(alt, built.alt_pass.input) } });
+  }
+  // ÉNFASIS · pasada de palabras clave — la respuesta son los tramos, podados contra el texto. Sin
+  // ninguno que sobreviva ⇒ 422 con nombre propio y con el consumo: el carril compone sin énfasis.
+  if (carril && built.emphasis_pass) {
+    const imageText = built.emphasis_pass.input.image_text;
+    let leido = readEmphasisPassResult(extractJsonObject(output), imageText);
+    let salida = output;
+    let uso = usage;
+    // REINTENTO (2026-10-17) — sin ningún tramo, UNA segunda llamada con el motivo exacto. Las dos se
+    // cobraron: el consumo que viaja es la suma (y si la segunda falla, `registro.uso` ya tiene la primera).
+    const primera = leido.terms.length ? null : { dropped: leido.dropped, reason: leido.reason };
+    if (primera) {
+      console.warn(`[CopyLab][EMPHASIS-PASS] sin tramo en el primer intento brand=${ctx.brandId} reason=${leido.reason} — ${output.slice(0, 200)}; se repite una vez`);
+      const r2 = await llamar(built.system_bloques ?? built.system, built.user + buildEmphasisRetryNote(primera), built.max_tokens, built.user_image_url);
+      uso = sumarUso(usage, r2.usage);
+      registro.uso = uso;
+      salida = r2.text;
+      leido = readEmphasisPassResult(extractJsonObject(salida), imageText);
+    }
+    const metaEnfasis = {
+      emphasis_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      system_chars: built.system.length, layers_omitted: built.emphasis_pass.layers_omitted,
+      ...(leido.dropped.length ? { image_emphasis_dropped: leido.dropped } : {}),
+      ...(primera ? { emphasis_retry: { first_dropped: primera.dropped, first_reason: primera.reason } } : {}),
+    };
+    if (!leido.terms.length) {
+      console.error(`[CopyLab][EMPHASIS-PASS] COPYLAB_EMPHASIS_UNUSABLE brand=${ctx.brandId} reason=${leido.reason} — ${salida.slice(0, 200)}`);
+      return responder(422, { status: 'error', error: 'COPYLAB_EMPHASIS_UNUSABLE', reason: leido.reason, raw: salida.slice(0, 600), usage: uso, meta: metaEnfasis });
+    }
+    return responder(200, { status: 'ok', image_emphasis: leido.terms, usage: uso, meta: metaEnfasis });
+  }
+  // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
+  // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
+  if (carril && built.slide_pass) {
+    const metaLaminas = {
+      slide_pass: true, slides_requested: built.slide_pass.input.slides.length,
+      cta_options_count: built.slide_pass.cta_options.length,
+      voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+    };
+    const normalizado = normalizeSlidePlan(extractJsonObject(output), built.slide_pass.input, built.slide_pass.cta_options);
+    if (!normalizado) {
+      console.error(`[CopyLab][F3-SLIDES] COPYLAB_SLIDE_PLAN_UNPARSABLE brand=${ctx.brandId} — ${output.slice(0, 200)}`);
+      return responder(422, { status: 'error', error: 'COPYLAB_SLIDE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaLaminas });
+    }
+    return responder(200, {
+      status: 'ok', slides: normalizado.slides, usage,
+      meta: { ...metaLaminas, dropped: normalizado.dropped },
+    });
+  }
+  if (carril) {
+    const parsed = parsePiece(output);
+    const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsed;
+    // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
+    // siempre y el eco dice cuánto midió. Un título ausente ahora es un INCUMPLIMIENTO del
+    // escritor (la sección ## TÍTULO lo pide en los dos destinos), no un caso normal: se grita,
+    // se marca en el meta y la pieza sigue viva — el carril decide qué hacer con una pieza sin
+    // título, y hoy hace lo correcto: no compone y conserva la imagen limpia.
+    const tituloFinal = built.repair ? (title ?? built.repair.original_title) : title;
+    // ÉNFASIS — se poda contra el texto que de verdad va sobre la imagen.
+    const emphasisOut = built.image_emphasis
+      ? pruneEmphasis(parsed.image_emphasis_raw, built.image_title_mode === 'dialogue' ? imageHook : tituloFinal)
+      : null;
+    if (emphasisOut && emphasisOut.dropped.length) {
+      console.warn(`[CopyLab][ÉNFASIS] brand=${ctx.brandId} tramos podados: ${JSON.stringify(emphasisOut.dropped)}`);
+    }
+    if (!tituloFinal) {
+      console.error(
+        `[CopyLab][BRIEF8] COPYLAB_TITLE_MISSING brand=${ctx.brandId} destination=${ctx.destination ?? '∅'} ` +
+        `title_budget=${built.title_budget_chars ?? '∅'} (${built.title_budget_source ?? 'sin declarar'}) ` +
+        '— la respuesta volvió sin la línea "TÍTULO:" pese a que el prompt la exige en ambos destinos',
+      );
+    }
+    return responder(200, {
+      status: 'ok',
+      // G2-F — en reparación el título se conserva del ORIGINAL cuando la pieza corregida vuelve
+      // sin él (el caso normal: la violación estaba en el cuerpo). Si vuelve CON título, ése gana:
+      // es una violación que lo afectaba. En generación, exactamente como hoy.
+      title: tituloFinal,
+      // BRIEF-04 — las dos cadenas de la imagen. Viajan SIEMPRE, con `null` en el modo que
+      // repite: una clave ausente y una clave nula se distinguen, y el carril necesita saber que
+      // preguntó. En `echo` son null y el carril compone como hasta hoy.
+      image_hook: imageHook,
+      image_support: imageSupport,
+      // ÉNFASIS — los tramos ya podados contra el texto que va sobre la imagen (el gancho en diálogo,
+      // el título en eco). La clave viaja sólo si el carril la pidió: sin `image_emphasis`, la
+      // respuesta es la de siempre, clave por clave.
+      ...(built.image_emphasis ? { image_emphasis: emphasisOut!.terms } : {}),
+      body: pieceBody,
+      signature: built.signature,
+      usage,
+      meta: {
+        voice_id: built.voice_id,
+        voice_version: built.voice_version,
+        language: built.language,
+        psycho_preset: built.psycho_preset,
+        platform_key: built.platform_key,
+        // G2-F — la marca de la segunda pasada, y qué códigos se mandaron a reparar. Sólo viajan
+        // en modo reparación: sin `builder_input.repair` el meta queda como hoy, clave por clave.
+        ...(built.repair ? { repair: true, repair_codes: built.repair.codes } : {}),
+        // Capa 2 del aprendizaje — cuántas correcciones aprendidas se INYECTARON (no cuántas se
+        // mandaron): el carril lo compara con lo que envió y ve descartes y topes. Viaja siempre,
+        // con 0 cuando no hubo ninguna, igual que `rules_count`.
+        learned_corrections_count: built.learned_corrections_count,
+        // G1-C — el techo que CopyLab APLICÓ de verdad, y el nivel que lo declaró. El carril ya
+        // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
+        // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar
+        // el techo sin aplicar durante toda una corrida.
+        // G1-D — desde ahora este número es el que se le mandó a la API: el declarado CON margen
+        // (ceil × 1,2) cuando hay techo declarado, el default por destino exacto cuando no.
+        max_tokens_applied: built.max_tokens,
+        max_tokens_source: built.max_tokens_source,
+        // G1-D — el presupuesto en caracteres que recibió el escritor, al lado del techo que se
+        // le mandó a la API. Los dos juntos, o la próxima corrida no se puede leer.
+        length_budget_chars: built.length_budget_chars,
+        // BRIEF 8 · A — el trío del título: lo que se le dio (presupuesto + de dónde salió) y lo
+        // que devolvió (caracteres). `title_missing` distingue la ausencia REAL de un título de
+        // longitud cero, y es lo que el carril asienta cuando el overlay no puede componerse.
+        title_budget_chars: built.title_budget_chars,
+        title_budget_source: built.title_budget_source,
+        title_chars: titleCharCount(tituloFinal),
+        title_missing: !tituloFinal,
+        // BRIEF-04 — en qué régimen se escribió, y si el escritor devolvió lo que ese régimen
+        // pide. `image_hook_missing` sólo es un incumplimiento en modo diálogo; en `echo` es el
+        // estado normal, y por eso se declara junto al modo y no suelto.
+        image_title_mode: built.image_title_mode,
+        image_hook_chars: titleCharCount(imageHook),
+        image_hook_missing: built.image_title_mode === 'dialogue' && !imageHook,
+        image_support_present: !!imageSupport,
+        ...(built.image_emphasis ? {
+          image_emphasis_requested: true,
+          image_emphasis_missing: parsed.image_emphasis_raw === undefined,
+          image_emphasis_dropped: emphasisOut!.dropped,
+        } : {}),
+        // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
+        // 'decide' | 'influye' | 'general' | 'none'.
+        audience_cta_applied: built.audience_cta_applied,
+        copy_profile_id: built.copy_profile_id,
+        humanize_profile_id: built.humanize_profile_id,
+        rules_injected: built.rules_injected,
+        rules_skipped: built.rules_skipped,
+        rules_count: built.rules_injected.length,
+        // D2 — cuántas llegaron con su redacción de escritura y cuántas por fallback a statement.
+        rules_by_instruction: built.rules_by_instruction,
+        rules_by_instruction_count: built.rules_by_instruction.length,
+        rules_by_statement_count: built.rules_injected.length - built.rules_by_instruction.length,
+        creative_seed: built.creative_seed,
+        cache_mode: built.cache_mode,
+        layers_applied: built.layers_applied,
+        output_template_id: built.output_template_id,
+        template_vars_unresolved: built.template_vars_unresolved,
+        template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
+      },
+    });
+  }
+
+  // ── UI response ────────────────────────────────────────────────────
+  return responder(200, {
+    output,
+    status: 'ok',
+    meta: {
+      pipeline_version: '2.6',
+      copylab_version:  '9.7',
+      cache_mode: built.cache_mode,
+      layers_applied: built.layers_applied,
+      voice_genome: built.voice_id ? { voice_id: built.voice_id, version: built.voice_version } : null,
+      creative_seed: built.creative_seed,
+      template_vars_unresolved: built.template_vars_unresolved,
+      template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
+    },
+  });
+}
+
+// ── MODO LOTE (2026-10-21) — «preparar» y «terminar» de la escritura del carril. Ninguno de los dos llama a
+// Claude por la petición principal: la llama el carril, en un lote. Sólo en modo carril (`builder_input`): el
+// modo UI, el literal y el asíncrono no tienen quien recoja un lote.
+async function responderLote(body: ExecuteRequest & { async?: boolean }, pedido: PedidoDeLote, res: VercelResponse) {
+  if (body.async === true || (body.params as any)?.mode === 'literal')
+    return res.status(400).json({ error: 'COPYLAB_LOTE_MODO_NO_ADMITIDO: el lote es sólo del modo carril, no del asíncrono ni del literal', status: 'error', ...failureLedgerFields(null, null) });
+  const registro: { uso: ClaudeUsage | null } = { uso: null };
+  try {
+    if (pedido.modo === 'preparar') {
+      if (!body.builder_input)
+        return res.status(400).json({ error: 'COPYLAB_LOTE_SOLO_CARRIL: «preparar» necesita builder_input', status: 'error', ...failureLedgerFields(null, null) });
+      const built = await buildPrompt(body);
+      console.log(`[CopyLab v9.7][LOTE] preparar brand=${body.brandId} max_tokens=${built.max_tokens} repair=${built.repair ? built.repair.codes.join(',') : 'no'} — sin llamar a Claude`);
+      return res.status(200).json({
+        status: 'prepared',
+        lote: {
+          v: LOTE_VERSION,
+          peticiones: [{ id: LOTE_PETICION, params: peticionDeLlamada(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url) }],
+          estado: estadoDeLote(built as unknown as Record<string, unknown>, body.brandId ?? null, body.builder_input?.destination ?? null),
+        },
+      });
+    }
+    const t = leerTerminoDeLote(pedido);
+    if (t.ok === false) {
+      const error = (t as { error: string }).error;
+      console.error(`[CopyLab v9.7][LOTE] terminar brand=${body.brandId} ${error}`);
+      return res.status(400).json({ error, status: 'error', ...failureLedgerFields(null, null) });
+    }
+    console.log(`[CopyLab v9.7][LOTE] terminar brand=${body.brandId} cuenta=${t.cuenta} — la respuesta viene del lote`);
+    const primera = leerMensajeDeClaude(t.mensaje, t.cuenta);
+    registro.uso = primera.usage;
+    const r = await responderTrasLaLlamada({ brandId: body.brandId, destination: t.destination }, t.built, true, primera, callClaude, registro);
+    return res.status(r.status).json(r.json);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[CopyLab /api/execute v9.6][LOTE]', msg);
+    const httpStatus = err instanceof CopyLabRequestError ? err.http_status : 500;
+    return res.status(httpStatus).json({ error: msg, status: 'error', ...failureLedgerFields(err, registro.uso) });
+  }
 }
 
 // ── CORS HEADERS ───────────────────────────────────────────────────────────
@@ -4171,6 +4520,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const body = req.body as ExecuteRequest & { async?: boolean };
   if (!body?.brandId)
     return res.status(400).json({ error: 'brandId is required' });
+
+  // ── LOTE (2026-10-21) — ver el bloque LOTE. Sin `lote` en el cuerpo, esto no hace nada y la petición sigue
+  // exactamente como siempre.
+  const pedidoDeLote = leerPedidoDeLote((body as any).lote);
+  if (pedidoDeLote.ok === false) return res.status(400).json({ error: (pedidoDeLote as { error: string }).error, status: 'error', ...failureLedgerFields(null, null) });
+  if (pedidoDeLote.pedido) return await responderLote(body, pedidoDeLote.pedido, res);
 
   // ── ASYNC MODE v9.4 ─────────────────────────────────────────────────
   if (body.async === true) {
@@ -4219,7 +4574,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ── SYNC MODE v9.6 ────────────────────────────────────────────────────
   // El consumo de la llamada, FUERA del try: si algo falla DESPUÉS de que Claude respondió, esa
   // llamada ya se cobró y su consumo tiene que llegar al cuerpo del fallo.
-  let usoDeLaLlamada: ClaudeUsage | null = null;
+  const registro: { uso: ClaudeUsage | null } = { uso: null };
   try {
     const pack     = body.params?.pack ?? 'social_post_pack';
     const position = body.meta?.position ?? 1;
@@ -4229,230 +4584,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const built = await buildPrompt(body);
 
     console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} alt_pass=${built.alt_pass ? built.alt_pass.source : 'no'} slide_pass=${built.slide_pass ? built.slide_pass.input.slides.length : 'no'} — calling Claude`);
-    const { text: output, usage } = await callClaude(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url);
-    usoDeLaLlamada = usage;
-
-    // ── Carril response (Contrato 2, §4.2) — title/body ya separados, signature
-    //    SIN estampar, usage real. El modo UI conserva su forma histórica.
-    // F1 · pasada de formato — la respuesta es un PLAN, no una pieza. Sin JSON legible se dice con
-    // nombre propio y con el consumo, para que el carril lo asiente igual.
-    if (carril && built.format_pass) {
-      const plan = extractJsonObject(output);
-      const metaFormato = { format_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language };
-      if (!plan) {
-        console.error(`[CopyLab][F1-FORMAT] COPYLAB_FORMAT_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_FORMAT_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaFormato });
-      }
-      return res.status(200).json({ status: 'ok', format_plan: plan, usage, meta: metaFormato });
-    }
-    // F2 · pasada de imágenes — mismo patrón: la respuesta es un PLAN, ya normalizado al contrato
-    // (como mucho `max_images` entradas). Lo descartado viaja en el meta con su motivo.
-    if (carril && built.image_pass) {
-      const metaImagen = {
-        image_pass: true, max_images: built.image_pass.max_images,
-        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
-      };
-      const normalizado = normalizeImagePlan(extractJsonObject(output), built.image_pass.piece_text, built.image_pass.max_images);
-      if (!normalizado) {
-        console.error(`[CopyLab][F2-IMAGES] COPYLAB_IMAGE_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_IMAGE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaImagen });
-      }
-      return res.status(200).json({
-        status: 'ok', image_plan: normalizado.plan, usage,
-        meta: { ...metaImagen, image_plan_dropped: normalizado.dropped },
-      });
-    }
-    // F2/F3 · pasada del alt — la respuesta es UN alt de lo que se ve. Inservible (sin JSON, vacío o
-    // largo) ⇒ 422 con nombre propio y con el consumo: el carril conserva el alt del plan.
-    if (carril && built.alt_pass) {
-      const metaAlt = {
-        alt_pass: true, alt_source: built.alt_pass.source,
-        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
-        // El tamaño del system que se pagó, y cuántas capas de contenido no viajaron: sin los dos, el
-        // ahorro no se puede leer contra el ledger (`inline_image_alt` frente a `inline_image_plan`).
-        system_chars: built.system.length, layers_omitted: built.alt_pass.layers_omitted,
-      };
-      const { alt, reason } = normalizeAltResult(extractJsonObject(output));
-      if (!alt) {
-        console.error(`[CopyLab][F3-ALT] COPYLAB_ALT_UNUSABLE brand=${body.brandId} reason=${reason} — ${output.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_ALT_UNUSABLE', reason, raw: output.slice(0, 600), usage, meta: metaAlt });
-      }
-      return res.status(200).json({ status: 'ok', alt, usage, meta: { ...metaAlt, alt_chars: Array.from(alt).length, ...altHintsEcho(alt, built.alt_pass.input) } });
-    }
-    // ÉNFASIS · pasada de palabras clave — la respuesta son los tramos, podados contra el texto. Sin
-    // ninguno que sobreviva ⇒ 422 con nombre propio y con el consumo: el carril compone sin énfasis.
-    if (carril && built.emphasis_pass) {
-      const imageText = built.emphasis_pass.input.image_text;
-      let leido = readEmphasisPassResult(extractJsonObject(output), imageText);
-      let salida = output;
-      let uso = usage;
-      // REINTENTO (2026-10-17) — sin ningún tramo, UNA segunda llamada con el motivo exacto. Las dos se
-      // cobraron: el consumo que viaja es la suma (y si la segunda falla, `usoDeLaLlamada` ya tiene la primera).
-      const primera = leido.terms.length ? null : { dropped: leido.dropped, reason: leido.reason };
-      if (primera) {
-        console.warn(`[CopyLab][EMPHASIS-PASS] sin tramo en el primer intento brand=${body.brandId} reason=${leido.reason} — ${output.slice(0, 200)}; se repite una vez`);
-        const r2 = await callClaude(built.system_bloques ?? built.system, built.user + buildEmphasisRetryNote(primera), built.max_tokens, built.user_image_url);
-        uso = sumarUso(usage, r2.usage);
-        usoDeLaLlamada = uso;
-        salida = r2.text;
-        leido = readEmphasisPassResult(extractJsonObject(salida), imageText);
-      }
-      const metaEnfasis = {
-        emphasis_pass: true, voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
-        system_chars: built.system.length, layers_omitted: built.emphasis_pass.layers_omitted,
-        ...(leido.dropped.length ? { image_emphasis_dropped: leido.dropped } : {}),
-        ...(primera ? { emphasis_retry: { first_dropped: primera.dropped, first_reason: primera.reason } } : {}),
-      };
-      if (!leido.terms.length) {
-        console.error(`[CopyLab][EMPHASIS-PASS] COPYLAB_EMPHASIS_UNUSABLE brand=${body.brandId} reason=${leido.reason} — ${salida.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_EMPHASIS_UNUSABLE', reason: leido.reason, raw: salida.slice(0, 600), usage: uso, meta: metaEnfasis });
-      }
-      return res.status(200).json({ status: 'ok', image_emphasis: leido.terms, usage: uso, meta: metaEnfasis });
-    }
-    // F2/F3 · pasada de láminas — la respuesta es un PLAN por lámina, ya normalizado al contrato. Lo
-    // podado viaja en el meta con su motivo; las opciones de CTA ofrecidas, por cuántas fueron.
-    if (carril && built.slide_pass) {
-      const metaLaminas = {
-        slide_pass: true, slides_requested: built.slide_pass.input.slides.length,
-        cta_options_count: built.slide_pass.cta_options.length,
-        voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
-      };
-      const normalizado = normalizeSlidePlan(extractJsonObject(output), built.slide_pass.input, built.slide_pass.cta_options);
-      if (!normalizado) {
-        console.error(`[CopyLab][F3-SLIDES] COPYLAB_SLIDE_PLAN_UNPARSABLE brand=${body.brandId} — ${output.slice(0, 200)}`);
-        return res.status(422).json({ status: 'error', error: 'COPYLAB_SLIDE_PLAN_UNPARSABLE', raw: output.slice(0, 600), usage, meta: metaLaminas });
-      }
-      return res.status(200).json({
-        status: 'ok', slides: normalizado.slides, usage,
-        meta: { ...metaLaminas, dropped: normalizado.dropped },
-      });
-    }
-    if (carril) {
-      const parsed = parsePiece(output);
-      const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsed;
-      // BRIEF 8 · A — `title` es parte del CONTRATO, no un extra que a veces viene: la clave viaja
-      // siempre y el eco dice cuánto midió. Un título ausente ahora es un INCUMPLIMIENTO del
-      // escritor (la sección ## TÍTULO lo pide en los dos destinos), no un caso normal: se grita,
-      // se marca en el meta y la pieza sigue viva — el carril decide qué hacer con una pieza sin
-      // título, y hoy hace lo correcto: no compone y conserva la imagen limpia.
-      const tituloFinal = built.repair ? (title ?? built.repair.original_title) : title;
-      // ÉNFASIS — se poda contra el texto que de verdad va sobre la imagen.
-      const emphasisOut = built.image_emphasis
-        ? pruneEmphasis(parsed.image_emphasis_raw, built.image_title_mode === 'dialogue' ? imageHook : tituloFinal)
-        : null;
-      if (emphasisOut && emphasisOut.dropped.length) {
-        console.warn(`[CopyLab][ÉNFASIS] brand=${body.brandId} tramos podados: ${JSON.stringify(emphasisOut.dropped)}`);
-      }
-      if (!tituloFinal) {
-        console.error(
-          `[CopyLab][BRIEF8] COPYLAB_TITLE_MISSING brand=${body.brandId} destination=${body.builder_input?.destination ?? '∅'} ` +
-          `title_budget=${built.title_budget_chars ?? '∅'} (${built.title_budget_source ?? 'sin declarar'}) ` +
-          '— la respuesta volvió sin la línea "TÍTULO:" pese a que el prompt la exige en ambos destinos',
-        );
-      }
-      return res.status(200).json({
-        status: 'ok',
-        // G2-F — en reparación el título se conserva del ORIGINAL cuando la pieza corregida vuelve
-        // sin él (el caso normal: la violación estaba en el cuerpo). Si vuelve CON título, ése gana:
-        // es una violación que lo afectaba. En generación, exactamente como hoy.
-        title: tituloFinal,
-        // BRIEF-04 — las dos cadenas de la imagen. Viajan SIEMPRE, con `null` en el modo que
-        // repite: una clave ausente y una clave nula se distinguen, y el carril necesita saber que
-        // preguntó. En `echo` son null y el carril compone como hasta hoy.
-        image_hook: imageHook,
-        image_support: imageSupport,
-        // ÉNFASIS — los tramos ya podados contra el texto que va sobre la imagen (el gancho en diálogo,
-        // el título en eco). La clave viaja sólo si el carril la pidió: sin `image_emphasis`, la
-        // respuesta es la de siempre, clave por clave.
-        ...(built.image_emphasis ? { image_emphasis: emphasisOut!.terms } : {}),
-        body: pieceBody,
-        signature: built.signature,
-        usage,
-        meta: {
-          voice_id: built.voice_id,
-          voice_version: built.voice_version,
-          language: built.language,
-          psycho_preset: built.psycho_preset,
-          platform_key: built.platform_key,
-          // G2-F — la marca de la segunda pasada, y qué códigos se mandaron a reparar. Sólo viajan
-          // en modo reparación: sin `builder_input.repair` el meta queda como hoy, clave por clave.
-          ...(built.repair ? { repair: true, repair_codes: built.repair.codes } : {}),
-          // Capa 2 del aprendizaje — cuántas correcciones aprendidas se INYECTARON (no cuántas se
-          // mandaron): el carril lo compara con lo que envió y ve descartes y topes. Viaja siempre,
-          // con 0 cuando no hubo ninguna, igual que `rules_count`.
-          learned_corrections_count: built.learned_corrections_count,
-          // G1-C — el techo que CopyLab APLICÓ de verdad, y el nivel que lo declaró. El carril ya
-          // anota en builder_meta lo que MANDÓ; sin este eco no hay manera de saber si CopyLab lo
-          // obedeció o escribió contra su default, que es exactamente la confusión que dejó pasar
-          // el techo sin aplicar durante toda una corrida.
-          // G1-D — desde ahora este número es el que se le mandó a la API: el declarado CON margen
-          // (ceil × 1,2) cuando hay techo declarado, el default por destino exacto cuando no.
-          max_tokens_applied: built.max_tokens,
-          max_tokens_source: built.max_tokens_source,
-          // G1-D — el presupuesto en caracteres que recibió el escritor, al lado del techo que se
-          // le mandó a la API. Los dos juntos, o la próxima corrida no se puede leer.
-          length_budget_chars: built.length_budget_chars,
-          // BRIEF 8 · A — el trío del título: lo que se le dio (presupuesto + de dónde salió) y lo
-          // que devolvió (caracteres). `title_missing` distingue la ausencia REAL de un título de
-          // longitud cero, y es lo que el carril asienta cuando el overlay no puede componerse.
-          title_budget_chars: built.title_budget_chars,
-          title_budget_source: built.title_budget_source,
-          title_chars: titleCharCount(tituloFinal),
-          title_missing: !tituloFinal,
-          // BRIEF-04 — en qué régimen se escribió, y si el escritor devolvió lo que ese régimen
-          // pide. `image_hook_missing` sólo es un incumplimiento en modo diálogo; en `echo` es el
-          // estado normal, y por eso se declara junto al modo y no suelto.
-          image_title_mode: built.image_title_mode,
-          image_hook_chars: titleCharCount(imageHook),
-          image_hook_missing: built.image_title_mode === 'dialogue' && !imageHook,
-          image_support_present: !!imageSupport,
-          ...(built.image_emphasis ? {
-            image_emphasis_requested: true,
-            image_emphasis_missing: parsed.image_emphasis_raw === undefined,
-            image_emphasis_dropped: emphasisOut!.dropped,
-          } : {}),
-          // G2-C — la política de CTA que se le dio al escritor, para que builder_meta la registre.
-          // 'decide' | 'influye' | 'general' | 'none'.
-          audience_cta_applied: built.audience_cta_applied,
-          copy_profile_id: built.copy_profile_id,
-          humanize_profile_id: built.humanize_profile_id,
-          rules_injected: built.rules_injected,
-          rules_skipped: built.rules_skipped,
-          rules_count: built.rules_injected.length,
-          // D2 — cuántas llegaron con su redacción de escritura y cuántas por fallback a statement.
-          rules_by_instruction: built.rules_by_instruction,
-          rules_by_instruction_count: built.rules_by_instruction.length,
-          rules_by_statement_count: built.rules_injected.length - built.rules_by_instruction.length,
-          creative_seed: built.creative_seed,
-          cache_mode: built.cache_mode,
-          layers_applied: built.layers_applied,
-          output_template_id: built.output_template_id,
-          template_vars_unresolved: built.template_vars_unresolved,
-          template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
-        },
-      });
-    }
-
-    // ── UI response ────────────────────────────────────────────────────
-    return res.status(200).json({
-      output,
-      status: 'ok',
-      meta: {
-        pipeline_version: '2.6',
-        copylab_version:  '9.7',
-        cache_mode: built.cache_mode,
-        layers_applied: built.layers_applied,
-        voice_genome: built.voice_id ? { voice_id: built.voice_id, version: built.voice_version } : null,
-        creative_seed: built.creative_seed,
-        template_vars_unresolved: built.template_vars_unresolved,
-        template_vars_unresolved_compliance: built.template_vars_unresolved_compliance,
-      },
-    });
+    const primera = await callClaude(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url);
+    registro.uso = primera.usage;
+    const r = await responderTrasLaLlamada({ brandId: body.brandId, destination: body.builder_input?.destination ?? null }, built, carril, primera, callClaude, registro);
+    return res.status(r.status).json(r.json);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[CopyLab /api/execute v9.6]', msg);
     // Un encargo mal formado es un error del emisor (400); lo demás, del servidor (500).
     const httpStatus = err instanceof CopyLabRequestError ? err.http_status : 500;
-    return res.status(httpStatus).json({ error: msg, status: 'error', ...failureLedgerFields(err, usoDeLaLlamada) });
+    return res.status(httpStatus).json({ error: msg, status: 'error', ...failureLedgerFields(err, registro.uso) });
   }
 }
