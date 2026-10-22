@@ -242,9 +242,23 @@ interface BuilderInput {
   // F2/F3 · PASADA DE LÁMINAS (contrato (5), Sam, 2026-10-03) — un carrusel ya planificado (sus
   // láminas con rol y titular) y el texto de la pieza. CopyLab propone por lámina eyebrow, keyword,
   // figure, steps y cta; nunca cambia un titular. Ausente ⇒ nada de esto corre.
+  // 2026-10-22 — `avoid_eyebrows`: los antetítulos que la marca ya usó en sus carruseles recientes,
+  // resueltos por el carril como dato. CopyLab no los propone otra vez. Ausente ⇒ el encargo de antes.
   slide_pass?: {
     piece_text: string;
     slides: Array<{ n: number; role: 'cover' | 'body' | 'closing'; headline: string; subheadline?: string | null }>;
+    avoid_eyebrows?: string[] | null;
+  } | null;
+  // CARRUSEL AUTOMÁTICO · PASADA DEL TEXTO DE LAS LÁMINAS (Sam, 2026-10-22: «procede») — el carril decidió
+  // por dato que la pieza es carrusel y pide el titular y el subtítulo de las láminas 2..N, cada una con
+  // su intención y su indicación. La portada ya es la imagen de la pieza. CopyLab escribe sólo eso: el
+  // CTA y los pasos los propone después `slide_pass`. Ausente ⇒ nada de esto corre.
+  carousel_text_pass?: {
+    piece_text: string;
+    cover: { headline: string; subheadline?: string | null };
+    text_chars_max: number;
+    slides: Array<{ n: number; role: 'body' | 'closing'; intent: string; brief: string }>;
+    avoid_eyebrows?: string[] | null;
   } | null;
   // ÉNFASIS · PASADA DE PALABRAS CLAVE (Sam, 2026-10-13: «que salgan ya tal y como queremos») — hermana
   // de `alt_pass`: el texto que YA va sobre la imagen de una pieza escrita antes del énfasis. CopyLab no
@@ -1730,7 +1744,38 @@ const CTA_OPTION_FIELDS = ['cta_smpc', 'cta_spot', 'cta_ab1', 'cta_ab2'];
 const CTA_OPTIONS_MAX = 8;
 
 interface SlidePassSlide { n: number; role: SlideRole; headline: string; subheadline: string | null }
-interface SlidePassInput { piece_text: string; slides: SlidePassSlide[] }
+interface SlidePassInput { piece_text: string; slides: SlidePassSlide[]; avoid_eyebrows: string[] }
+
+// LOS ANTETÍTULOS QUE LA MARCA YA USÓ (2026-10-22, informe de fixables aprobado por Sam: «debemos tratar
+// de romper los patrones que no nos convienen»). El carril manda en `avoid_eyebrows` los antetítulos de
+// los carruseles recientes de la marca, como DATO; las dos pasadas del carrusel los leen con este mismo
+// lector y los comparan con la MISMA clave que el carril (`carouselEyebrowKey` de content-run-stage):
+// sin mayúsculas, sin acentos, sin signos. Una clave distinta aquí y allá dejaría pasar lo que el carril
+// luego poda, o al revés.
+const AVOID_EYEBROWS_MAX = 40;
+function carouselTextKey(t: unknown): string {
+  return String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+/** `avoid_eyebrows` de una pasada: ausente ⇒ []; una lista con otra forma ⇒ 400 con el nombre de la pasada. */
+function readAvoidEyebrows(v: unknown, pasada: string): string[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) {
+    throw new CopyLabRequestError(`COPYLAB_${pasada.toUpperCase()}_MALFORMED: builder_input.${pasada}.avoid_eyebrows debe ser una lista de textos (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const vistos = new Set<string>();
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== 'string') continue;
+    const t = x.replace(/\s+/g, ' ').trim();
+    const k = carouselTextKey(t);
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(t);
+    if (out.length >= AVOID_EYEBROWS_MAX) break;
+  }
+  return out;
+}
 interface SlideFigure { value: string; bar: { from: number; to: number } | null; source: string }
 interface SlideStep { text: string; critical: boolean }
 interface SlidePlanEntry {
@@ -1770,7 +1815,7 @@ function normalizeSlidePass(v: unknown): SlidePassInput | null {
     vistos.add(n);
     return { n, role, headline, subheadline: typeof sub === 'string' && sub.trim() ? sub.trim() : null };
   });
-  return { piece_text, slides };
+  return { piece_text, slides, avoid_eyebrows: readAvoidEyebrows((v as any).avoid_eyebrows, 'slide_pass') };
 }
 
 // Idioma primario de una etiqueta («es-XX», «ES», «en_YY» → «es», «es», «en»). Vacío si no hay.
@@ -1858,6 +1903,11 @@ function buildSlidePassInstruction(input: SlidePassInput, ctaOptions: string[], 
     + ' solución, cierre, llamada), ni el formato ni sus partes (carrusel, lámina, portada), ni usa el'
     + ' vocabulario del método con que se escribió la pieza; sin dos puntos. Si no hay un rótulo que le'
     + ' diga algo al lector, null.\n'
+    // 2026-10-22 — sin lista, la instrucción queda byte a byte como antes.
+    + (input.avoid_eyebrows.length
+      ? '- eyebrow: nunca uno de estos rótulos, que esta marca ya usó en sus carruseles recientes (ni con'
+        + ' otras mayúsculas o tildes): ' + input.avoid_eyebrows.map(e => `«${e}»`).join(', ') + '.\n'
+      : '')
     + '- figure: SÓLO si en el TEXTO DE LA PIEZA aparecen, literales, una cifra Y la fuente que la'
     + ' sostiene, nombrada. "value" copia la cifra tal como aparece; "source" copia el nombre de la'
     + ' fuente tal como aparece. "bar" sólo si la cifra es un porcentaje entre 0 y 100, y entonces'
@@ -1913,6 +1963,7 @@ function normalizeSlidePlan(
       else if (Array.from(t).length > SLIDE_EYEBROW_MAX_CHARS) poda('eyebrow', 'TOO_LONG');
       else if (t.split(' ').length > SLIDE_EYEBROW_MAX_WORDS) poda('eyebrow', 'TOO_MANY_WORDS');
       else if (t.includes(':')) poda('eyebrow', 'STRUCTURE');
+      else if (input.avoid_eyebrows.some(e => carouselTextKey(e) === carouselTextKey(t))) poda('eyebrow', 'RECENT');
       else eyebrow = t;
     }
 
@@ -1985,6 +2036,219 @@ function normalizeSlidePlan(
     return hecho ?? { n: s.n, eyebrow: null, keyword: null, figure: null, steps: null, cta: null };
   });
   return { slides, dropped };
+}
+
+// ── CARRUSEL AUTOMÁTICO · PASADA DEL TEXTO DE LAS LÁMINAS (2026-10-22) ──────────────────────────
+//
+// POR QUÉ EXISTE (Sam aprobó el informe de fixables del 2026-10-22: «procede»): desde el 29-sep ninguna
+// marca creaba carruseles porque nada en el carril decidía que una pieza lo fuera. Ahora lo decide la
+// mezcla de formatos de la marca (dato) y el carril arma el carrusel con la acción `carousel_auto`; pero
+// el titular y el subtítulo de las láminas 2..N son copy, en la voz y con las reglas de la marca, y el
+// copy es de CopyLab. `slide_pass` no los escribe: propone el cromo alrededor de titulares ya dados.
+//
+// EL CONTRATO lo declara el carril (bloque CARRUSEL-AUTO de content-run-stage), que lo REVALIDA:
+//   entrada  builder_input.carousel_text_pass = { piece_text, cover: { headline, subheadline },
+//            text_chars_max, slides: [{ n, role: 'body'|'closing', intent, brief }], avoid_eyebrows? }
+//   salida   { slides: [{ n, headline, subheadline }], meta: { carousel_text_pass: true } }
+// Las REGLAS DURAS son las que el carril revalida y por las que el carrusel entero cae a `post`: un
+// titular por lámina pedida; titular ≤ text_chars_max (y ≤ el techo de la maqueta); ningún titular repite
+// la portada ni otra lámina (misma clave que el carril). Se suman las que la pieza no puede llevar en una
+// lámina: hashtags, la firma de la voz y cifras que no estén en el texto. Un subtítulo que no cabe con su
+// titular se quita y se dice, como hace el carril. Un antetítulo de `avoid_eyebrows` repetido como
+// titular es REGLA BLANDA: pide el reintento, pero no tira el carrusel.
+//
+// REINTENTO: una sola segunda llamada con el motivo exacto, como el énfasis; si la segunda sale peor que
+// la primera (reglas duras rotas que la primera cumplía), vale la primera. Las dos se cobran.
+//
+// Cero marcas aquí: intención, indicación, techo, portada y antetítulos llegan como dato del carril.
+const CAROUSEL_TEXT_PASS_MAX_TOKENS = 1200;
+const CAROUSEL_TEXT_PASS_CONTRACT_MAX_SLIDES = 20;
+// El techo del titular de una lámina en la maqueta del carril (`validateCarouselSlideImage`: 140).
+const CAROUSEL_TEXT_HEADLINE_MAX_CHARS = 140;
+// La banda del techo que se acepta del carril. Fuera de ella el encargo está mal formado: no es un techo
+// de una lámina. El número que rige es SIEMPRE el que manda el carril.
+const CAROUSEL_TEXT_CHARS_MIN = 20;
+const CAROUSEL_TEXT_CHARS_MAX = 400;
+const CAROUSEL_TEXT_INTENT_MAX_CHARS = 60;
+const CAROUSEL_TEXT_BRIEF_MAX_CHARS = 600;
+const CAROUSEL_TEXT_ROLES = ['body', 'closing'] as const;
+type CarouselTextRole = typeof CAROUSEL_TEXT_ROLES[number];
+
+interface CarouselTextSlideReq { n: number; role: CarouselTextRole; intent: string; brief: string }
+interface CarouselTextPassInput {
+  piece_text: string; cover: { headline: string; subheadline: string | null };
+  text_chars_max: number; slides: CarouselTextSlideReq[]; avoid_eyebrows: string[];
+}
+interface CarouselTextSlide { n: number; headline: string; subheadline: string | null }
+interface CarouselTextProblem { n: number | null; reason: string; detail?: string }
+
+function normalizeCarouselTextPass(v: unknown): CarouselTextPassInput | null {
+  if (v === null || v === undefined) return null;
+  const mal = (codigo: string, detalle: string): never => {
+    throw new CopyLabRequestError(`COPYLAB_CAROUSEL_TEXT_PASS_${codigo}: builder_input.carousel_text_pass${detalle}`);
+  };
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    mal('MALFORMED', ` debe ser un objeto { piece_text, cover, text_chars_max, slides } (recibido: ${String(JSON.stringify(v)).slice(0, 200)})`);
+  }
+  const o = v as Record<string, any>;
+  const piece_text = typeof o.piece_text === 'string' ? o.piece_text.trim() : '';
+  if (!piece_text) mal('PIECE_REQUIRED', '.piece_text es obligatorio — sin la pieza no hay de qué escribir las láminas');
+  const c = o.cover;
+  const coverHeadline = c && typeof c === 'object' && !Array.isArray(c) && typeof c.headline === 'string' ? c.headline.replace(/\s+/g, ' ').trim() : '';
+  if (!coverHeadline) mal('COVER_REQUIRED', `.cover.headline es obligatorio — la portada es la lámina 1 y ninguna otra puede repetirla (recibido: ${String(JSON.stringify(c ?? null)).slice(0, 200)})`);
+  if (c.subheadline !== undefined && c.subheadline !== null && typeof c.subheadline !== 'string') mal('COVER_REQUIRED', '.cover.subheadline debe ser texto o null');
+  const coverSub = typeof c.subheadline === 'string' && c.subheadline.trim() ? c.subheadline.replace(/\s+/g, ' ').trim() : null;
+  const max = o.text_chars_max;
+  if (!Number.isInteger(max) || max < CAROUSEL_TEXT_CHARS_MIN || max > CAROUSEL_TEXT_CHARS_MAX) {
+    mal('TEXT_CHARS_MAX_INVALID', `.text_chars_max debe ser un entero entre ${CAROUSEL_TEXT_CHARS_MIN} y ${CAROUSEL_TEXT_CHARS_MAX} (recibido: ${JSON.stringify(max ?? null)})`);
+  }
+  const raw = o.slides;
+  if (!Array.isArray(raw) || !raw.length || raw.length > CAROUSEL_TEXT_PASS_CONTRACT_MAX_SLIDES) {
+    mal('SLIDES_REQUIRED', `.slides debe ser una lista de 1 a ${CAROUSEL_TEXT_PASS_CONTRACT_MAX_SLIDES} láminas (recibido: ${Array.isArray(raw) ? `${raw.length} láminas` : JSON.stringify(raw ?? null)})`);
+  }
+  const vistos = new Set<number>();
+  const slides = (raw as any[]).map((s, i): CarouselTextSlideReq => {
+    const n = s?.n;
+    const intent = typeof s?.intent === 'string' ? s.intent.trim() : '';
+    const brief = typeof s?.brief === 'string' ? s.brief.replace(/\s+/g, ' ').trim() : '';
+    const motivo = !s || typeof s !== 'object' || Array.isArray(s) ? 'no es un objeto'
+      : !Number.isInteger(n) || n < 2 ? 'n debe ser un entero de 2 en adelante (la 1 es la portada)'
+      : vistos.has(n) ? `n=${n} repetido`
+      : !(CAROUSEL_TEXT_ROLES as readonly string[]).includes(s.role) ? `role debe ser ${CAROUSEL_TEXT_ROLES.join(' | ')}`
+      : !intent || intent.length > CAROUSEL_TEXT_INTENT_MAX_CHARS ? `intent es obligatorio (hasta ${CAROUSEL_TEXT_INTENT_MAX_CHARS} caracteres)`
+      : !brief || brief.length > CAROUSEL_TEXT_BRIEF_MAX_CHARS ? `brief es obligatorio (hasta ${CAROUSEL_TEXT_BRIEF_MAX_CHARS} caracteres)`
+      : null;
+    if (motivo) mal('SLIDE_MALFORMED', `.slides[${i}] — ${motivo} (recibido: ${String(JSON.stringify(s ?? null)).slice(0, 200)})`);
+    vistos.add(n);
+    return { n, role: s.role, intent, brief };
+  });
+  return {
+    piece_text, cover: { headline: coverHeadline, subheadline: coverSub }, text_chars_max: max, slides,
+    avoid_eyebrows: readAvoidEyebrows(o.avoid_eyebrows, 'carousel_text_pass'),
+  };
+}
+
+function buildCarouselTextPassInstruction(input: CarouselTextPassInput, languageLabel: string, signatureText: string | null): string {
+  const laminas = input.slides
+    .map(s => `[n=${s.n} · ${s.role === 'closing' ? 'cierre' : 'desarrollo'} · ${s.intent}] ${s.brief}`)
+    .join('\n');
+  const firma = signatureText && signatureText.trim() ? ` («${signatureText.trim()}»)` : '';
+  return 'TAREA — EL TEXTO DE LAS LÁMINAS DE UN CARRUSEL HECHO CON UNA PIEZA YA ESCRITA (no es una pieza'
+    + ' nueva y la pieza no se reescribe):\n'
+    + 'La portada (lámina 1) ya lleva su texto. Escribe, para cada lámina pedida, un titular y, si cabe, un'
+    + ' subtítulo. Las láminas se leen en orden y cada una cumple SU intención, con lo que dice la pieza y en'
+    + ' su voz: el lector que pasa de una a otra entiende la pieza sin leerla.\n\n'
+    + 'Responde SOLO con un objeto JSON, sin texto alrededor y sin bloque de código:\n'
+    + '{"slides":[{"n":N,"headline":"…","subheadline":"…"}]}\n\n'
+    + 'REGLAS:\n'
+    + '- Una entrada por lámina pedida, con su mismo "n". "subheadline" puede ir en null.\n'
+    + `- Titular y subtítulo de una lámina suman ${input.text_chars_max} caracteres o menos, con los espacios.`
+    + ' Si no caben los dos, deja sólo el titular. El titular dice la idea; el subtítulo, si va, la sostiene.\n'
+    + '- Sigue la intención y la indicación de cada lámina, en el orden dado. Ningún titular repite el de la'
+    + ' portada ni el de otra lámina, ni lo dice con otras palabras.\n'
+    + `- Escribe en el idioma de la pieza (${languageLabel}), con el tratamiento y el registro que fija el system.\n`
+    + '- Cifras y fuentes: sólo las que aparecen, literales, en el texto de la pieza. Nunca inventes,'
+    + ' redondees ni conviertas una cifra; si la lámina pide una cifra y la pieza no la trae, escribe la'
+    + ' lámina sin cifra.\n'
+    + '- Sin llamada a la acción y sin lista de pasos: el diseño los añade en las láminas que los llevan.\n'
+    + `- Sin hashtags y sin la firma de la marca${firma}: van en el texto de la publicación, no en las láminas.\n`
+    + (input.avoid_eyebrows.length
+      ? '- Ningún titular abre con uno de estos rótulos ni es uno de ellos: esta marca ya los usó en sus'
+        + ' carruseles recientes. ' + input.avoid_eyebrows.map(e => `«${e}»`).join(', ') + '.\n'
+      : '')
+    + '- Lo que escribes se publica con la pieza: lo gobiernan las mismas reglas de esta marca que'
+    + ' gobiernan el título y el cuerpo —idioma, tratamiento, tono, prohibiciones—.\n\n'
+    + `PORTADA (lámina 1, ya escrita):\nTitular: ${input.cover.headline}`
+    + (input.cover.subheadline ? `\nSubtítulo: ${input.cover.subheadline}` : '') + '\n\n'
+    + `LÁMINAS QUE ESCRIBES:\n${laminas}\n\n`
+    + `TEXTO DE LA PIEZA:\n${input.piece_text}`;
+}
+
+// Las cifras de un texto, como se escriben («62», «12,5», «1.000»). La comparación es literal.
+function figuresOf(t: string): string[] {
+  return String(t ?? '').match(/\d+(?:[.,]\d+)*/g) ?? [];
+}
+
+/**
+ * Lee y valida la respuesta de la pasada. PURO. `slides` va en el orden pedido y sólo con lo que pasó;
+ * `problems` son las reglas DURAS rotas (el carrusel no sirve), `soft` las blandas (piden reintento, no
+ * tiran el carrusel) y `dropped` lo que se podó sin romper nada (entradas sobrantes, subtítulos que no
+ * cabían). `reason` = 'UNPARSABLE' cuando no hay objeto con `slides[]`.
+ */
+function readCarouselTextPassResult(raw: Record<string, unknown> | null, input: CarouselTextPassInput, signatureText: string | null): {
+  slides: CarouselTextSlide[]; problems: CarouselTextProblem[]; soft: CarouselTextProblem[]; dropped: string[]; reason: 'UNPARSABLE' | null;
+} {
+  const problems: CarouselTextProblem[] = [];
+  const soft: CarouselTextProblem[] = [];
+  const dropped: string[] = [];
+  if (!raw || !Array.isArray((raw as any).slides)) {
+    return { slides: [], problems: [{ n: null, reason: 'UNPARSABLE' }], soft, dropped, reason: 'UNPARSABLE' };
+  }
+  const pedidas = new Set(input.slides.map(s => s.n));
+  const porN = new Map<number, Record<string, unknown>>();
+  ((raw as any).slides as unknown[]).forEach((e, i) => {
+    const n = (e as any)?.n;
+    if (!e || typeof e !== 'object' || Array.isArray(e) || !Number.isInteger(n)) { dropped.push(`#${i}: SHAPE`); return; }
+    if (!pedidas.has(n)) { dropped.push(`#${i}: UNKNOWN_SLIDE`); return; }
+    if (porN.has(n)) { dropped.push(`#${i}: DUPLICATE_SLIDE`); return; }
+    porN.set(n, e as Record<string, unknown>);
+  });
+  const limpio = (x: unknown) => (typeof x === 'string' ? x.replace(/\s+/g, ' ').trim() : '');
+  const tope = Math.min(CAROUSEL_TEXT_HEADLINE_MAX_CHARS, input.text_chars_max);
+  const cifras = new Set([...figuresOf(input.piece_text), ...figuresOf(input.cover.headline), ...figuresOf(input.cover.subheadline ?? '')]);
+  const firma = carouselTextKey(signatureText);
+  const vistos = new Set<string>([carouselTextKey(input.cover.headline)]);
+  const evitar = input.avoid_eyebrows.map(carouselTextKey).filter(Boolean);
+  const slides: CarouselTextSlide[] = [];
+  for (const pedida of input.slides) {
+    const n = pedida.n;
+    const e = porN.get(n);
+    if (!e) { problems.push({ n, reason: 'MISSING' }); continue; }
+    const headline = limpio(e.headline);
+    const subRaw = e.subheadline;
+    if (!headline || (subRaw !== undefined && subRaw !== null && typeof subRaw !== 'string')) { problems.push({ n, reason: 'SHAPE' }); continue; }
+    let subheadline: string | null = limpio(subRaw) || null;
+    if (headline.length > tope) { problems.push({ n, reason: 'TOO_LONG', detail: `${headline.length} > ${tope}` }); continue; }
+    const k = carouselTextKey(headline);
+    if (vistos.has(k)) { problems.push({ n, reason: 'REPEATED', detail: headline }); continue; }
+    const juntos = `${headline} ${subheadline ?? ''}`;
+    if (/#[\p{L}\p{N}_]/u.test(juntos)) { problems.push({ n, reason: 'HASHTAG' }); continue; }
+    if (firma && carouselTextKey(juntos).includes(firma)) { problems.push({ n, reason: 'SIGNATURE' }); continue; }
+    const ajena = figuresOf(juntos).find(f => !cifras.has(f));
+    if (ajena !== undefined) { problems.push({ n, reason: 'FIGURE_NOT_IN_TEXT', detail: ajena }); continue; }
+    if (subheadline && headline.length + subheadline.length > input.text_chars_max) {
+      dropped.push(`n${n}.subheadline: OVER_BUDGET`);
+      subheadline = null;
+    }
+    const usado = evitar.find(a => k === a || k.startsWith(`${a} `));
+    if (usado) soft.push({ n, reason: 'AVOIDED_EYEBROW', detail: headline });
+    vistos.add(k);
+    slides.push({ n, headline, subheadline });
+  }
+  return { slides, problems, soft, dropped, reason: null };
+}
+
+// Lo que se le dice al modelo cuando su primera respuesta no sirvió, con el motivo exacto. PURO.
+function buildCarouselTextRetryNote(prev: { problems: CarouselTextProblem[]; soft: CarouselTextProblem[] }, input: CarouselTextPassInput): string {
+  const tope = Math.min(CAROUSEL_TEXT_HEADLINE_MAX_CHARS, input.text_chars_max);
+  const motivo = (p: CarouselTextProblem): string => {
+    const l = `la lámina ${p.n}`;
+    switch (p.reason) {
+      case 'UNPARSABLE': return 'no era un objeto JSON {"slides":[…]}';
+      case 'MISSING': return `faltó ${l}`;
+      case 'SHAPE': return `${l} no trae un titular en texto`;
+      case 'TOO_LONG': return `el titular de ${l} pasa de ${tope} caracteres`;
+      case 'REPEATED': return `el titular de ${l} repite el de la portada o el de otra lámina`;
+      case 'HASHTAG': return `${l} lleva un hashtag`;
+      case 'SIGNATURE': return `${l} lleva la firma de la marca`;
+      case 'FIGURE_NOT_IN_TEXT': return `${l} trae la cifra «${p.detail}», que no está en el texto de la pieza`;
+      case 'AVOIDED_EYEBROW': return `el titular de ${l} abre con un rótulo que la marca ya usó`;
+      default: return `${l} no sirve`;
+    }
+  };
+  const motivos = [...prev.problems, ...prev.soft].map(motivo);
+  return `\n\nTU RESPUESTA ANTERIOR NO SIRVE: ${motivos.join('; ')}. Escribe de nuevo TODAS las láminas pedidas`
+    + ' cumpliendo las reglas. Responde SOLO con el objeto JSON.';
 }
 
 // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
@@ -3104,6 +3368,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   // `layers_omitted`: cuántas capas de contenido NO viajaron en el system del alt (ver `capaDeContenido`).
   alt_pass: { source: AltSource; image_url: string; layers_omitted: number; input: AltPassInput } | null;
   slide_pass: { input: SlidePassInput; cta_options: string[] } | null;
+  // CARRUSEL AUTOMÁTICO · el encargo del texto de las láminas, ya leído, y la firma que no puede llevar.
+  carousel_text_pass: { input: CarouselTextPassInput; signature_text: string | null } | null;
   // ÉNFASIS · pasada de palabras clave — el encargo ya leído y cuántas capas de contenido no viajaron.
   emphasis_pass: { input: EmphasisPassInput; layers_omitted: number } | null;
   // La imagen que acompaña al user (sólo `alt_pass` con visión). `null` = el user es sólo texto.
@@ -3134,6 +3400,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   let altSource: AltSource | null = null;
   let slidePass: SlidePassInput | null = null;
   let emphasisPass: EmphasisPassInput | null = null;
+  let carouselTextPass: CarouselTextPassInput | null = null;
   if (bi) {
     if (bi.destination !== 'editorial' && bi.destination !== 'social') {
       throw new Error(`COPYLAB_DESTINATION_REQUIRED: builder_input.destination debe ser 'editorial' | 'social' (recibido: ${JSON.stringify(bi.destination ?? null)})`);
@@ -3163,10 +3430,11 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     altPass = normalizeAltPass(bi.alt_pass);
     slidePass = normalizeSlidePass(bi.slide_pass);
     emphasisPass = normalizeEmphasisPass(bi.emphasis_pass);
+    carouselTextPass = normalizeCarouselTextPass(bi.carousel_text_pass);
     const otrasTareas: Array<[string, boolean]> = [
       ['format_pass', !!formatPass], ['image_pass', !!imagePass], ['repair', !!repair],
     ];
-    for (const [propia, presente] of [['alt_pass', !!altPass], ['slide_pass', !!slidePass], ['emphasis_pass', !!emphasisPass]] as Array<[string, boolean]>) {
+    for (const [propia, presente] of [['alt_pass', !!altPass], ['slide_pass', !!slidePass], ['emphasis_pass', !!emphasisPass], ['carousel_text_pass', !!carouselTextPass]] as Array<[string, boolean]>) {
       if (!presente) continue;
       const otra = otrasTareas.find(([, p]) => p);
       if (otra) {
@@ -3733,6 +4001,8 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
       ? buildAltPassInstruction(altPass, altSource, languageDirective.label)
       : slidePass
       ? buildSlidePassInstruction(slidePass, slideCtaOptions, languageDirective.label)
+      : carouselTextPass
+      ? buildCarouselTextPassInstruction(carouselTextPass, languageDirective.label, signature?.text ?? null)
       : emphasisPass
       ? buildEmphasisPassInstruction(emphasisPass)
       : imagePass
@@ -3770,6 +4040,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     // F1 · pasada de formato — el plan es corto; el techo de generación no aplica. Ídem F2.
     max_tokens: formatPass ? FORMAT_PASS_MAX_TOKENS : imagePass ? IMAGE_PASS_MAX_TOKENS
       : altPass ? ALT_PASS_MAX_TOKENS : slidePass ? SLIDE_PASS_MAX_TOKENS
+      : carouselTextPass ? CAROUSEL_TEXT_PASS_MAX_TOKENS
       : emphasisPass ? EMPHASIS_PASS_MAX_TOKENS : apiMaxTokensFor(bi),
     // Qué nivel declaró el techo, verbatim del carril. Viaja aunque el techo sea null: una ausencia
     // DICHA es dato ('internal_default'), una ausencia muda no se puede leer.
@@ -3822,6 +4093,7 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
     image_pass: imagePass,
     alt_pass: altPass && altSource ? { source: altSource, image_url: altPass.image_url, layers_omitted: capasDeContenido.size, input: altPass } : null,
     slide_pass: slidePass ? { input: slidePass, cta_options: slideCtaOptions } : null,
+    carousel_text_pass: carouselTextPass ? { input: carouselTextPass, signature_text: signature?.text ?? null } : null,
     emphasis_pass: emphasisPass ? { input: emphasisPass, layers_omitted: capasDeContenido.size } : null,
     user_image_url: altPass && altSource === 'image' ? altPass.image_url : null,
   };
@@ -4335,6 +4607,42 @@ async function responderTrasLaLlamada(
       meta: { ...metaLaminas, dropped: normalizado.dropped },
     });
   }
+  // CARRUSEL AUTOMÁTICO · pasada del texto de las láminas — la respuesta son los titulares, validados contra
+  // el contrato que el carril revalida. Una regla rota ⇒ UNA segunda llamada con el motivo; si sigue rota,
+  // 422 con nombre propio y con el consumo de las dos: el carril deja la pieza como `post`.
+  if (carril && built.carousel_text_pass) {
+    const input = built.carousel_text_pass.input;
+    const firma = built.carousel_text_pass.signature_text;
+    let leido = readCarouselTextPassResult(extractJsonObject(output), input, firma);
+    let salida = output;
+    let uso = usage;
+    const primera = (leido.problems.length || leido.soft.length) ? leido : null;
+    if (primera) {
+      console.warn(`[CopyLab][CAROUSEL-TEXT] primer intento con reglas rotas brand=${ctx.brandId} duras=${JSON.stringify(primera.problems)} blandas=${JSON.stringify(primera.soft)}; se repite una vez`);
+      const r2 = await llamar(built.system_bloques ?? built.system, built.user + buildCarouselTextRetryNote(primera, input), built.max_tokens, built.user_image_url);
+      uso = sumarUso(usage, r2.usage);
+      registro.uso = uso;
+      const segunda = readCarouselTextPassResult(extractJsonObject(r2.text), input, firma);
+      // Nunca peor: si la primera cumplía las duras y la segunda no, vale la primera.
+      if (!(primera.problems.length === 0 && segunda.problems.length > 0)) { leido = segunda; salida = r2.text; }
+    }
+    const metaCarrusel = {
+      carousel_text_pass: true, slides_requested: input.slides.length, text_chars_max: input.text_chars_max,
+      avoid_eyebrows_count: input.avoid_eyebrows.length,
+      voice_id: built.voice_id, voice_version: built.voice_version, language: built.language,
+      ...(leido.dropped.length ? { dropped: leido.dropped } : {}),
+      ...(leido.soft.length ? { soft_kept: leido.soft } : {}),
+      ...(primera ? { carousel_text_retry: { first_problems: primera.problems, first_soft: primera.soft } } : {}),
+    };
+    if (leido.problems.length) {
+      console.error(`[CopyLab][CAROUSEL-TEXT] COPYLAB_CAROUSEL_TEXT_UNUSABLE brand=${ctx.brandId} ${JSON.stringify(leido.problems)} — ${salida.slice(0, 200)}`);
+      return responder(422, {
+        status: 'error', error: 'COPYLAB_CAROUSEL_TEXT_UNUSABLE', reason: leido.reason ?? leido.problems[0].reason,
+        problems: leido.problems, raw: salida.slice(0, 600), usage: uso, meta: metaCarrusel,
+      });
+    }
+    return responder(200, { status: 'ok', slides: leido.slides, usage: uso, meta: metaCarrusel });
+  }
   if (carril) {
     const parsed = parsePiece(output);
     const { title, image_hook: imageHook, image_support: imageSupport, body: pieceBody } = parsed;
@@ -4583,7 +4891,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const built = await buildPrompt(body);
 
-    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} alt_pass=${built.alt_pass ? built.alt_pass.source : 'no'} slide_pass=${built.slide_pass ? built.slide_pass.input.slides.length : 'no'} — calling Claude`);
+    console.log(`[CopyLab v9.7] cache_mode=${built.cache_mode} max_tokens=${built.max_tokens} length_budget_chars=${built.length_budget_chars} title_budget_chars=${built.title_budget_chars} repair=${built.repair ? built.repair.codes.join(',') : 'no'} learned_corrections=${built.learned_corrections_count} image_pass=${built.image_pass ? built.image_pass.max_images : 'no'} alt_pass=${built.alt_pass ? built.alt_pass.source : 'no'} slide_pass=${built.slide_pass ? built.slide_pass.input.slides.length : 'no'} carousel_text_pass=${built.carousel_text_pass ? built.carousel_text_pass.input.slides.length : 'no'} — calling Claude`);
     const primera = await callClaude(built.system_bloques ?? built.system, built.user, built.max_tokens, built.user_image_url);
     registro.uso = primera.usage;
     const r = await responderTrasLaLlamada({ brandId: body.brandId, destination: body.builder_input?.destination ?? null }, built, carril, primera, callClaude, registro);

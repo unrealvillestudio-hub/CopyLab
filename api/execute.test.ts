@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, buildEmphasisRetryNote, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, buildEmphasisRetryNote, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, carouselTextKey, readAvoidEyebrows, normalizeCarouselTextPass, buildCarouselTextPassInstruction, readCarouselTextPassResult, buildCarouselTextRetryNote, CAROUSEL_TEXT_PASS_MAX_TOKENS, CAROUSEL_TEXT_HEADLINE_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
   );
   return factory();
 }
@@ -2368,6 +2368,315 @@ async function run() {
       }
       eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
     } finally { fx.restore(); }
+  });
+
+  // ── CARRUSEL AUTOMÁTICO · PASADA DEL TEXTO DE LAS LÁMINAS (2026-10-22) ──────────────────────────
+  // El carril decide por dato que la pieza es carrusel y pide el texto de las láminas 2..N con el contrato
+  // del bloque CARRUSEL-AUTO de content-run-stage. Misma clínica veterinaria inventada, en portugués.
+  const CT_PLAN = [
+    { n: 2, role: 'body', intent: 'mechanism', brief: 'El mecanismo, en una sola línea, con la cifra y su fuente si la pieza las trae.' },
+    { n: 3, role: 'body', intent: 'consequence', brief: 'La consecuencia: qué le sigue pasando al lector.' },
+    { n: 4, role: 'body', intent: 'action', brief: 'Qué hacer. El titular anuncia la acción; los pasos los añade el diseño.' },
+    { n: 5, role: 'closing', intent: 'audience', brief: 'Para quién es y para quién no. La llamada a la acción la añade el diseño.' },
+  ];
+  const CT_RAW = (extra: any = {}) => ({
+    piece_text: SP_PIECE, cover: { headline: 'A vacina anual que ninguém lembra', subheadline: null },
+    text_chars_max: 110, slides: CT_PLAN, ...extra,
+  });
+  const CT_INPUT = (extra: any = {}) => PURE.normalizeCarouselTextPass(CT_RAW(extra));
+  const CT_OK = [
+    { n: 2, headline: '62% dos tutores adiam a vacina anual', subheadline: 'Segundo o Conselho Regional de Veterinária' },
+    { n: 3, headline: 'O atraso abre espaço para doenças evitáveis', subheadline: null },
+    { n: 4, headline: 'Marque a consulta antes de esquecer', subheadline: 'Leve a carteira de vacinação' },
+    { n: 5, headline: 'Para quem quer o pet protegido o ano todo', subheadline: 'Não para quem deixa para depois' },
+  ];
+  const ctLeer = (slides: any, input = CT_INPUT(), firma: string | null = null) => PURE.readCarouselTextPassResult({ slides }, input, firma);
+
+  await test('CARRUSEL-TEXTO·pure la clave de comparación es la MISMA del carril (carouselEyebrowKey)', () => {
+    // Valores de la función del carril: NFD, sin marcas diacríticas, minúsculas, signos ⇒ un espacio.
+    eq(PURE.carouselTextKey('  ¿La Diferencia? '), 'la diferencia', 'signos y mayúsculas');
+    eq(PURE.carouselTextKey('Ninguém LEMBRA!!'), 'ninguem lembra', 'tildes fuera');
+    eq(PURE.carouselTextKey('62% — dos tutores'), '62 dos tutores', 'cifras se quedan, signos no');
+    eq(PURE.carouselTextKey(null), '', 'nulo ⇒ vacío');
+  });
+
+  await test('CARRUSEL-TEXTO·pure normalizeCarouselTextPass: ausente = null; la forma del contrato; mal formado ⇒ 400 con nombre propio', () => {
+    eq(PURE.normalizeCarouselTextPass(undefined), null, 'ausente');
+    eq(PURE.normalizeCarouselTextPass(null), null, 'null');
+    const ok = CT_INPUT({ cover: { headline: '  A vacina   anual que ninguém lembra ', subheadline: '' }, avoid_eyebrows: ['O dado', 'o DADO', 3, ' ', 'O método'] });
+    eq(JSON.stringify(Object.keys(ok)), '["piece_text","cover","text_chars_max","slides","avoid_eyebrows"]', 'las claves del contrato');
+    eq(ok.cover.headline, 'A vacina anual que ninguém lembra', 'portada con espacios colapsados');
+    eq(ok.cover.subheadline, null, 'subtítulo vacío ⇒ null');
+    eq(ok.text_chars_max, 110, 'el techo del carril, tal cual');
+    eq(JSON.stringify(ok.slides.map((s: any) => [s.n, s.role, s.intent])), '[[2,"body","mechanism"],[3,"body","consequence"],[4,"body","action"],[5,"closing","audience"]]', 'el orden del carril');
+    eq(JSON.stringify(ok.avoid_eyebrows), '["O dado","O método"]', 'antetítulos: sin duplicados por clave, sin vacíos ni no-textos');
+    eq(JSON.stringify(CT_INPUT().avoid_eyebrows), '[]', 'sin la clave ⇒ lista vacía');
+    eq(PURE.readAvoidEyebrows(Array.from({ length: 50 }, (_, i) => `R${i}`), 'x').length, 40, 'con tope');
+    const s = (extra: any) => CT_RAW({ slides: [{ ...CT_PLAN[0], ...extra }] });
+    const casos: any[] = [
+      [[], 'MALFORMED'], ['texto', 'MALFORMED'],
+      [CT_RAW({ piece_text: '  ' }), 'PIECE_REQUIRED'],
+      [CT_RAW({ cover: null }), 'COVER_REQUIRED'], [CT_RAW({ cover: { headline: ' ' } }), 'COVER_REQUIRED'],
+      [CT_RAW({ cover: { headline: 'h', subheadline: 3 } }), 'COVER_REQUIRED'],
+      [CT_RAW({ text_chars_max: undefined }), 'TEXT_CHARS_MAX_INVALID'], [CT_RAW({ text_chars_max: 10 }), 'TEXT_CHARS_MAX_INVALID'],
+      [CT_RAW({ text_chars_max: 401 }), 'TEXT_CHARS_MAX_INVALID'], [CT_RAW({ text_chars_max: 110.5 }), 'TEXT_CHARS_MAX_INVALID'],
+      [CT_RAW({ slides: [] }), 'SLIDES_REQUIRED'], [CT_RAW({ slides: 'x' }), 'SLIDES_REQUIRED'],
+      [CT_RAW({ slides: Array.from({ length: 21 }, (_, i) => ({ ...CT_PLAN[0], n: i + 2 })) }), 'SLIDES_REQUIRED'],
+      [s({ n: 1 }), 'SLIDE_MALFORMED'], [s({ n: 2.5 }), 'SLIDE_MALFORMED'], [s({ role: 'cover' }), 'SLIDE_MALFORMED'],
+      [s({ intent: ' ' }), 'SLIDE_MALFORMED'], [s({ intent: 'x'.repeat(61) }), 'SLIDE_MALFORMED'],
+      [s({ brief: '' }), 'SLIDE_MALFORMED'], [s({ brief: 'x'.repeat(601) }), 'SLIDE_MALFORMED'],
+      [CT_RAW({ slides: [CT_PLAN[0], { ...CT_PLAN[1], n: 2 }] }), 'SLIDE_MALFORMED'],
+      [CT_RAW({ avoid_eyebrows: 'O dado' }), 'MALFORMED'],
+    ];
+    for (const [v, code] of casos) {
+      let msg = ''; let st: any = null;
+      try { PURE.normalizeCarouselTextPass(v); } catch (e: any) { msg = e.message; st = e.http_status; }
+      assert(msg.includes(`COPYLAB_CAROUSEL_TEXT_PASS_${code}`), `${JSON.stringify(v).slice(0, 90)} ⇒ ${code} (${msg})`);
+      eq(st, 400, 'error del emisor');
+    }
+  });
+
+  await test('CARRUSEL-TEXTO·pure la instrucción: JSON estricto, techo por lámina, intención en orden, portada, sin CTA, firma ni hashtags', () => {
+    const t = String(PURE.buildCarouselTextPassInstruction(CT_INPUT(), 'português do Brasil', 'Cuidar é rotina.'));
+    assert(t.includes('{"slides":[{"n":N,"headline":"…","subheadline":"…"}]}') && /Responde SOLO con un objeto JSON/.test(t), 'el esquema y sólo JSON');
+    assert(t.includes('suman 110 caracteres o menos') && /Si no caben los dos, deja sólo el titular/.test(t), 'el techo del carril, sumando titular y subtítulo');
+    assertOrdered(t, ['[n=2 · desarrollo · mechanism]', '[n=3 · desarrollo · consequence]', '[n=4 · desarrollo · action]', '[n=5 · cierre · audience] Para quién es']);
+    assert(t.includes('PORTADA (lámina 1, ya escrita):\nTitular: A vacina anual que ninguém lembra\n\n'), 'la portada, sin subtítulo cuando no lo hay');
+    assert(/Ningún titular repite el de la\s+portada ni el de otra lámina/.test(t), 'sin repetir la portada');
+    assert(t.includes('(português do Brasil)'), 'en el idioma de la pieza');
+    assert(/Nunca inventes,\s+redondees ni conviertas una cifra/.test(t), 'cifras sólo del texto');
+    assert(/Sin llamada a la acción y sin lista de pasos/.test(t), 'el CTA y los pasos son del diseño');
+    assert(t.includes('Sin hashtags y sin la firma de la marca («Cuidar é rotina.»)'), 'firma nombrada para no ponerla');
+    assert(t.endsWith(`TEXTO DE LA PIEZA:\n${SP_PIECE}`), 'la pieza íntegra al final');
+    assert(!/carruseles recientes/.test(t), 'sin antetítulos que evitar, sin la regla');
+    const sinFirma = String(PURE.buildCarouselTextPassInstruction(CT_INPUT(), 'L', null));
+    assert(sinFirma.includes('Sin hashtags y sin la firma de la marca: van'), 'sin firma declarada, la regla general');
+    const conEvitar = String(PURE.buildCarouselTextPassInstruction(CT_INPUT({ avoid_eyebrows: ['O dado', 'O método'] }), 'L', null));
+    assert(conEvitar.includes('carruseles recientes. «O dado», «O método».'), 'los antetítulos que la marca ya usó');
+    const conSub = String(PURE.buildCarouselTextPassInstruction(CT_INPUT({ cover: { headline: 'H', subheadline: 'S' } }), 'L', null));
+    assert(conSub.includes('Titular: H\nSubtítulo: S\n\n'), 'portada con subtítulo');
+  });
+
+  await test('CARRUSEL-TEXTO·pure la respuesta válida pasa en el orden pedido, con las tres claves del contrato', () => {
+    const r = ctLeer([CT_OK[3], CT_OK[1], CT_OK[0], CT_OK[2], { n: 9, headline: 'x' }, { n: 2, headline: 'otra' }, 'basura']);
+    eq(r.problems.length, 0, `sin reglas rotas (${JSON.stringify(r.problems)})`);
+    eq(JSON.stringify(r.slides.map((s: any) => s.n)), '[2,3,4,5]', 'en el orden pedido');
+    eq(JSON.stringify(Object.keys(r.slides[0])), '["n","headline","subheadline"]', 'sólo las claves del contrato');
+    eq(r.slides[1].subheadline, null, 'subtítulo null se conserva null');
+    for (const m of ['#4: UNKNOWN_SLIDE', '#5: DUPLICATE_SLIDE', '#6: SHAPE']) assert(r.dropped.includes(m), `${m} (${JSON.stringify(r.dropped)})`);
+    eq(r.reason, null, 'legible');
+  });
+
+  await test('CARRUSEL-TEXTO·pure el techo de caracteres: titular + subtítulo ≤ text_chars_max; el titular solo, ≤ el techo y ≤ 140', () => {
+    const input = CT_INPUT({ text_chars_max: 40, slides: [CT_PLAN[1]] });
+    const exacto = ctLeer([{ n: 3, headline: 'x'.repeat(40) }], input);
+    eq(exacto.problems.length, 0, 'justo en el techo, vale');
+    const largo = ctLeer([{ n: 3, headline: 'x'.repeat(41) }], input);
+    eq(largo.problems[0]?.reason, 'TOO_LONG', 'un carácter más, regla dura');
+    const suma = ctLeer([{ n: 3, headline: 'x'.repeat(30), subheadline: 'y'.repeat(11) }], input);
+    eq(suma.problems.length, 0, 'el titular cabe');
+    eq(suma.slides[0].subheadline, null, 'el subtítulo que no cabe se quita (como hace el carril)');
+    assert(suma.dropped.includes('n3.subheadline: OVER_BUDGET'), 'y se dice');
+    const cabe = ctLeer([{ n: 3, headline: 'x'.repeat(30), subheadline: 'y'.repeat(10) }], input);
+    eq(cabe.slides[0].subheadline, 'y'.repeat(10), 'los dos juntos en el techo, se quedan');
+    const ancho = CT_INPUT({ text_chars_max: 300, slides: [CT_PLAN[1]] });
+    eq(ctLeer([{ n: 3, headline: 'x'.repeat(PURE.CAROUSEL_TEXT_HEADLINE_MAX_CHARS + 1) }], ancho).problems[0]?.reason, 'TOO_LONG', 'el titular nunca pasa el techo de la maqueta');
+    // Todas las láminas válidas cumplen el techo de verdad.
+    for (const s of ctLeer(CT_OK).slides) assert(s.headline.length + (s.subheadline?.length ?? 0) <= 110, `lámina ${s.n} dentro del techo`);
+  });
+
+  await test('CARRUSEL-TEXTO·pure JSON inválido y reglas duras: cada una con su motivo', () => {
+    eq(PURE.readCarouselTextPassResult(null, CT_INPUT(), null).reason, 'UNPARSABLE', 'sin objeto');
+    eq(PURE.readCarouselTextPassResult({ images: [] }, CT_INPUT(), null).problems[0].reason, 'UNPARSABLE', 'sin slides[]');
+    eq(PURE.readCarouselTextPassResult(PURE.extractJsonObject('Aqui estão os títulos: …'), CT_INPUT(), null).reason, 'UNPARSABLE', 'prosa');
+    eq(PURE.readCarouselTextPassResult(PURE.extractJsonObject('```json\n' + JSON.stringify({ slides: CT_OK }) + '\n```'), CT_INPUT(), null).problems.length, 0, 'en bloque de código, legible');
+    const con = (n: number, cambio: any) => CT_OK.map(s => (s.n === n ? { ...s, ...cambio } : s));
+    const casos: Array<[any, string, string | null]> = [
+      [CT_OK.filter(s => s.n !== 4), 'MISSING', null],
+      [con(3, { headline: '   ' }), 'SHAPE', null],
+      [con(3, { headline: 7 }), 'SHAPE', null],
+      [con(3, { subheadline: { x: 1 } }), 'SHAPE', null],
+      [con(3, { headline: 'A VACINA anual que ningúem lembra!' }), 'REPEATED', null],   // la portada, con otras mayúsculas y signos
+      [con(4, { headline: 'O atraso abre espaço para doenças evitáveis' }), 'REPEATED', null],
+      [con(3, { subheadline: 'Cuide hoje #saudepet' }), 'HASHTAG', null],
+      [con(5, { subheadline: 'Cuidar é rotina.' }), 'SIGNATURE', 'Cuidar é rotina.'],
+      [con(2, { headline: '71% dos tutores adiam a vacina' }), 'FIGURE_NOT_IN_TEXT', null],
+      [con(4, { headline: 'Marque a consulta em 3 passos' }), 'FIGURE_NOT_IN_TEXT', null],
+    ];
+    for (const [slides, motivo, firma] of casos) {
+      const r = ctLeer(slides, CT_INPUT(), firma);
+      assert(r.problems.some((p: any) => p.reason === motivo), `⇒ ${motivo} (obtenido ${JSON.stringify(r.problems)})`);
+    }
+    eq(ctLeer(CT_OK, CT_INPUT(), 'Cuidar é rotina.').problems.length, 0, 'la firma declarada no estorba a una respuesta que no la trae');
+    // Una cifra que SÍ está en el texto de la pieza pasa (62 %), aunque la lámina la escriba con otro signo.
+    eq(ctLeer(con(2, { headline: '62 % dos tutores adiam a vacina anual' })).problems.length, 0, 'la cifra de la pieza pasa');
+  });
+
+  await test('CARRUSEL-TEXTO·pure avoid_eyebrows: un titular que abre con un antetítulo ya usado es regla BLANDA', () => {
+    const input = CT_INPUT({ avoid_eyebrows: ['O atraso', 'Para quem'] });
+    const r = ctLeer(CT_OK, input);
+    eq(r.problems.length, 0, 'no tira el carrusel');
+    eq(JSON.stringify(r.soft.map((p: any) => p.n)), '[3,5]', 'pero se marca: «O atraso…» y «Para quem…»');
+    eq(r.slides.length, 4, 'las láminas siguen');
+    eq(ctLeer(CT_OK, CT_INPUT({ avoid_eyebrows: ['O atras'] })).soft.length, 0, 'sólo palabras enteras: «O atras» no es «O atraso»');
+    const nota = String(PURE.buildCarouselTextRetryNote({ problems: [{ n: 2, reason: 'FIGURE_NOT_IN_TEXT', detail: '71' }, { n: 4, reason: 'MISSING' }], soft: r.soft }, input));
+    assert(nota.includes('«71»') && nota.includes('faltó la lámina 4') && nota.includes('abre con un rótulo que la marca ya usó'), `la nota dice cada motivo (${nota})`);
+    assert(/Escribe de nuevo TODAS las láminas/.test(nota) && /Responde SOLO con el objeto JSON/.test(nota), 'y pide todo otra vez, sólo JSON');
+  });
+
+  await test('CARRUSEL-TEXTO·cableado: la clave carousel_text_pass llega a la pasada; 200 con las láminas, el techo y el eco', async () => {
+    const fx = vmFetch({ content: [{ text: JSON.stringify({ slides: CT_OK }) }], usage: { input_tokens: 1500, output_tokens: 180 } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW({ avoid_eyebrows: ['O dado'] }) }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200');
+      eq(r._out._json.status, 'ok', 'status ok');
+      eq(JSON.stringify(r._out._json.slides), JSON.stringify(CT_OK), 'las láminas, tal como el carril las lee');
+      eq(r._out._json.meta.carousel_text_pass, true, 'el eco que el carril exige (meta.carousel_text_pass)');
+      eq(r._out._json.meta.slides_requested, 4, 'cuántas se pidieron');
+      eq(r._out._json.meta.text_chars_max, 110, 'con qué techo');
+      eq(r._out._json.meta.avoid_eyebrows_count, 1, 'cuántos antetítulos se evitaron');
+      eq(r._out._json.meta.carousel_text_retry, undefined, 'sin reintento');
+      eq(r._out._json.usage.output_tokens, 180, 'el consumo');
+      eq(fx.claudeBodies.length, 1, 'una llamada');
+      eq(fx.claudeBodies[0]?.max_tokens, PURE.CAROUSEL_TEXT_PASS_MAX_TOKENS, 'el techo de la pasada');
+      const user = String(fx.claudeBodies[0]?.messages?.[0]?.content ?? '');
+      assert(user.startsWith('TAREA — EL TEXTO DE LAS LÁMINAS DE UN CARRUSEL'), 'la tarea es la de esta pasada');
+      assert(user.includes('[n=2 · desarrollo · mechanism]') && user.includes('«O dado»') && user.includes('(português do Brasil)'), 'el encargo y el idioma de la pieza llegan al user');
+      assert(!user.includes('MATERIA PRIMA'), 'no es una generación');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·cableado: el MISMO system que la generación; sin la clave, nada de esto corre', async () => {
+    const fx = vmFetch();
+    try {
+      const ct = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW() }) }));
+      const gen = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({}) }));
+      eq(ct.system, gen.system, 'mismo system: la voz y las reglas de la marca gobiernan las láminas');
+      eq(gen.carousel_text_pass, null, 'sin la clave, sin encargo');
+      eq(ct.carousel_text_pass?.input.slides.length, 4, 'el encargo leído');
+      eq(ct.user_image_url, null, 'sin imagen');
+      const conFirma = await buildPrompt(reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW(), rules: [{ code: 'SIG', kind: 'signature', statement: 'Cuidar é rotina.' }] }) }));
+      eq(conFirma.carousel_text_pass?.signature_text, 'Cuidar é rotina.', 'la firma de la voz viaja para validarla');
+      assert(conFirma.user.includes('(«Cuidar é rotina.»)'), 'y se nombra en la instrucción');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·cableado: JSON inválido ⇒ un reintento con el motivo; si sigue inválido, 422 con el consumo de las dos', async () => {
+    const malo = { content: [{ text: 'Aqui estão os títulos' }], usage: { input_tokens: 5, output_tokens: 6 } };
+    const bueno = { content: [{ text: JSON.stringify({ slides: CT_OK }) }], usage: { input_tokens: 7, output_tokens: 8 } };
+    let fx = vmFetch([malo, bueno]);
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW() }) }) } as any, r as any);
+      eq(r._out._status, 200, 'el reintento lo arregla');
+      eq(fx.claudeBodies.length, 2, 'dos llamadas');
+      assert(String(fx.claudeBodies[1]?.messages?.[0]?.content).includes('TU RESPUESTA ANTERIOR NO SIRVE: no era un objeto JSON'), 'la segunda lleva el motivo');
+      eq(r._out._json.usage.output_tokens, 14, 'el consumo de las dos');
+      eq(r._out._json.meta.carousel_text_retry.first_problems[0].reason, 'UNPARSABLE', 'y se dice que hubo reintento');
+    } finally { fx.restore(); }
+    fx = vmFetch([malo, malo]);
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW() }) }) } as any, r as any);
+      eq(r._out._status, 422, 'HTTP 422');
+      eq(r._out._json.error, 'COPYLAB_CAROUSEL_TEXT_UNUSABLE', 'nombre propio');
+      eq(r._out._json.reason, 'UNPARSABLE', 'con su motivo');
+      eq(r._out._json.usage.output_tokens, 12, 'y el consumo de las dos');
+      eq(r._out._json.meta.carousel_text_pass, true, 'el eco también en el fallo');
+      eq(fx.claudeBodies.length, 2, 'nunca una tercera');
+    } finally { fx.restore(); }
+    // Regla dura en las dos: la cifra inventada no se publica.
+    const inventa = { content: [{ text: JSON.stringify({ slides: CT_OK.map(s => (s.n === 2 ? { ...s, headline: '71% dos tutores adiam a vacina' } : s)) }) }], usage: { input_tokens: 1, output_tokens: 1 } };
+    fx = vmFetch([inventa, inventa]);
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW() }) }) } as any, r as any);
+      eq(r._out._status, 422, 'cifra fuera del texto ⇒ 422');
+      eq(r._out._json.problems[0].reason, 'FIGURE_NOT_IN_TEXT', 'con su motivo');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·cableado: nunca peor — una primera sólo con regla blanda vale más que una segunda con reglas duras', async () => {
+    const blanda = { content: [{ text: JSON.stringify({ slides: CT_OK }) }], usage: { input_tokens: 1, output_tokens: 1 } };
+    const dura = { content: [{ text: JSON.stringify({ slides: CT_OK.slice(0, 2) }) }], usage: { input_tokens: 1, output_tokens: 1 } };
+    const fx = vmFetch([blanda, dura]);
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI({ carousel_text_pass: CT_RAW({ avoid_eyebrows: ['O atraso'] }) }) }) } as any, r as any);
+      eq(fx.claudeBodies.length, 2, 'la regla blanda pidió el reintento');
+      eq(r._out._status, 200, 'y la primera se queda');
+      eq(r._out._json.slides.length, 4, 'con sus cuatro láminas');
+      eq(r._out._json.meta.soft_kept[0].reason, 'AVOIDED_EYEBROW', 'lo blando que quedó, dicho');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·cableado: encargo mal formado o con otra pasada ⇒ 400 sin llamada', async () => {
+    const fx = vmFetch();
+    try {
+      const casos: Array<[any, string]> = [
+        [{ carousel_text_pass: CT_RAW({ text_chars_max: 5 }) }, 'COPYLAB_CAROUSEL_TEXT_PASS_TEXT_CHARS_MAX_INVALID'],
+        [{ carousel_text_pass: CT_RAW({ cover: {} }) }, 'COPYLAB_CAROUSEL_TEXT_PASS_COVER_REQUIRED'],
+        [{ carousel_text_pass: CT_RAW(), slide_pass: { piece_text: SP_PIECE, slides: SP_SLIDES } }, 'COPYLAB_CAROUSEL_TEXT_PASS_WITH_SLIDE_PASS'],
+        [{ carousel_text_pass: CT_RAW(), repair: { piece_text: 'x', violations: [{ code: 'A', instruction: 'b' }] } }, 'COPYLAB_CAROUSEL_TEXT_PASS_WITH_REPAIR'],
+        [{ carousel_text_pass: CT_RAW(), emphasis_pass: { image_text: 'texto' } }, 'COPYLAB_CAROUSEL_TEXT_PASS_WITH_EMPHASIS_PASS'],
+      ];
+      for (const [extra, code] of casos) {
+        const r = makeRes();
+        await handler({ method: 'POST', body: reqWith(VM_BCTX, { brandId: 'VetMar', builder_input: vmBI(extra) }) } as any, r as any);
+        eq(r._out._status, 400, `${code} ⇒ HTTP 400`);
+        assert(String(r._out._json.error).includes(code), r._out._json.error);
+      }
+      eq(fx.claudeBodies.length, 0, 'sin llamada a Claude');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·marca N+1: otra marca, otro rubro y otro idioma pasan por el MISMO código, sin nombrar ninguna marca', async () => {
+    // La instrucción, con y sin listas, no nombra marcas ni usa voseo.
+    const textos = [
+      String(PURE.buildCarouselTextPassInstruction(CT_INPUT(), 'L', null)),
+      String(PURE.buildCarouselTextPassInstruction(CT_INPUT({ avoid_eyebrows: ['R'] }), 'L', 'F')),
+      String(PURE.buildCarouselTextRetryNote({ problems: ['UNPARSABLE', 'MISSING', 'SHAPE', 'TOO_LONG', 'REPEATED', 'HASHTAG', 'SIGNATURE', 'FIGURE_NOT_IN_TEXT'].map(reason => ({ n: 2, reason, detail: '1' })), soft: [{ n: 3, reason: 'AVOIDED_EYEBROW' }] }, CT_INPUT())),
+    ];
+    for (const t of textos) {
+      const m = VOSEO.exec(t);
+      assert(!m, `voseo en la instrucción: «${m?.[0]}»`);
+      for (const marca of MARCAS) assert(!t.toLowerCase().includes(marca.toLowerCase()), `la instrucción nombra ${marca}`);
+    }
+    // Una ferretería inventada, en inglés (la marca 'B' de los tests de presupuesto): mismo camino.
+    const piece = 'According to the Hardware Safety Board, 40% of ladder falls start with a worn foot. Replace the feet every year.';
+    const enSlides = [
+      { n: 2, headline: '40% of ladder falls start at the feet', subheadline: 'Hardware Safety Board' },
+      { n: 3, headline: 'Replace the feet every year', subheadline: null },
+    ];
+    const fx = installFetch({ claude: { content: [{ text: JSON.stringify({ slides: enSlides }) }], usage: { input_tokens: 1, output_tokens: 2 } } });
+    try {
+      const r = makeRes();
+      await handler({ method: 'POST', body: reqWith(LB_BCTX, { builder_input: lbBI({ carousel_text_pass: {
+        piece_text: piece, cover: { headline: 'Your ladder is older than you think' }, text_chars_max: 90,
+        slides: [{ n: 2, role: 'body', intent: 'mechanism', brief: 'b' }, { n: 3, role: 'closing', intent: 'audience', brief: 'b' }],
+      } }) }) } as any, r as any);
+      eq(r._out._status, 200, 'HTTP 200 sin tocar código');
+      eq(JSON.stringify(r._out._json.slides), JSON.stringify(enSlides), 'sus láminas');
+      eq(r._out._json.meta.carousel_text_pass, true, 'el mismo contrato');
+    } finally { fx.restore(); }
+  });
+
+  await test('CARRUSEL-TEXTO·slide_pass también lee avoid_eyebrows: no repite antetítulos recientes; sin la lista, byte a byte como antes', () => {
+    const con = PURE.normalizeSlidePass({ piece_text: SP_PIECE, slides: SP_SLIDES, avoid_eyebrows: ['O método', 'o MÉTODO'] });
+    eq(JSON.stringify(con.avoid_eyebrows), '["O método"]', 'leída con el mismo lector');
+    eq(JSON.stringify(SP_INPUT().avoid_eyebrows), '[]', 'sin la clave, lista vacía');
+    const tCon = String(PURE.buildSlidePassInstruction(con, SP_OPCIONES, 'português do Brasil'));
+    const tSin = String(PURE.buildSlidePassInstruction(SP_INPUT(), SP_OPCIONES, 'português do Brasil'));
+    assert(tCon.includes('ya usó en sus carruseles recientes') && tCon.includes('«O método»'), 'la lista llega a la instrucción');
+    eq(tCon.replace(/- eyebrow: nunca uno de estos rótulos[^\n]*\n/, ''), tSin, 'la única diferencia es esa línea');
+    const plan = PURE.normalizeSlidePlan({ slides: [{ n: 3, eyebrow: 'O METODO' }, { n: 2, eyebrow: 'O dado' }] }, con, SP_OPCIONES);
+    eq(plan.slides[2].eyebrow, null, 'un antetítulo reciente (con otras mayúsculas y sin tilde) se poda');
+    assert(plan.dropped.includes('n3.eyebrow: RECENT'), 'con su motivo');
+    eq(plan.slides[1].eyebrow, 'O dado', 'el que no se usó, queda');
+    let msg = ''; let st: any = null;
+    try { PURE.normalizeSlidePass({ piece_text: 'p', slides: SP_SLIDES, avoid_eyebrows: 'O método' }); } catch (e: any) { msg = e.message; st = e.http_status; }
+    assert(msg.includes('COPYLAB_SLIDE_PASS_MALFORMED') && st === 400, `lista con otra forma ⇒ 400 (${msg})`);
   });
 
   await test('G1-D·cableado: max_tokens de la API y length_budget_chars viajan en el meta del carril', async () => {
