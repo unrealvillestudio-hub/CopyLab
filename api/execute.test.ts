@@ -1262,6 +1262,26 @@ async function run() {
     }
   });
 
+  await test('TECHO-CUMPLE·pure el techo en caracteres de la marca manda sobre el de tokens; sin él, el número de antes', () => {
+    eq(PURE.lengthBudgetCharsFor(1200, 900), 900, 'lo medido el 2026-10-22: 1.200 tokens daban 3.600; con max_chars 900, 900');
+    eq(PURE.lengthBudgetCharsFor(1200, 850), 800, 'hacia abajo a la centena: nunca por encima del techo');
+    eq(PURE.lengthBudgetCharsFor(200, 900), 600, 'si los tokens son más estrictos, mandan los tokens');
+    eq(PURE.lengthBudgetCharsFor(null, 700), 700, 'sólo max_chars declarado: hay presupuesto');
+    eq(PURE.lengthBudgetCharsFor(1200, null), 3600, 'sin max_chars: idéntico a G1-D');
+    eq(PURE.lengthBudgetCharsFor(1200), 3600, 'sin segundo argumento: idéntico a G1-D');
+    eq(PURE.lengthBudgetCharsFor(null, null), null, 'nada declarado: sin presupuesto');
+    eq(PURE.lengthBudgetCharsFor(null, 40), 100, 'piso de 100 también con caracteres');
+    eq(PURE.buildLengthBudgetBlock(1200), PURE.buildLengthBudgetBlock(1200, null), 'sin max_chars, el bloque es byte-idéntico');
+    assert(String(PURE.buildLengthBudgetBlock(1200, 900)).includes('unos 900 caracteres'), 'el bloque dice el techo de la marca');
+  });
+
+  await test('TECHO-CUMPLE·cableado el prompt lee builder_input.max_chars y lo pasa al presupuesto', () => {
+    const SRC = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    assert(/const declaredMaxChars = readDeclaredMaxTokens\(\(bi as \{ max_chars\?: unknown \} \| null \| undefined\)\?\.max_chars\);/.test(SRC), 'lee max_chars con el lector estricto');
+    assert(SRC.includes('lengthBudgetCharsFor(declaredCeiling, declaredMaxChars)'), 'el número que viaja a la reparación usa los dos techos');
+    assert(SRC.includes('buildLengthBudgetBlock(declaredCeiling, declaredMaxChars)'), 'el bloque usa los dos techos');
+  });
+
   await test('G1-D·pure apiMaxTokensFor: con techo declarado, margen; sin techo, el default exacto', () => {
     eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 320 }), 384, 'ceil(320 × 1,2)');
     eq(PURE.apiMaxTokensFor({ destination: 'social', max_tokens: 500 }), 600, 'ceil(500 × 1,2)');

@@ -684,17 +684,36 @@ const LENGTH_BUDGET_API_MARGIN = 1.2;
 
 // El presupuesto en caracteres que se le DICE al escritor. `null` (nadie declaró techo) → null:
 // sin número no hay presupuesto que comunicar, y el prompt queda byte-idéntico al de hoy.
-function lengthBudgetCharsFor(declaredMaxTokens: number | null | undefined): number | null {
-  if (declaredMaxTokens === null || declaredMaxTokens === undefined) return null;
-  const raw = declaredMaxTokens * LENGTH_BUDGET_CHARS_PER_TOKEN;
-  return Math.max(LENGTH_BUDGET_MIN_CHARS, Math.round(raw / LENGTH_BUDGET_ROUND_TO) * LENGTH_BUDGET_ROUND_TO);
+//
+// TECHO-CUMPLE (2026-10-22) — el techo en CARACTERES de la marca manda sobre el de tokens. Medido ese
+// día: `content_type_registry.max_chars` declaraba 900 para el Instagram de una marca, el carril se lo
+// pasaba al escritor como regla (`HR-GEN-14`), y este bloque, que va después y tiene la última palabra,
+// le decía «unos 3.600 caracteres» (`max_tokens` 1.200 × 3). El texto maestro salía de 1.500 a 3.300 y
+// el carril tenía que recortarlo. Ahora, si `builder_input.max_chars` viene declarado, el presupuesto
+// es el MENOR de los dos, redondeado hacia abajo a la centena para no pasarse del techo. Sin
+// `max_chars`, el número es exactamente el de antes.
+function lengthBudgetCharsFor(
+  declaredMaxTokens: number | null | undefined,
+  declaredMaxChars: number | null | undefined = null,
+): number | null {
+  const fromTokens = declaredMaxTokens === null || declaredMaxTokens === undefined
+    ? null
+    : Math.max(LENGTH_BUDGET_MIN_CHARS,
+        Math.round(declaredMaxTokens * LENGTH_BUDGET_CHARS_PER_TOKEN / LENGTH_BUDGET_ROUND_TO) * LENGTH_BUDGET_ROUND_TO);
+  if (declaredMaxChars === null || declaredMaxChars === undefined) return fromTokens;
+  const fromChars = Math.max(LENGTH_BUDGET_MIN_CHARS,
+    Math.floor(declaredMaxChars / LENGTH_BUDGET_ROUND_TO) * LENGTH_BUDGET_ROUND_TO);
+  return fromTokens === null ? fromChars : Math.min(fromTokens, fromChars);
 }
 
 // El bloque para el prompt. Instrucción CONSTRUCTIVA, no una prohibición más: dice cuánto espacio
 // hay y qué sacrificar cuando no alcanza (el ALCANCE, nunca el cierre). Sin nombrar plataformas ni
 // marcas — el número llega como dato, el bloque es motor.
-function buildLengthBudgetBlock(declaredMaxTokens: number | null | undefined): string | null {
-  const chars = lengthBudgetCharsFor(declaredMaxTokens);
+function buildLengthBudgetBlock(
+  declaredMaxTokens: number | null | undefined,
+  declaredMaxChars: number | null | undefined = null,
+): string | null {
+  const chars = lengthBudgetCharsFor(declaredMaxTokens, declaredMaxChars);
   if (chars === null) return null;
   return `## PRESUPUESTO DE LONGITUD\n`
     + `Escribe la pieza COMPLETA en unos ${chars} caracteres. No es un objetivo que haya que`
@@ -3890,8 +3909,10 @@ export async function buildPrompt(req: ExecuteRequest): Promise<{
   if (formatInstructionBlock) capaDeContenido(formatInstructionBlock);    // ## FORMATO DECLARADO
 
   const declaredCeiling = readDeclaredMaxTokens(bi?.max_tokens);
-  const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling);
-  const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling);
+  // El mismo lector vale para caracteres: sólo un entero positivo cuenta como declaración.
+  const declaredMaxChars = readDeclaredMaxTokens((bi as { max_chars?: unknown } | null | undefined)?.max_chars);
+  const lengthBudgetChars = lengthBudgetCharsFor(declaredCeiling, declaredMaxChars);
+  const lengthBudgetBlock = buildLengthBudgetBlock(declaredCeiling, declaredMaxChars);
   if (lengthBudgetBlock) capaDeContenido(lengthBudgetBlock);              // ## PRESUPUESTO DE LONGITUD
 
   // BRIEF 8 · A — la sección ## TÍTULO va en la misma banda de FORMA DE SALIDA y DESPUÉS del
