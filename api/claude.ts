@@ -23,6 +23,34 @@ const ANTHROPIC_VERSION = '2023-06-01'
 const MAX_RETRIES = 3
 const BASE_DELAY_MS = 1500
 
+// ── Guard de costo (2026-11-04) ─────────────────────────────────────────────
+// RAÍZ: este proxy reenviaba el cuerpo del cliente TAL CUAL a Anthropic — incluido el
+// `model` y `max_tokens` elegidos por quien llama (aceptaba claude-opus-5-5), sin auth,
+// con la key ANTHROPIC_API_KEY. Un proxy LLM público con passthrough total es una puerta
+// abierta de gasto (pico de ~$29/día en Opus 5.5 el 2026-11-04 en esta key).
+// BARRERA (permanente, en el server): se sanea el cuerpo antes de reenviarlo —
+//   1. model: allowlist de TOPE DE SEGURIDAD (nunca Opus); fuera del allowlist → degrada al
+//      más barato. No es la decisión de modelo de negocio (esa vive en ops_lab_models): es techo.
+//   2. max_tokens: tope duro.
+//   3. Secreto opcional: si PROXY_SHARED_SECRET está definido, se exige en el header.
+// El cliente legítimo (copyEngine) manda claude-sonnet-5: no se rompe.
+const MODELOS_PERMITIDOS = new Set([
+  'claude-sonnet-4-20250514',
+  'claude-sonnet-4-6',
+  'claude-sonnet-5',
+  'claude-haiku-4-5',
+])
+const MODELO_POR_DEFECTO = 'claude-sonnet-5'
+const TOPE_MAX_TOKENS = 4096
+
+function modeloSeguro(m: unknown): string {
+  return typeof m === 'string' && MODELOS_PERMITIDOS.has(m) ? m : MODELO_POR_DEFECTO
+}
+function topeTokens(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? Math.floor(n) : TOPE_MAX_TOKENS
+  return Math.max(1, Math.min(v, TOPE_MAX_TOKENS))
+}
+
 async function callAnthropic(apiKey: string, body: unknown, attempt = 0): Promise<Response> {
   const res = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
@@ -50,6 +78,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
+  // Secreto opcional: si está definido, se exige. No rompe despliegues que aún no lo tienen.
+  const secreto = process.env.PROXY_SHARED_SECRET
+  if (secreto && req.headers['x-proxy-secret'] !== secreto) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     console.error('[api/claude] ANTHROPIC_API_KEY no definida')
@@ -57,7 +91,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const upstream = await callAnthropic(apiKey, req.body)
+    // Saneo del cuerpo: el modelo y max_tokens los decide el server, no quien llama.
+    const body = { ...((req.body ?? {}) as Record<string, unknown>) }
+    const modeloPedido = body.model
+    body.model = modeloSeguro(modeloPedido)
+    if (modeloPedido && body.model !== modeloPedido) {
+      console.warn(`[api/claude] modelo no permitido "${String(modeloPedido)}" → ${body.model}`)
+    }
+    body.max_tokens = topeTokens(body.max_tokens)
+
+    const upstream = await callAnthropic(apiKey, body)
     const data = await upstream.json()
 
     if (!upstream.ok) {
