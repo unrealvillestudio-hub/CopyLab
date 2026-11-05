@@ -29,22 +29,42 @@ const BASE_DELAY_MS = 1500
 // con la key ANTHROPIC_API_KEY. Un proxy LLM público con passthrough total es una puerta
 // abierta de gasto (pico de ~$29/día en Opus 5.5 el 2026-11-04 en esta key).
 // BARRERA (permanente, en el server): se sanea el cuerpo antes de reenviarlo —
-//   1. model: allowlist de TOPE DE SEGURIDAD (nunca Opus); fuera del allowlist → degrada al
-//      más barato. No es la decisión de modelo de negocio (esa vive en ops_lab_models): es techo.
+//   1. model: allowlist como DATO — los `model_id` ACTIVOS de ops_lab_models, vía la EF
+//      pública `modelos-permitidos` (cacheada 5 min). Modelo nuevo = UPDATE en la DB, sin
+//      deploy; lo que no está activo no pasa (Opus por ausencia). Si la EF no se lee → PISO
+//      seguro (fail-closed), nunca "cualquiera".
 //   2. max_tokens: tope duro.
 //   3. Secreto opcional: si PROXY_SHARED_SECRET está definido, se exige en el header.
 // El cliente legítimo (copyEngine) manda claude-sonnet-5: no se rompe.
-const MODELOS_PERMITIDOS = new Set([
-  'claude-sonnet-4-20250514',
-  'claude-sonnet-4-6',
-  'claude-sonnet-5',
-  'claude-haiku-4-5',
-])
-const MODELO_POR_DEFECTO = 'claude-sonnet-5'
+const ALLOWED_MODELS_URL =
+  process.env.ALLOWED_MODELS_URL ||
+  'https://amlvyycfepwhiindxgzw.supabase.co/functions/v1/modelos-permitidos'
+// Piso seguro: un modelo activo y barato. Único literal de modelo que queda (fail-closed).
+const MODELO_PISO = 'claude-sonnet-5'
 const TOPE_MAX_TOKENS = 4096
 
-function modeloSeguro(m: unknown): string {
-  return typeof m === 'string' && MODELOS_PERMITIDOS.has(m) ? m : MODELO_POR_DEFECTO
+let _cacheModelos: { set: Set<string> | null; exp: number } = { set: null, exp: 0 }
+
+async function modelosPermitidos(): Promise<Set<string>> {
+  const now = Date.now()
+  if (_cacheModelos.set && now < _cacheModelos.exp) return _cacheModelos.set
+  try {
+    const r = await fetch(ALLOWED_MODELS_URL, { signal: AbortSignal.timeout(2500) })
+    const d = await r.json()
+    const lista: string[] = Array.isArray(d?.anthropic) ? d.anthropic : []
+    if (lista.length) {
+      _cacheModelos = { set: new Set(lista), exp: now + 5 * 60 * 1000 }
+      return _cacheModelos.set
+    }
+  } catch {
+    // fail-closed abajo
+  }
+  return _cacheModelos.set ?? new Set([MODELO_PISO])
+}
+
+async function modeloSeguro(m: unknown): Promise<string> {
+  const permitidos = await modelosPermitidos()
+  return typeof m === 'string' && permitidos.has(m) ? m : MODELO_PISO
 }
 function topeTokens(n: unknown): number {
   const v = typeof n === 'number' && Number.isFinite(n) ? Math.floor(n) : TOPE_MAX_TOKENS
@@ -94,7 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Saneo del cuerpo: el modelo y max_tokens los decide el server, no quien llama.
     const body = { ...((req.body ?? {}) as Record<string, unknown>) }
     const modeloPedido = body.model
-    body.model = modeloSeguro(modeloPedido)
+    body.model = await modeloSeguro(modeloPedido)
     if (modeloPedido && body.model !== modeloPedido) {
       console.warn(`[api/claude] modelo no permitido "${String(modeloPedido)}" → ${body.model}`)
     }
