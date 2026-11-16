@@ -4436,6 +4436,24 @@ async function run() {
     eq(r.output.script.beats.length, 5, 'guion');
   });
 
+  await test('SVT·pure readShortVideoTextResult: un candidato malo se descarta y no tumba la respuesta (medido en producción 2026-11-16)', () => {
+    const o = JSON.parse(JSON.stringify(SVT_GOOD));
+    const largo = { text: 'palabra palabra palabra palabra palabra palabra palabra palabra palabra palabra palabra palabra palabra', pattern_key: 'hook_a', why: 'largo' };
+    const extra = { text: 'Un gancho más que sí cumple', pattern_key: 'hook_b', why: 'cumple' };
+    o.hooks = [largo, ...o.hooks, extra];
+    const r = PURE.readShortVideoTextResult(o, svtInput(), svtCtx);
+    eq(r.problems.length, 0, `sin problemas: ${JSON.stringify(r.problems)}`);
+    eq(r.output.hooks.length, 5, 'se quedan los 5 primeros válidos');
+    assert(!r.output.hooks.some((h: any) => h.text === largo.text), 'el largo no entra');
+    const pocos = JSON.parse(JSON.stringify(SVT_GOOD)); pocos.hooks = [largo, ...pocos.hooks.slice(0, 4)];
+    const r2 = PURE.readShortVideoTextResult(pocos, svtInput(), svtCtx).problems.map((p: any) => p.label);
+    assert(r2.includes('COPYLAB_SVT_HOOK_COUNT') && r2.includes('COPYLAB_SVT_HOOK_TOO_LONG'), 'si no alcanzan, el problema y su causa salen');
+    const sinClave = JSON.parse(JSON.stringify(SVT_GOOD)); sinClave.share_ctas = sinClave.share_ctas.map((c: any) => ({ text: c.text }));
+    const r3 = PURE.readShortVideoTextResult(sinClave, svtInput(), svtCtx);
+    eq(r3.problems.length, 0, 'con un solo patrón de reenvío, la clave no depende del modelo');
+    eq(r3.output.share_ctas.every((c: any) => c.pattern_key === 'share_a'), true, 'toma el único patrón');
+  });
+
   await test('SVT·pure readShortVideoTextResult: cada regla dura rota sale con su etiqueta', () => {
     const roto = (mut: (o: any) => void) => { const o = JSON.parse(JSON.stringify(SVT_GOOD)); mut(o); return PURE.readShortVideoTextResult(o, svtInput(), svtCtx).problems.map((p: any) => p.label); };
     assert(roto(o => { o.hooks[0].text = 'El 73 % revisa plazos'; }).includes('COPYLAB_FIGURE_NOT_IN_SOURCES'), 'cifra en dígitos ajena');
