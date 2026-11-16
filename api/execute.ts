@@ -2289,10 +2289,15 @@ const SVT_GOALS = ['share', 'comment', 'follow', 'save'] as const;
 const SVT_SPEAKER_ROLES = ['host', 'guest', 'vo'] as const;
 const SVT_BEATS = ['hook', 'setup', 'payoff', 'rehook', 'closing'] as const;
 const SVT_HOOKS_COUNT = 5;
+// Se piden más candidatos de los que se entregan: cada uno se valida por separado y se quedan los primeros que
+// cumplen. Medido en producción el 2026-11-16: con «exactamente 5», un solo gancho de 13 palabras tumbaba la
+// respuesta entera (422 tras dos intentos).
+const SVT_HOOKS_ASK = 8;
 const SVT_HOOK_MAX_WORDS = 12;
 const SVT_KEY_PHRASES_MIN = 2;
 const SVT_KEY_PHRASES_MAX = 4;
 const SVT_SHARE_CTAS_COUNT = 3;
+const SVT_SHARE_CTAS_ASK = 5;
 const SVT_MAX_TOKENS = 2400;
 // Defensa del presupuesto del prompt, no criterio editorial.
 const SVT_SOURCE_MAX_CHARS = 8000;
@@ -2568,9 +2573,11 @@ function readShortVideoTextResult(
 
   // ── ganchos ──
   const hooksRaw = (raw as any).hooks as unknown[];
-  if (hooksRaw.length !== SVT_HOOKS_COUNT) problems.push({ label: 'COPYLAB_SVT_HOOK_COUNT', detail: `llegaron ${hooksRaw.length} ganchos y se piden exactamente ${SVT_HOOKS_COUNT}` });
   const vistos = new Set<string>(input.current_hook ? [carouselTextKey(input.current_hook)] : []);
+  const descartes: SvtProblem[] = [];
   hooksRaw.forEach((h: any, i) => {
+    if (output.hooks.length >= SVT_HOOKS_COUNT) return;
+    const antes = problems.length;
     const donde = `el gancho ${i + 1}`;
     const text = svtText(h?.text);
     const pattern_key = svtText(h?.pattern_key);
@@ -2584,8 +2591,14 @@ function readShortVideoTextResult(
     if (SVT_EMPTY_FORMULA.test(text)) problems.push({ label: 'COPYLAB_SVT_EMPTY_FORMULA', detail: `${donde} abre con la fórmula «¿sabías que…?»` });
     if (!ctx.hookKeys.includes(pattern_key)) problems.push({ label: 'COPYLAB_SVT_PATTERN_UNKNOWN', detail: `${donde} usa la clave «${pattern_key}», que no es un patrón de gancho disponible` });
     hashtag(donde, text); firma(donde, text); cifra(donde, text);
+    // Un candidato con problemas se descarta sin tumbar la respuesta; sólo cuenta si faltan ganchos válidos.
+    if (problems.length > antes) { descartes.push(...problems.splice(antes)); return; }
     output.hooks.push({ text, pattern_key, why });
   });
+  if (output.hooks.length < SVT_HOOKS_COUNT) {
+    problems.push(...descartes);
+    problems.push({ label: 'COPYLAB_SVT_HOOK_COUNT', detail: `sólo ${output.hooks.length} de ${hooksRaw.length} ganchos candidatos cumplen las reglas; se necesitan ${SVT_HOOKS_COUNT}` });
+  }
 
   // ── frases clave ──
   if (input.wants.key_phrases) {
@@ -2609,20 +2622,28 @@ function readShortVideoTextResult(
   // ── CTA de reenvío ──
   if (input.wants.share_ctas) {
     const sc = (raw as any).share_ctas;
-    if (!Array.isArray(sc) || sc.length !== SVT_SHARE_CTAS_COUNT) problems.push({ label: 'COPYLAB_SVT_SHARE_CTA_COUNT', detail: `se piden exactamente ${SVT_SHARE_CTAS_COUNT} CTA de reenvío` });
     const vistosCta = new Set<string>();
+    const descartesCta: SvtProblem[] = [];
     (Array.isArray(sc) ? sc : []).forEach((c: any, i: number) => {
+      if (output.share_ctas.length >= SVT_SHARE_CTAS_COUNT) return;
+      const antes = problems.length;
       const donde = `el CTA ${i + 1}`;
       const text = svtText(c?.text);
-      const pattern_key = svtText(c?.pattern_key);
+      // Con un solo patrón de reenvío en el catálogo, la clave no depende de que el modelo la escriba.
+      const pattern_key = svtText(c?.pattern_key) || (ctx.shareKeys.length === 1 ? ctx.shareKeys[0] : '');
       if (!text) { problems.push({ label: 'COPYLAB_SVT_SHAPE', detail: `${donde} no trae text` }); return; }
       if (!ctx.shareKeys.includes(pattern_key)) problems.push({ label: 'COPYLAB_SVT_PATTERN_UNKNOWN', detail: `${donde} usa la clave «${pattern_key}», que no es un patrón de reenvío disponible` });
       const k = carouselTextKey(text);
       if (vistosCta.has(k)) problems.push({ label: 'COPYLAB_SVT_SHARE_CTA_DUPLICATE', detail: `${donde} repite otro CTA` });
       vistosCta.add(k);
       hashtag(donde, text); firma(donde, text); cifra(donde, text);
+      if (problems.length > antes) { descartesCta.push(...problems.splice(antes)); return; }
       output.share_ctas.push({ text, pattern_key });
     });
+    if (output.share_ctas.length < SVT_SHARE_CTAS_COUNT) {
+      problems.push(...descartesCta);
+      problems.push({ label: 'COPYLAB_SVT_SHARE_CTA_COUNT', detail: `sólo ${output.share_ctas.length} CTA de reenvío cumplen las reglas; se necesitan ${SVT_SHARE_CTAS_COUNT}` });
+    }
   }
 
   // ── guion condensado ──
@@ -2691,7 +2712,7 @@ function buildShortVideoTextPrompt(
   const medio = input.medium === 'video' ? 'un video corto' : 'una imagen fija';
   const reglas: string[] = [
     'Toda cifra (dígitos, porcentajes o números escritos con letras) tiene que estar en las AFIRMACIONES o en el COPY de la pieza. No inventes, no redondees, no conviertas ni combines cifras. Si una cifra no está, no la uses.',
-    `hooks: exactamente ${SVT_HOOKS_COUNT} ganchos, distintos entre sí${input.current_hook ? ' y distintos del GANCHO ACTUAL' : ''}. Cada uno con ${SVT_HOOK_MAX_WORDS} palabras como máximo, sin hashtags, sin el nombre ni la firma de la marca y sin la fórmula vacía «¿Sabías que…?». Cada gancho lleva en pattern_key la clave de un PATRÓN DE GANCHO del catálogo (puedes repetir clave si hay menos patrones que ganchos) y en why una sola línea que explica por qué retiene. Los ganchos empujan hacia el objetivo de la pieza.`,
+    `hooks: ${SVT_HOOKS_ASK} ganchos candidatos (se usarán los ${SVT_HOOKS_COUNT} primeros que cumplan las reglas), distintos entre sí${input.current_hook ? ' y distintos del GANCHO ACTUAL' : ''}. Cada uno con ${SVT_HOOK_MAX_WORDS} palabras como máximo —cuéntalas: un gancho de ${SVT_HOOK_MAX_WORDS + 1} palabras se descarta—, sin hashtags, sin el nombre ni la firma de la marca y sin la fórmula vacía «¿Sabías que…?». Cada gancho lleva en pattern_key la clave de un PATRÓN DE GANCHO del catálogo (puedes repetir clave si hay menos patrones que ganchos) y en why una sola línea que explica por qué retiene. Los ganchos empujan hacia el objetivo de la pieza.`,
   ];
   if (input.wants.key_phrases) {
     reglas.push(`key_phrases: entre ${SVT_KEY_PHRASES_MIN} y ${SVT_KEY_PHRASES_MAX} frases copiadas LETRA POR LETRA de una sola línea de ${input.script_lines ? 'LÍNEAS DEL GUION' : 'LÍNEAS DEL COPY'}, con el índice de esa línea en line_index. Elige las de más impacto: son las que se titulan en pantalla.`);
@@ -2699,7 +2720,7 @@ function buildShortVideoTextPrompt(
     reglas.push('key_phrases: devuelve [].');
   }
   if (input.wants.share_ctas) {
-    reglas.push(`share_ctas: exactamente ${SVT_SHARE_CTAS_COUNT} llamadas al reenvío, distintas entre sí, cada una con la clave de un PATRÓN DE REENVÍO en pattern_key. Cada una anticipa lo que el espectador está pensando, le da permiso, nombra a QUIÉN reenviarla —un rol concreto de la audiencia de esta marca, tomado de los SEGMENTOS OBJETIVO o del contenido de la pieza— y cierra con un imperativo directo. Nunca una frase fija ni una plantilla: cada una nace de esta pieza. Sin hashtags ni firma de la marca.`);
+    reglas.push(`share_ctas: ${SVT_SHARE_CTAS_ASK} llamadas al reenvío candidatas (se usarán las ${SVT_SHARE_CTAS_COUNT} primeras que cumplan), distintas entre sí, cada una con la clave de un PATRÓN DE REENVÍO en pattern_key. Cada una anticipa lo que el espectador está pensando, le da permiso, nombra a QUIÉN reenviarla —un rol concreto de la audiencia de esta marca, tomado de los SEGMENTOS OBJETIVO o del contenido de la pieza— y cierra con un imperativo directo. Nunca una frase fija ni una plantilla: cada una nace de esta pieza. Sin hashtags ni firma de la marca.`);
   } else {
     reglas.push('share_ctas: devuelve [].');
   }
