@@ -2294,6 +2294,9 @@ const SVT_HOOKS_COUNT = 5;
 // respuesta entera (422 tras dos intentos).
 const SVT_HOOKS_ASK = 8;
 const SVT_HOOK_MAX_WORDS = 12;
+// Se pide con margen bajo el tope que se valida: pedido justo en el tope, el modelo se pasa por una palabra
+// (2026-11-16: 7 de 8 candidatos con 13 palabras). El tope de validación no cambia.
+const SVT_HOOK_ASK_WORDS = 10;
 const SVT_KEY_PHRASES_MIN = 2;
 const SVT_KEY_PHRASES_MAX = 4;
 const SVT_SHARE_CTAS_COUNT = 3;
@@ -2480,8 +2483,11 @@ function numberValuesOf(text: string, langs: ReadonlyArray<'es' | 'en'>): string
   const words: Record<string, number> = {};
   const scales: Record<string, number> = {};
   for (const l of langs) { Object.assign(words, SVT_NUM_WORDS[l]); Object.assign(scales, SVT_NUM_SCALES[l]); }
+  // La puntuación de frase o de inciso corta el número: «paga cien. Una vez…» no es 101 ni «doscientos, uno…» es 201
+  // (2026-11-16: dos ganchos válidos de una marca se descartaron por esas cifras fantasma). `|` es la marca de corte.
   const toks = String(text ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-    .split(/[^a-z0-9%]+/).filter(Boolean);
+    .replace(/[.,;:!?¡¿…()«»"“”—–]+/g, ' | ')
+    .split(/[^a-z0-9%|]+/).filter(Boolean);
   const esNumero = (t: string | undefined) => t !== undefined && (t in words || t in scales);
   const esPorcentaje = (i: number) =>
     toks[i] === '%' || toks[i] === 'percent' || toks[i] === 'porciento' ||
@@ -2504,6 +2510,8 @@ function numberValuesOf(text: string, langs: ReadonlyArray<'es' | 'en'>): string
         else if (s === 1000) { total += (current || 1) * 1000; current = 0; }
         else { total = (total + current || 1) * s; current = 0; }
       } else {
+        // «cien» es la forma apocopada: nunca suma unidades detrás (101 es «ciento uno»). Ahí termina el número.
+        if (solo[solo.length - 1] === 'cien' && words[w] < 100) break;
         current += words[w];
       }
       solo.push(w); n++; i++;
@@ -2712,7 +2720,7 @@ function buildShortVideoTextPrompt(
   const medio = input.medium === 'video' ? 'un video corto' : 'una imagen fija';
   const reglas: string[] = [
     'Toda cifra (dígitos, porcentajes o números escritos con letras) tiene que estar en las AFIRMACIONES o en el COPY de la pieza. No inventes, no redondees, no conviertas ni combines cifras. Si una cifra no está, no la uses.',
-    `hooks: ${SVT_HOOKS_ASK} ganchos candidatos (se usarán los ${SVT_HOOKS_COUNT} primeros que cumplan las reglas), distintos entre sí${input.current_hook ? ' y distintos del GANCHO ACTUAL' : ''}. Cada uno con ${SVT_HOOK_MAX_WORDS} palabras como máximo —cuéntalas: un gancho de ${SVT_HOOK_MAX_WORDS + 1} palabras se descarta—, sin hashtags, sin el nombre ni la firma de la marca y sin la fórmula vacía «¿Sabías que…?». Cada gancho lleva en pattern_key la clave de un PATRÓN DE GANCHO del catálogo (puedes repetir clave si hay menos patrones que ganchos) y en why una sola línea que explica por qué retiene. Los ganchos empujan hacia el objetivo de la pieza.`,
+    `hooks: ${SVT_HOOKS_ASK} ganchos candidatos (se usarán los ${SVT_HOOKS_COUNT} primeros que cumplan las reglas), distintos entre sí${input.current_hook ? ' y distintos del GANCHO ACTUAL' : ''}. Cada uno con ${SVT_HOOK_ASK_WORDS} palabras como máximo —cuéntalas: un gancho de más de ${SVT_HOOK_MAX_WORDS} palabras se descarta—, sin hashtags, sin el nombre ni la firma de la marca y sin la fórmula vacía «¿Sabías que…?». Cada gancho lleva en pattern_key la clave de un PATRÓN DE GANCHO del catálogo (puedes repetir clave si hay menos patrones que ganchos) y en why una sola línea que explica por qué retiene. Los ganchos empujan hacia el objetivo de la pieza.`,
   ];
   if (input.wants.key_phrases) {
     reglas.push(`key_phrases: entre ${SVT_KEY_PHRASES_MIN} y ${SVT_KEY_PHRASES_MAX} frases copiadas LETRA POR LETRA de una sola línea de ${input.script_lines ? 'LÍNEAS DEL GUION' : 'LÍNEAS DEL COPY'}, con el índice de esa línea en line_index. Elige las de más impacto: son las que se titulan en pantalla.`);
