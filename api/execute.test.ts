@@ -116,7 +116,7 @@ function extractPure(): any {
   // must not reach for network/env/nondeterminism.
   assert(!/\bfetch\s*\(|\bMath\.random|\bawait\b|process\.env/.test(js), 'el bloque puro contiene un efecto (fetch/Math.random/await/process.env)');
   const factory = new Function(
-    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, buildEmphasisRetryNote, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, carouselTextKey, readAvoidEyebrows, normalizeCarouselTextPass, buildCarouselTextPassInstruction, readCarouselTextPassResult, buildCarouselTextRetryNote, CAROUSEL_TEXT_PASS_MAX_TOKENS, CAROUSEL_TEXT_HEADLINE_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection };`,
+    `${js}\nreturn { readBodyFormat, readImageTitleMode, buildImageDialogueBlock, readImageEmphasis, buildImageEmphasisBlock, pruneEmphasis, normalizeEmphasisPass, buildEmphasisPassInstruction, readEmphasisPassResult, buildEmphasisRetryNote, EMPHASIS_PASS_MAX_TOKENS, EMPHASIS_MAX_TERMS, EMPHASIS_MAX_WORDS, EMPHASIS_MAX_CHARS, IMAGE_TITLE_MODES, readTitleBudgetChars, buildTitleBlock, buildCarrilFormatBlock, titleCharCount, normalizeCache, sliceOf, resolveLanguage, selectGenome, selectHumanize, maxTokensFor, readDeclaredMaxTokens, lengthBudgetCharsFor, buildLengthBudgetBlock, apiMaxTokensFor, parsePiece, deriveSignature, resolveCarrilContentType, filterCarrilImperativeRules, CARRIL_IMPERATIVE_KINDS, buildClaimsBlock, buildWritingMaterialBlock, buildOfferBlock, resolveAudienceCta, AUDIENCE_CTA, normalizeRepair, buildRepairInstruction, normalizeFormatPass, splitPieceParagraphs, buildFormatPassInstruction, extractJsonObject, FORMAT_PASS_MAX_TOKENS, normalizeImagePass, buildImagePassInstruction, normalizeImagePlan, isEnumerationFocus, IMAGE_FOCUS_LIST_RUN, IMAGE_FOCUS_TERM_MAX_WORDS, IMAGE_PASS_MAX_TOKENS, INLINE_IMAGES_CONTRACT_MAX, IMAGE_ALT_MAX_CHARS, normalizeAltPass, resolveAltSource, buildAltPassInstruction, normalizeAltResult, ALT_PASS_MAX_TOKENS, altHintsEcho, buildAltPlaceRule, buildAltKeywordRule, ALT_KEYWORD_HINT_MAX_CHARS, normalizeSlidePass, collectCtaOptions, primaryLanguageTag, buildSlidePassInstruction, normalizeSlidePlan, SLIDE_PASS_MAX_TOKENS, SLIDE_EYEBROW_MAX_CHARS, CTA_OPTION_FIELDS, carouselTextKey, readAvoidEyebrows, normalizeCarouselTextPass, buildCarouselTextPassInstruction, readCarouselTextPassResult, buildCarouselTextRetryNote, CAROUSEL_TEXT_PASS_MAX_TOKENS, CAROUSEL_TEXT_HEADLINE_MAX_CHARS, normalizeLearnedCorrections, buildLearnedCorrectionsBlock, selectCompatRule, applyTemplateVars, buildTemplateVars, resolveCanalBlockId, ensureArray, getCTAFieldForCanal, getActiveCTA, getTopKeywords, getGrupo3, getComplianceRules, buildBrandBlock, buildGoalsBlock, buildPersonasBlock, buildIdiomaBlock, normalizeLanguageCode, resolveLanguageDirective, buildGeomixBlock, buildKeywordsBlock, buildCopyProfileLayer, renderGenomeSection, normalizeShortVideoTextRequest, applyN8Filter, numberValuesOf, readShortVideoTextResult, svtFailureLabel, buildShortVideoTextPrompt, buildShortVideoTextRetryNote };`,
   );
   return factory();
 }
@@ -4314,6 +4314,222 @@ async function run() {
         eq(f.claudeBodies.length, 0, 'ninguna llamada a Claude');
       } finally { f.restore(); }
     });
+  });
+
+  // ── TEXTO EN PANTALLA · modo short_video_text (contrato v1 §2, 2026-11-16) ──────────────────
+  console.log('\n[short_video_text · texto en pantalla]');
+  // Marca, rubro y personas de prueba: inventados y neutros. El código no conoce ninguno.
+  const SVT_PATTERNS = [
+    { pattern_key: 'hook_a', beat: 'hook', name: 'Contradicción', mechanism: 'Opone la creencia común al dato.', guardrails: 'Sin cifras sin fuente.', status: 'proposed' },
+    { pattern_key: 'hook_b', beat: 'hook', name: 'Pregunta concreta', mechanism: 'Pregunta que sólo el dato responde.', guardrails: 'Sin cebo.', status: 'proposed' },
+    { pattern_key: 'hook_c', beat: 'hook', name: 'Consecuencia', mechanism: 'Empieza por el efecto.', guardrails: 'Sin exagerar.', status: 'validated_by_judgment' },
+    { pattern_key: 'share_a', beat: 'share_prompt', name: 'Permiso para reenviar', mechanism: 'Anticipa, da permiso, nombra a quién, imperativo.', guardrails: 'Nunca una frase fija.', status: 'proposed' },
+    { pattern_key: 'payoff_a', beat: 'payoff', name: 'Revelación', mechanism: 'El dato cierra la tensión.', guardrails: 'Sólo datos de la fuente.', status: 'proposed' },
+  ];
+  const SVT_SNAPSHOT = {
+    brands: [{ id: 'MarcaPrueba', display_name: 'Marca Prueba', market: 'X', language_primary: 'es' }],
+    brand_copy_profiles: [{ id: 'cp', voice_tone_primary: 'sobrio', style_signature_phrases: ['Hecho a conciencia'] }],
+    brand_voice_genome: [GENOME_V1],
+    brand_personas: [{ label: 'Responsable de compras', pain_points: ['plazos'] }],
+  };
+  const SVT_SOURCE = {
+    title: 'Informe trimestral',
+    copy: 'El 51 % de los equipos revisa sus plazos cada semana.\nSólo el 1 % los cumple siempre.',
+    claims: [{ text: 'Uno de cada dos equipos revisa plazos: 51 %.', source_url: 'https://fuente.example/a' }],
+    current_hook: 'Los plazos no se cumplen solos',
+    script_lines: [
+      { speaker_role: 'host', speaker_name: 'Ana', text: 'Hoy hablamos de plazos.' },
+      { speaker_role: 'guest', speaker_name: 'Luis', text: 'El 51 % de los equipos revisa sus plazos cada semana.' },
+      { speaker_role: 'guest', speaker_name: 'Luis', text: 'Y sólo el 1 % los cumple siempre.' },
+    ],
+    cast: [{ person_id: 'p1', name: 'Ana', role: 'host', title: 'Conductora' }, { person_id: 'p2', name: 'Luis', role: 'guest', title: 'Analista' }],
+  };
+  const svtParams = (extra: any = {}) => ({ mode: 'short_video_text', task: 'all', medium: 'video', language: 'es', source: SVT_SOURCE, goal: 'share', recent_pattern_keys: ['hook_c'], ...extra });
+  const SVT_GOOD = {
+    hooks: [
+      { text: 'El 51 % revisa plazos cada semana', pattern_key: 'hook_a', why: 'Opone hábito y resultado.' },
+      { text: '¿Quién cumple siempre sus plazos?', pattern_key: 'hook_b', why: 'Sólo el dato responde.' },
+      { text: 'Sólo el uno por ciento cumple siempre', pattern_key: 'hook_a', why: 'Cifra mínima que sorprende.' },
+      { text: 'Revisar no es cumplir', pattern_key: 'hook_b', why: 'Contraste corto.' },
+      { text: 'Cincuenta y uno por ciento revisa; casi nadie cumple', pattern_key: 'hook_a', why: 'Brecha visible.' },
+    ],
+    key_phrases: [
+      { text: 'el 51 % de los equipos revisa sus plazos cada semana', line_index: 1 },
+      { text: 'sólo el 1 % los cumple siempre', line_index: 2 },
+    ],
+    share_ctas: [
+      { text: 'Si pensaste en tu responsable de compras, está bien: envíaselo hoy.', pattern_key: 'share_a' },
+      { text: 'Seguro que alguien de tu equipo de compras necesita verlo. Mándaselo.', pattern_key: 'share_a' },
+      { text: 'No es indiscreto pasarlo: reenvíalo a quien firma los plazos.', pattern_key: 'share_a' },
+    ],
+    script: {
+      beats: [
+        { beat: 'hook', speaker_role: 'host', text: 'El 51 % revisa sus plazos cada semana.' },
+        { beat: 'setup', speaker_role: 'host', text: 'Revisar parece suficiente.' },
+        { beat: 'payoff', speaker_role: 'guest', text: 'Sólo el 1 % los cumple siempre.' },
+        { beat: 'rehook', speaker_role: 'guest', text: 'La revisión no es el problema.' },
+        { beat: 'closing', speaker_role: 'vo', text: 'Cumplir es otra cosa.' },
+      ],
+      closing_vo: 'Revisar no basta.',
+      figures_used: ['51 %', '1 %'],
+    },
+  };
+  const svtMsg = (o: any) => ({ content: [{ text: JSON.stringify(o) }], usage: { input_tokens: 100, output_tokens: 50 } });
+  const svtFetch = (opts: { patterns?: any; claudeSeq?: any[] } = {}) => installFetch({
+    snapshot: [{ cache_data: SVT_SNAPSHOT }],
+    tables: { retention_patterns: opts.patterns ?? SVT_PATTERNS },
+    claudeSeq: opts.claudeSeq ?? [svtMsg(SVT_GOOD)],
+  });
+  const svtCall = async (params: any, opts: { patterns?: any; claudeSeq?: any[] } = {}) => {
+    const f = svtFetch(opts);
+    const r = makeRes();
+    try { await handler({ method: 'POST', body: { brandId: 'MarcaPrueba', params } } as any, r as any); } finally { f.restore(); }
+    return { out: r._out, f };
+  };
+  const svtInput = (extra: any = {}) => PURE.normalizeShortVideoTextRequest(svtParams(extra)).input;
+  const svtCtx = { hookKeys: ['hook_a', 'hook_b'], shareKeys: ['share_a'], signatures: ['MarcaPrueba', 'Marca Prueba', 'Hecho a conciencia'] };
+
+  await test('SVT·pure numberValuesOf: dígitos y números escritos se comparan por valor; artículos y «por ciento» no son cifra', () => {
+    const v = (t: string, l = ['es']) => PURE.numberValuesOf(t, l);
+    assert(v('cincuenta y uno por ciento').includes('51'), '«cincuenta y uno» = 51');
+    assert(v('el uno por ciento').includes('1'), '«uno por ciento» = 1');
+    assert(!v('el uno por ciento').includes('100'), '«por ciento» no es cien');
+    eq(v('una persona y un equipo').length, 0, 'artículos sueltos no son cifra');
+    assert(v('dos millones trescientos mil').includes('2300000'), 'compuesto con escalas');
+    assert(v('mil').includes('1000') && v('1.000').includes('1000'), '«mil» y «1.000» valen lo mismo');
+    assert(v('12,5 %').includes('12.5'), 'decimal con coma');
+    assert(v('twenty-one percent', ['en']).includes('21'), 'inglés con guion');
+    assert(v('one percent', ['en']).includes('1'), '«one percent» = 1');
+    eq(v('one of them', ['en']).length, 0, '«one» suelto no es cifra');
+  });
+
+  await test('SVT·pure normalizeShortVideoTextRequest: encargo válido, mal formado (400 con etiqueta) e imagen ⇒ sólo ganchos', () => {
+    const ok = PURE.normalizeShortVideoTextRequest(svtParams());
+    assert(ok.ok, 'válido');
+    eq(JSON.stringify(ok.input.wants), JSON.stringify({ key_phrases: true, share_ctas: true, script: true }), 'video + share + all');
+    for (const [extra, campo] of [[{ task: 'x' }, 'task'], [{ medium: 'audio' }, 'medium'], [{ language: 'pt' }, 'language'], [{ goal: 'buy' }, 'goal'],
+      [{ source: { copy: '', claims: [] } }, 'source necesita'], [{ recent_pattern_keys: 'hook_a' }, 'recent_pattern_keys'],
+      [{ source: { ...SVT_SOURCE, script_lines: [{ speaker_role: 'narrador', text: 'x' }] } }, 'speaker_role']] as const) {
+      const r = PURE.normalizeShortVideoTextRequest(svtParams(extra));
+      assert(!r.ok && r.error.startsWith('COPYLAB_SVT_BAD_REQUEST') && r.error.includes(campo), `rechaza ${campo}: ${r.error}`);
+    }
+    const img = PURE.normalizeShortVideoTextRequest(svtParams({ medium: 'image' }));
+    eq(JSON.stringify(img.input.wants), JSON.stringify({ key_phrases: false, share_ctas: false, script: false }), 'imagen ⇒ sólo ganchos');
+    const hooks = PURE.normalizeShortVideoTextRequest(svtParams({ task: 'hooks', goal: 'save' }));
+    eq(hooks.input.wants.script, false, 'task hooks ⇒ sin guion'); eq(hooks.input.wants.share_ctas, false, 'goal save ⇒ sin CTA de reenvío');
+    eq(PURE.normalizeShortVideoTextRequest(svtParams({ language: 'ES' })).input.language, 'es', 'el idioma se normaliza');
+  });
+
+  await test('SVT·pure applyN8Filter: excluye los ganchos recientes y lo declara; sin lista no filtra', () => {
+    const a = PURE.applyN8Filter(SVT_PATTERNS, ['hook_c', 'otro']);
+    eq(a.n8_filter, 'applied', 'aplicado'); eq(a.hook.map((p: any) => p.pattern_key).join(','), 'hook_a,hook_b', 'sin hook_c');
+    eq(a.n8_excluded.join(','), 'hook_c', 'declara lo excluido'); eq(a.share.length, 1, 'share_prompt'); eq(a.script.length, 1, 'payoff para el guion');
+    const b = PURE.applyN8Filter(SVT_PATTERNS, null);
+    eq(b.n8_filter, 'no_recent_list', 'sin lista'); eq(b.hook.length, 3, 'no filtra');
+    eq(PURE.applyN8Filter([{ ...SVT_PATTERNS[0], status: 'retired' }], null).hook.length, 0, 'un retirado no cuenta');
+  });
+
+  await test('SVT·pure readShortVideoTextResult: la salida buena pasa sin problemas', () => {
+    const r = PURE.readShortVideoTextResult(SVT_GOOD, svtInput(), svtCtx);
+    eq(r.problems.length, 0, `sin problemas: ${JSON.stringify(r.problems)}`);
+    eq(r.output.hooks.length, 5, '5 ganchos'); eq(r.output.key_phrases.length, 2, 'frases'); eq(r.output.share_ctas.length, 3, 'CTA');
+    eq(r.output.script.beats.length, 5, 'guion');
+  });
+
+  await test('SVT·pure readShortVideoTextResult: cada regla dura rota sale con su etiqueta', () => {
+    const roto = (mut: (o: any) => void) => { const o = JSON.parse(JSON.stringify(SVT_GOOD)); mut(o); return PURE.readShortVideoTextResult(o, svtInput(), svtCtx).problems.map((p: any) => p.label); };
+    assert(roto(o => { o.hooks[0].text = 'El 73 % revisa plazos'; }).includes('COPYLAB_FIGURE_NOT_IN_SOURCES'), 'cifra en dígitos ajena');
+    assert(roto(o => { o.hooks[0].text = 'Setenta y tres por ciento revisa'; }).includes('COPYLAB_FIGURE_NOT_IN_SOURCES'), 'cifra escrita ajena');
+    assert(roto(o => { o.script.figures_used = ['73 %']; }).includes('COPYLAB_FIGURE_NOT_IN_SOURCES'), 'figures_used ajena');
+    assert(roto(o => { o.hooks.pop(); }).includes('COPYLAB_SVT_HOOK_COUNT'), 'cuatro ganchos');
+    assert(roto(o => { o.hooks[0].text = 'uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece'.replace(/\w+/g, 'palabra'); }).includes('COPYLAB_SVT_HOOK_TOO_LONG'), 'más de 12 palabras');
+    assert(roto(o => { o.hooks[1].text = SVT_SOURCE.current_hook; }).includes('COPYLAB_SVT_HOOK_DUPLICATE'), 'igual al gancho actual');
+    assert(roto(o => { o.hooks[2].text = o.hooks[3].text; }).includes('COPYLAB_SVT_HOOK_DUPLICATE'), 'ganchos repetidos');
+    assert(roto(o => { o.hooks[0].text = 'Revisar no basta #plazos'; }).includes('COPYLAB_SVT_HASHTAG'), 'hashtag');
+    assert(roto(o => { o.hooks[0].text = 'Revisar no basta, Marca Prueba'; }).includes('COPYLAB_SVT_BRAND_SIGNATURE'), 'nombre de la marca');
+    assert(roto(o => { o.share_ctas[0].text = 'Hecho a conciencia: reenvíalo'; }).includes('COPYLAB_SVT_BRAND_SIGNATURE'), 'frase firma en el CTA');
+    assert(roto(o => { o.hooks[0].text = '¿Sabías que revisar no basta?'; }).includes('COPYLAB_SVT_EMPTY_FORMULA'), 'fórmula vacía');
+    assert(roto(o => { o.hooks[0].pattern_key = 'hook_c'; }).includes('COPYLAB_SVT_PATTERN_UNKNOWN'), 'patrón excluido por N = 8');
+    assert(roto(o => { o.key_phrases[0].text = 'la mitad de los equipos revisa'; }).includes('COPYLAB_SVT_KEY_PHRASE_NOT_LITERAL'), 'frase no literal');
+    assert(roto(o => { o.key_phrases = [o.key_phrases[0]]; }).includes('COPYLAB_SVT_KEY_PHRASE_COUNT'), 'una sola frase');
+    assert(roto(o => { o.share_ctas.pop(); }).includes('COPYLAB_SVT_SHARE_CTA_COUNT'), 'dos CTA');
+    assert(roto(o => { o.script.beats = o.script.beats.filter((b: any) => b.beat !== 'rehook'); }).includes('COPYLAB_SVT_SCRIPT_SHAPE'), 'falta un tiempo');
+    eq(PURE.readShortVideoTextResult(null, svtInput(), svtCtx).problems[0].label, 'COPYLAB_SVT_UNPARSABLE', 'sin JSON');
+    eq(PURE.svtFailureLabel([{ label: 'COPYLAB_SVT_HASHTAG', detail: '' }, { label: 'COPYLAB_FIGURE_NOT_IN_SOURCES', detail: '' }]), 'COPYLAB_FIGURE_NOT_IN_SOURCES', 'la cifra manda');
+  });
+
+  await test('SVT·pure buildShortVideoTextPrompt: catálogo filtrado, reglas del contrato y la pieza en el user', () => {
+    const pats = PURE.applyN8Filter(SVT_PATTERNS, ['hook_c']);
+    const { system, user } = PURE.buildShortVideoTextPrompt(svtInput(), pats, { brand: 'BLOQUE-VOZ', personas: 'BLOQUE-PERSONAS', idioma: 'BLOQUE-IDIOMA' });
+    assertOrdered(system, ['BLOQUE-VOZ', 'BLOQUE-PERSONAS', 'BLOQUE-IDIOMA', 'hook_a', 'share_a', 'REGLAS DURAS', 'FORMATO DE SALIDA']);
+    assert(!system.includes('hook_c'), 'el patrón excluido por N = 8 no se ofrece');
+    assert(/nombra a QUIÉN/.test(system) && /imperativo directo/.test(system), 'el CTA de reenvío sigue el patrón');
+    assert(/MÁS RELEVANTE/.test(system) && /MÁS IMPACTO/.test(system), 'el guion extrae lo más relevante');
+    assert(user.includes('51 %') && user.includes('[1] guest · Luis:') && user.includes(SVT_SOURCE.current_hook), 'la pieza va en el user');
+    assert(!system.includes('51 %'), 'el system no lleva la pieza');
+    const img = PURE.buildShortVideoTextPrompt(svtInput({ medium: 'image' }), pats, { brand: '', personas: '', idioma: 'X' });
+    assert(img.system.includes('key_phrases: devuelve []') && img.system.includes('script: devuelve null'), 'imagen ⇒ sólo ganchos');
+  });
+
+  await test('SVT·marca N+1: el código del modo no nombra marcas, dominios ni plataformas', () => {
+    const src = readFileSync(new URL('./execute.ts', import.meta.url), 'utf8');
+    const a = src.indexOf('// ── TEXTO EN PANTALLA · modo `short_video_text` (contrato v1');
+    const b = src.indexOf('// ── CAPA 2 DEL APRENDIZAJE');
+    const c = src.indexOf('// ── TEXTO EN PANTALLA · modo `short_video_text` — la parte con red');
+    const d = src.indexOf('// ── CLAUDE CALL');
+    assert(a > 0 && b > a && c > 0 && d > c, 'bloques localizados');
+    const codigo = src.slice(a, b) + src.slice(c, d);
+    for (const nombre of ['ForumPHs', 'FPHS', 'NeuroneSCF', 'LucienSael', 'Unrealville', 'meta_fb', 'meta_ig', 'tiktok', '.com', 'vercel.app']) {
+      assert(!codigo.toLowerCase().includes(nombre.toLowerCase()), `el modo no nombra ${nombre}`);
+    }
+  });
+
+  await test('SVT·handler: 200 con la forma del contrato; N = 8 aplicado; voz, personas e idioma por dato', async () => {
+    const { out, f } = await svtCall(svtParams());
+    eq(out._status, 200, JSON.stringify(out._json));
+    eq(out._json.success, true, 'success');
+    eq(out._json.output.hooks.length, 5, 'ganchos'); eq(out._json.output.share_ctas.length, 3, 'CTA'); assert(out._json.output.script, 'guion');
+    eq(out._json.meta.n8_filter, 'applied', 'n8'); eq(out._json.meta.n8_excluded.join(','), 'hook_c', 'excluido');
+    eq(out._json.meta.patterns_used.join(','), 'hook_a,hook_b,share_a', 'patrones usados');
+    eq(out._json.meta.model, 'claude-sonnet-5', 'modelo de la constante'); eq(out._json.meta.attempts, 1, 'un intento');
+    eq(f.claudeBodies.length, 1, 'una llamada');
+    const sys = sysText(f.claudeBodies[0]);
+    assert(sys.includes('Responsable de compras'), 'las personas de la marca llegan por dato');
+    assert(sys.includes('FORBIDDEN LEXICON: prohibida-1') && sys.includes('PRIMARY TONE: sobrio'), 'la voz entra por la capa del modo literal');
+    assert(/SIN VOSEO/.test(sys), 'directiva de idioma: español neutro sin voseo');
+    assert(f.calls.some(u => u.includes('/rest/v1/retention_patterns?status=neq.retired')), 'lee el catálogo vigente');
+  });
+
+  await test('SVT·handler: sin recent_pattern_keys no filtra y lo dice; imagen ⇒ sólo ganchos', async () => {
+    const soloGanchos = { hooks: SVT_GOOD.hooks.map(h => ({ ...h })) };
+    const { out } = await svtCall(svtParams({ recent_pattern_keys: undefined, medium: 'image' }), { claudeSeq: [svtMsg(soloGanchos)] });
+    eq(out._status, 200, JSON.stringify(out._json));
+    eq(out._json.meta.n8_filter, 'no_recent_list', 'sin lista');
+    eq(out._json.output.key_phrases.length, 0, 'sin frases'); eq(out._json.output.share_ctas.length, 0, 'sin CTA'); eq(out._json.output.script, null, 'sin guion');
+  });
+
+  await test('SVT·handler: catálogo vacío ⇒ 503 COPYLAB_PATTERNS_EMPTY sin llamar a Claude', async () => {
+    const { out, f } = await svtCall(svtParams(), { patterns: [] });
+    eq(out._status, 503, '503'); eq(out._json.error_label, 'COPYLAB_PATTERNS_EMPTY', 'etiqueta'); eq(f.claudeBodies.length, 0, 'sin llamada');
+    const todos = await svtCall(svtParams({ recent_pattern_keys: ['hook_a', 'hook_b', 'hook_c'] }));
+    eq(todos.out._status, 503, 'N = 8 agota los ganchos'); eq(todos.out._json.error_label, 'COPYLAB_PATTERNS_EMPTY', 'etiqueta');
+  });
+
+  await test('SVT·handler: cifra ajena ⇒ reintenta una vez; si persiste, 422 COPYLAB_FIGURE_NOT_IN_SOURCES con el consumo', async () => {
+    const malo = JSON.parse(JSON.stringify(SVT_GOOD)); malo.hooks[0].text = 'El 73 % revisa sus plazos';
+    const { out, f } = await svtCall(svtParams(), { claudeSeq: [svtMsg(malo), svtMsg(malo)] });
+    eq(out._status, 422, '422'); eq(out._json.error_label, 'COPYLAB_FIGURE_NOT_IN_SOURCES', 'etiqueta');
+    eq(f.claudeBodies.length, 2, 'un reintento, no más');
+    assert(f.claudeBodies[1].messages[0].content.includes('TU RESPUESTA ANTERIOR NO SIRVE'), 'el reintento dice por qué');
+    eq(out._json.usage.input_tokens, 200, 'las dos llamadas cobradas viajan en el fallo'); eq(out._json.provider_called, true, 'proveedor llamado');
+    const bien = await svtCall(svtParams(), { claudeSeq: [svtMsg(malo), svtMsg(SVT_GOOD)] });
+    eq(bien.out._status, 200, 'el reintento arregla'); eq(bien.out._json.meta.attempts, 2, 'dos intentos');
+  });
+
+  await test('SVT·handler: encargo mal formado ⇒ 400 COPYLAB_SVT_BAD_REQUEST sin red', async () => {
+    const { out, f } = await svtCall(svtParams({ goal: 'vender' }));
+    eq(out._status, 400, '400'); eq(out._json.error_label, 'COPYLAB_SVT_BAD_REQUEST', 'etiqueta');
+    eq(f.calls.length, 0, 'ni Supabase ni Claude');
   });
 
   const total = passed + xfails.length + failures.length;
