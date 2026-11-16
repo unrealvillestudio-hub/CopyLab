@@ -2270,6 +2270,488 @@ function buildCarouselTextRetryNote(prev: { problems: CarouselTextProblem[]; sof
     + ' cumpliendo las reglas. Responde SOLO con el objeto JSON.';
 }
 
+// ── TEXTO EN PANTALLA · modo `short_video_text` (contrato v1, 2026-11-16, §2) ─────────────────
+//
+// POR QUÉ EXISTE (Sam, 2026-11-16): cada pieza de video o imagen del Orchestrator tiene un panel
+// «Editar texto» que ofrece 5 ganchos, frases clave, CTA de reenvío y un guion condensado. Ese texto
+// es copy, y el copy es de CopyLab. El Orchestrator sólo orquesta: arma `source` y llama aquí.
+//
+// LAS REGLAS DURAS se comprueban DESPUÉS del modelo, aquí y sin red (bloque puro):
+//   · toda cifra (dígitos, «%», números escritos con letras) tiene que estar en `claims[].text` o en
+//     `copy`; si no, se reintenta una vez y después 422 COPYLAB_FIGURE_NOT_IN_SOURCES;
+//   · conteos, longitudes, sin hashtags, sin firma de marca, claves de patrón del catálogo.
+// Cero marcas aquí: la voz, las personas y la firma llegan como DATO (cache de marca); los patrones,
+// de `public.retention_patterns`. Nada de este bloque nombra una marca, un dominio ni su vocabulario.
+const SVT_TASKS = ['all', 'hooks', 'script'] as const;
+const SVT_MEDIUMS = ['video', 'image'] as const;
+const SVT_LANGUAGES = ['es', 'en'] as const;
+const SVT_GOALS = ['share', 'comment', 'follow', 'save'] as const;
+const SVT_SPEAKER_ROLES = ['host', 'guest', 'vo'] as const;
+const SVT_BEATS = ['hook', 'setup', 'payoff', 'rehook', 'closing'] as const;
+const SVT_HOOKS_COUNT = 5;
+const SVT_HOOK_MAX_WORDS = 12;
+const SVT_KEY_PHRASES_MIN = 2;
+const SVT_KEY_PHRASES_MAX = 4;
+const SVT_SHARE_CTAS_COUNT = 3;
+const SVT_MAX_TOKENS = 2400;
+// Defensa del presupuesto del prompt, no criterio editorial.
+const SVT_SOURCE_MAX_CHARS = 8000;
+const SVT_MAX_CLAIMS = 30;
+const SVT_MAX_SCRIPT_LINES = 200;
+const SVT_RECENT_KEYS_MAX = 50;
+
+type SvtTask = typeof SVT_TASKS[number];
+type SvtMedium = typeof SVT_MEDIUMS[number];
+type SvtLanguage = typeof SVT_LANGUAGES[number];
+type SvtGoal = typeof SVT_GOALS[number];
+interface SvtClaim { text: string; source_url: string | null }
+interface SvtScriptLine { speaker_role: string; speaker_name: string | null; text: string }
+interface SvtCastMember { person_id: string | null; name: string; role: string | null; title: string | null }
+interface ShortVideoTextInput {
+  task: SvtTask; medium: SvtMedium; language: SvtLanguage; goal: SvtGoal;
+  title: string; copy: string; claims: SvtClaim[]; current_hook: string | null;
+  script_lines: SvtScriptLine[] | null; cast: SvtCastMember[];
+  recent_pattern_keys: string[] | null;
+  // Lo que se pide de verdad. Imagen ⇒ sólo ganchos (no hay guion ni frases que titular).
+  wants: { key_phrases: boolean; share_ctas: boolean; script: boolean };
+}
+interface RetentionPattern { pattern_key: string; beat: string; name: string; mechanism: string; guardrails: string; status?: string }
+interface SvtProblem { label: string; detail: string }
+interface SvtOutput {
+  hooks: Array<{ text: string; pattern_key: string; why: string }>;
+  key_phrases: Array<{ text: string; line_index: number }>;
+  share_ctas: Array<{ text: string; pattern_key: string }>;
+  script: { beats: Array<{ beat: string; speaker_role: string; text: string }>; closing_vo: string; figures_used: string[] } | null;
+}
+
+function svtText(v: unknown): string {
+  return typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';
+}
+
+/** Lee y valida el encargo. PURO. Un encargo mal formado corta con nombre propio (400). */
+function normalizeShortVideoTextRequest(params: any): { ok: true; input: ShortVideoTextInput } | { ok: false; error: string } {
+  const bad = (m: string) => ({ ok: false as const, error: `COPYLAB_SVT_BAD_REQUEST: ${m}` });
+  if (!params || typeof params !== 'object') return bad('params debe ser un objeto');
+  const task = params.task;
+  if (!(SVT_TASKS as readonly string[]).includes(task)) return bad(`task debe ser ${SVT_TASKS.join(' | ')}`);
+  const medium = params.medium;
+  if (!(SVT_MEDIUMS as readonly string[]).includes(medium)) return bad(`medium debe ser ${SVT_MEDIUMS.join(' | ')}`);
+  const language = String(params.language ?? '').trim().toLowerCase();
+  if (!(SVT_LANGUAGES as readonly string[]).includes(language)) return bad(`language debe ser ${SVT_LANGUAGES.join(' | ')}`);
+  const goal = params.goal;
+  if (!(SVT_GOALS as readonly string[]).includes(goal)) return bad(`goal debe ser ${SVT_GOALS.join(' | ')}`);
+
+  const src = params.source;
+  if (!src || typeof src !== 'object' || Array.isArray(src)) return bad('source debe ser un objeto');
+  if (src.title !== undefined && src.title !== null && typeof src.title !== 'string') return bad('source.title debe ser texto');
+  if (src.copy !== undefined && src.copy !== null && typeof src.copy !== 'string') return bad('source.copy debe ser texto');
+  const title = svtText(src.title);
+  const copy = String(src.copy ?? '').trim();
+  if (copy.length > SVT_SOURCE_MAX_CHARS) return bad(`source.copy pasa de ${SVT_SOURCE_MAX_CHARS} caracteres`);
+
+  const claimsRaw = src.claims ?? [];
+  if (!Array.isArray(claimsRaw)) return bad('source.claims debe ser una lista');
+  if (claimsRaw.length > SVT_MAX_CLAIMS) return bad(`source.claims trae más de ${SVT_MAX_CLAIMS} afirmaciones`);
+  const claims: SvtClaim[] = [];
+  for (let i = 0; i < claimsRaw.length; i++) {
+    const c = claimsRaw[i];
+    const text = svtText(c?.text);
+    if (!c || typeof c !== 'object' || !text) return bad(`source.claims[${i}].text debe ser texto no vacío`);
+    if (c.source_url !== undefined && c.source_url !== null && typeof c.source_url !== 'string') return bad(`source.claims[${i}].source_url debe ser texto`);
+    claims.push({ text, source_url: svtText(c.source_url) || null });
+  }
+  if (!copy && !claims.length) return bad('source necesita copy o claims: sin fuentes no hay de dónde sacar el texto');
+
+  if (src.current_hook !== undefined && src.current_hook !== null && typeof src.current_hook !== 'string') return bad('source.current_hook debe ser texto o null');
+  const current_hook = svtText(src.current_hook) || null;
+
+  let script_lines: SvtScriptLine[] | null = null;
+  if (src.script_lines !== undefined && src.script_lines !== null) {
+    if (!Array.isArray(src.script_lines)) return bad('source.script_lines debe ser una lista o null');
+    if (src.script_lines.length > SVT_MAX_SCRIPT_LINES) return bad(`source.script_lines trae más de ${SVT_MAX_SCRIPT_LINES} líneas`);
+    script_lines = [];
+    for (let i = 0; i < src.script_lines.length; i++) {
+      const l = src.script_lines[i];
+      const text = svtText(l?.text);
+      if (!l || typeof l !== 'object' || !text) return bad(`source.script_lines[${i}].text debe ser texto no vacío`);
+      if (!(SVT_SPEAKER_ROLES as readonly string[]).includes(l.speaker_role)) return bad(`source.script_lines[${i}].speaker_role debe ser ${SVT_SPEAKER_ROLES.join(' | ')}`);
+      script_lines.push({ speaker_role: l.speaker_role, speaker_name: svtText(l.speaker_name) || null, text });
+    }
+    if (!script_lines.length) script_lines = null;
+  }
+
+  const castRaw = src.cast ?? [];
+  if (!Array.isArray(castRaw)) return bad('source.cast debe ser una lista');
+  const cast: SvtCastMember[] = [];
+  for (let i = 0; i < castRaw.length; i++) {
+    const c = castRaw[i];
+    const name = svtText(c?.name);
+    if (!c || typeof c !== 'object' || !name) return bad(`source.cast[${i}].name debe ser texto no vacío`);
+    cast.push({ person_id: svtText(c.person_id) || null, name, role: svtText(c.role) || null, title: svtText(c.title) || null });
+  }
+
+  let recent_pattern_keys: string[] | null = null;
+  if (params.recent_pattern_keys !== undefined && params.recent_pattern_keys !== null) {
+    const r = params.recent_pattern_keys;
+    if (!Array.isArray(r) || r.some((k: unknown) => typeof k !== 'string')) return bad('recent_pattern_keys debe ser una lista de textos');
+    if (r.length > SVT_RECENT_KEYS_MAX) return bad(`recent_pattern_keys trae más de ${SVT_RECENT_KEYS_MAX} claves`);
+    recent_pattern_keys = r.map((k: string) => k.trim()).filter(Boolean);
+  }
+
+  const video = medium === 'video';
+  const wants = {
+    key_phrases: video,
+    share_ctas: video && goal === 'share',
+    script: video && (task === 'script' || task === 'all'),
+  };
+  // Las frases clave se copian literalmente de algún lado: del guion o, sin guion, del copy.
+  if (wants.key_phrases && !script_lines && !copy) return bad('las frases clave necesitan source.script_lines o source.copy');
+  return {
+    ok: true,
+    input: { task, medium, language: language as SvtLanguage, goal, title, copy, claims, current_hook, script_lines, cast, recent_pattern_keys, wants },
+  };
+}
+
+// Regla N = 8 (Sam, 2026-11-14): una marca no repite el mismo patrón de gancho en 8 piezas seguidas por
+// plataforma. La lista la manda el Orchestrator; sin lista no se filtra y se dice en `meta`. PURO.
+function applyN8Filter(patterns: RetentionPattern[], recent: string[] | null): {
+  hook: RetentionPattern[]; share: RetentionPattern[]; script: RetentionPattern[];
+  n8_filter: 'applied' | 'no_recent_list'; n8_excluded: string[];
+} {
+  const vivos = patterns.filter(p => p && p.status !== 'retired' && typeof p.pattern_key === 'string' && p.pattern_key.trim());
+  const ganchos = vivos.filter(p => p.beat === 'hook');
+  const recientes = new Set((recent ?? []).map(k => k.trim()));
+  const hook = recent ? ganchos.filter(p => !recientes.has(p.pattern_key)) : ganchos;
+  return {
+    hook,
+    share: vivos.filter(p => p.beat === 'share_prompt'),
+    script: vivos.filter(p => p.beat === 'rehook' || p.beat === 'payoff' || p.beat === 'closing'),
+    n8_filter: recent ? 'applied' : 'no_recent_list',
+    n8_excluded: recent ? ganchos.filter(p => recientes.has(p.pattern_key)).map(p => p.pattern_key) : [],
+  };
+}
+
+// ── Cifras escritas con letras ──
+// `figuresOf` lee las cifras en dígitos; aquí se añade lo que escribe el modelo con letras («uno por
+// ciento», «cincuenta y uno», «twenty-one»). Las dos formas se llevan a un valor canónico para que
+// «51 %» en la fuente cubra «cincuenta y uno por ciento» en el gancho y al revés.
+const SVT_NUM_WORDS: Record<'es' | 'en', Record<string, number>> = {
+  es: {
+    cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9,
+    diez: 10, once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
+    dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21, veintiuna: 21, veintidos: 22,
+    veintitres: 23, veinticuatro: 24, veinticinco: 25, veintiseis: 26, veintisiete: 27, veintiocho: 28,
+    veintinueve: 29, treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80,
+    noventa: 90, cien: 100, ciento: 100, doscientos: 200, doscientas: 200, trescientos: 300, trescientas: 300,
+    cuatrocientos: 400, cuatrocientas: 400, quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
+    setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800, novecientos: 900, novecientas: 900,
+  },
+  en: {
+    zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+    eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70,
+    eighty: 80, ninety: 90,
+  },
+};
+const SVT_NUM_SCALES: Record<'es' | 'en', Record<string, number>> = {
+  es: { mil: 1000, millon: 1e6, millones: 1e6 },
+  en: { hundred: 100, thousand: 1000, million: 1e6, millions: 1e6 },
+};
+// «un/una/uno/one» sueltos son casi siempre artículo o pronombre; cuentan como cifra sólo dentro de un
+// número compuesto o delante de un porcentaje («uno por ciento», «one percent»).
+const SVT_ARTICLE_WORDS = new Set(['un', 'una', 'uno', 'one']);
+const SVT_CONNECTORS = new Set(['y', 'and']);
+
+function canonicalFigure(f: string): string {
+  const s = String(f).trim();
+  const plain = /^\d{1,3}(?:[.,]\d{3})+$/.test(s) ? s.replace(/[.,]/g, '') : s.replace(',', '.');
+  const n = Number(plain);
+  return Number.isFinite(n) ? String(n) : s;
+}
+
+/** Los valores numéricos de un texto: dígitos y números escritos en las lenguas dadas. PURO. */
+function numberValuesOf(text: string, langs: ReadonlyArray<'es' | 'en'>): string[] {
+  const out = figuresOf(text).map(canonicalFigure);
+  const words: Record<string, number> = {};
+  const scales: Record<string, number> = {};
+  for (const l of langs) { Object.assign(words, SVT_NUM_WORDS[l]); Object.assign(scales, SVT_NUM_SCALES[l]); }
+  const toks = String(text ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .split(/[^a-z0-9%]+/).filter(Boolean);
+  const esNumero = (t: string | undefined) => t !== undefined && (t in words || t in scales);
+  const esPorcentaje = (i: number) =>
+    toks[i] === '%' || toks[i] === 'percent' || toks[i] === 'porciento' ||
+    (toks[i] === 'por' && (toks[i + 1] === 'ciento' || toks[i + 1] === 'cien')) ||
+    (toks[i] === 'per' && toks[i + 1] === 'cent');
+  let i = 0;
+  while (i < toks.length) {
+    const t = toks[i];
+    // «por ciento» / «por cien» es porcentaje, no el número cien.
+    if (!esNumero(t) || ((t === 'ciento' || t === 'cien') && toks[i - 1] === 'por')) { i++; continue; }
+    let total = 0, current = 0, n = 0;
+    const solo: string[] = [];
+    while (i < toks.length) {
+      const w = toks[i];
+      if (SVT_CONNECTORS.has(w) && n > 0 && esNumero(toks[i + 1])) { i++; continue; }
+      if (!esNumero(w) || ((w === 'ciento' || w === 'cien') && toks[i - 1] === 'por')) break;
+      if (w in scales) {
+        const s = scales[w];
+        if (s === 100) current = (current || 1) * 100;
+        else if (s === 1000) { total += (current || 1) * 1000; current = 0; }
+        else { total = (total + current || 1) * s; current = 0; }
+      } else {
+        current += words[w];
+      }
+      solo.push(w); n++; i++;
+    }
+    if (n === 1 && SVT_ARTICLE_WORDS.has(solo[0]) && !esPorcentaje(i)) continue;
+    out.push(String(total + current));
+  }
+  return out;
+}
+
+/** La línea de origen de las frases clave: el guion, o el copy partido en líneas. PURO. */
+function svtSourceLines(input: ShortVideoTextInput): string[] {
+  if (input.script_lines) return input.script_lines.map(l => l.text);
+  return input.copy.split(/\n+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
+// Para comparar que una frase está LITERAL en su línea: sin comillas ni puntuación en los bordes,
+// espacios colapsados y sin distinguir mayúsculas (el arranque de una frase cambia de caja al citarla).
+function svtLiteralKey(s: string): string {
+  return literalKey(s).replace(/^[\s"'«»“”‘’¿¡.,;:—–-]+|[\s"'«»“”‘’?!.,;:—–-]+$/g, '').toLowerCase();
+}
+
+function svtWordCount(s: string): number {
+  return s.split(/\s+/).filter(w => /[\p{L}\p{N}]/u.test(w)).length;
+}
+
+/** Normaliza las firmas de marca (nombre visible, id, frases firma) para buscarlas como palabras. PURO. */
+function svtSignatureKeys(signatures: string[]): string[] {
+  return [...new Set(signatures.map(carouselTextKey).filter(k => k.length >= 3))];
+}
+function svtHasSignature(text: string, sigKeys: string[]): string | null {
+  const k = ` ${carouselTextKey(text)} `;
+  return sigKeys.find(s => k.includes(` ${s} `)) ?? null;
+}
+
+const SVT_EMPTY_FORMULA = /^[¿\s]*(sab[ií]as\s+que|did\s+you\s+know)\b/i;
+
+/**
+ * Lee y valida la respuesta del modelo contra las reglas duras del contrato §2. PURO.
+ * `problems` vacío ⇒ la salida sirve tal cual. Cada problema lleva su etiqueta de error.
+ */
+function readShortVideoTextResult(
+  raw: Record<string, unknown> | null,
+  input: ShortVideoTextInput,
+  ctx: { hookKeys: string[]; shareKeys: string[]; signatures: string[] },
+): { output: SvtOutput; problems: SvtProblem[] } {
+  const problems: SvtProblem[] = [];
+  const output: SvtOutput = { hooks: [], key_phrases: [], share_ctas: [], script: null };
+  if (!raw || !Array.isArray((raw as any).hooks)) {
+    problems.push({ label: 'COPYLAB_SVT_UNPARSABLE', detail: 'la respuesta no es un objeto JSON con hooks[]' });
+    return { output, problems };
+  }
+  const fuentes = new Set(numberValuesOf([input.copy, ...input.claims.map(c => c.text)].join('\n'), SVT_LANGUAGES));
+  const ajena = (t: string) => numberValuesOf(t, [input.language]).find(v => !fuentes.has(v));
+  const cifra = (donde: string, t: string) => {
+    const f = ajena(t);
+    if (f !== undefined) problems.push({ label: 'COPYLAB_FIGURE_NOT_IN_SOURCES', detail: `${donde} usa la cifra ${f}, que no está en claims ni en copy` });
+  };
+  const hashtag = (donde: string, t: string) => {
+    if (/#[\p{L}\p{N}_]/u.test(t)) problems.push({ label: 'COPYLAB_SVT_HASHTAG', detail: `${donde} lleva un hashtag` });
+  };
+  const sigKeys = svtSignatureKeys(ctx.signatures);
+  const firma = (donde: string, t: string) => {
+    const s = svtHasSignature(t, sigKeys);
+    if (s) problems.push({ label: 'COPYLAB_SVT_BRAND_SIGNATURE', detail: `${donde} lleva la firma de la marca («${s}»)` });
+  };
+
+  // ── ganchos ──
+  const hooksRaw = (raw as any).hooks as unknown[];
+  if (hooksRaw.length !== SVT_HOOKS_COUNT) problems.push({ label: 'COPYLAB_SVT_HOOK_COUNT', detail: `llegaron ${hooksRaw.length} ganchos y se piden exactamente ${SVT_HOOKS_COUNT}` });
+  const vistos = new Set<string>(input.current_hook ? [carouselTextKey(input.current_hook)] : []);
+  hooksRaw.forEach((h: any, i) => {
+    const donde = `el gancho ${i + 1}`;
+    const text = svtText(h?.text);
+    const pattern_key = svtText(h?.pattern_key);
+    const why = svtText(h?.why);
+    if (!text || !why) { problems.push({ label: 'COPYLAB_SVT_SHAPE', detail: `${donde} no trae text y why en texto` }); return; }
+    const words = svtWordCount(text);
+    if (words > SVT_HOOK_MAX_WORDS) problems.push({ label: 'COPYLAB_SVT_HOOK_TOO_LONG', detail: `${donde} tiene ${words} palabras (máximo ${SVT_HOOK_MAX_WORDS})` });
+    const k = carouselTextKey(text);
+    if (vistos.has(k)) problems.push({ label: 'COPYLAB_SVT_HOOK_DUPLICATE', detail: `${donde} repite otro gancho o el gancho actual` });
+    vistos.add(k);
+    if (SVT_EMPTY_FORMULA.test(text)) problems.push({ label: 'COPYLAB_SVT_EMPTY_FORMULA', detail: `${donde} abre con la fórmula «¿sabías que…?»` });
+    if (!ctx.hookKeys.includes(pattern_key)) problems.push({ label: 'COPYLAB_SVT_PATTERN_UNKNOWN', detail: `${donde} usa la clave «${pattern_key}», que no es un patrón de gancho disponible` });
+    hashtag(donde, text); firma(donde, text); cifra(donde, text);
+    output.hooks.push({ text, pattern_key, why });
+  });
+
+  // ── frases clave ──
+  if (input.wants.key_phrases) {
+    const kp = (raw as any).key_phrases;
+    const lines = svtSourceLines(input);
+    if (!Array.isArray(kp) || kp.length < SVT_KEY_PHRASES_MIN || kp.length > SVT_KEY_PHRASES_MAX) {
+      problems.push({ label: 'COPYLAB_SVT_KEY_PHRASE_COUNT', detail: `se piden entre ${SVT_KEY_PHRASES_MIN} y ${SVT_KEY_PHRASES_MAX} frases clave` });
+    }
+    (Array.isArray(kp) ? kp : []).forEach((p: any, i: number) => {
+      const donde = `la frase clave ${i + 1}`;
+      const text = svtText(p?.text);
+      const li = p?.line_index;
+      if (!text || !Number.isInteger(li) || li < 0 || li >= lines.length) { problems.push({ label: 'COPYLAB_SVT_SHAPE', detail: `${donde} no trae text y un line_index válido` }); return; }
+      const key = svtLiteralKey(text);
+      if (!key || !svtLiteralKey(lines[li]).includes(key)) problems.push({ label: 'COPYLAB_SVT_KEY_PHRASE_NOT_LITERAL', detail: `${donde} no está literal en la línea ${li}` });
+      hashtag(donde, text); cifra(donde, text);
+      output.key_phrases.push({ text, line_index: li });
+    });
+  }
+
+  // ── CTA de reenvío ──
+  if (input.wants.share_ctas) {
+    const sc = (raw as any).share_ctas;
+    if (!Array.isArray(sc) || sc.length !== SVT_SHARE_CTAS_COUNT) problems.push({ label: 'COPYLAB_SVT_SHARE_CTA_COUNT', detail: `se piden exactamente ${SVT_SHARE_CTAS_COUNT} CTA de reenvío` });
+    const vistosCta = new Set<string>();
+    (Array.isArray(sc) ? sc : []).forEach((c: any, i: number) => {
+      const donde = `el CTA ${i + 1}`;
+      const text = svtText(c?.text);
+      const pattern_key = svtText(c?.pattern_key);
+      if (!text) { problems.push({ label: 'COPYLAB_SVT_SHAPE', detail: `${donde} no trae text` }); return; }
+      if (!ctx.shareKeys.includes(pattern_key)) problems.push({ label: 'COPYLAB_SVT_PATTERN_UNKNOWN', detail: `${donde} usa la clave «${pattern_key}», que no es un patrón de reenvío disponible` });
+      const k = carouselTextKey(text);
+      if (vistosCta.has(k)) problems.push({ label: 'COPYLAB_SVT_SHARE_CTA_DUPLICATE', detail: `${donde} repite otro CTA` });
+      vistosCta.add(k);
+      hashtag(donde, text); firma(donde, text); cifra(donde, text);
+      output.share_ctas.push({ text, pattern_key });
+    });
+  }
+
+  // ── guion condensado ──
+  if (input.wants.script) {
+    const s = (raw as any).script;
+    const beatsRaw = s && typeof s === 'object' && Array.isArray(s.beats) ? s.beats : null;
+    const closing_vo = svtText(s?.closing_vo);
+    const figsRaw = s?.figures_used;
+    if (!beatsRaw || !beatsRaw.length || !closing_vo || !Array.isArray(figsRaw) || figsRaw.some((f: unknown) => typeof f !== 'string')) {
+      problems.push({ label: 'COPYLAB_SVT_SCRIPT_SHAPE', detail: 'script debe traer beats[], closing_vo y figures_used[]' });
+    } else {
+      const beats: Array<{ beat: string; speaker_role: string; text: string }> = [];
+      beatsRaw.forEach((b: any, i: number) => {
+        const donde = `el tiempo ${i + 1} del guion`;
+        const text = svtText(b?.text);
+        if (!(SVT_BEATS as readonly string[]).includes(b?.beat) || !(SVT_SPEAKER_ROLES as readonly string[]).includes(b?.speaker_role) || !text) {
+          problems.push({ label: 'COPYLAB_SVT_SCRIPT_SHAPE', detail: `${donde} necesita beat (${SVT_BEATS.join('|')}), speaker_role (${SVT_SPEAKER_ROLES.join('|')}) y text` });
+          return;
+        }
+        hashtag(donde, text); cifra(donde, text);
+        beats.push({ beat: b.beat, speaker_role: b.speaker_role, text });
+      });
+      const presentes = new Set(beats.map(b => b.beat));
+      const faltan = SVT_BEATS.filter(b => !presentes.has(b));
+      if (faltan.length) problems.push({ label: 'COPYLAB_SVT_SCRIPT_SHAPE', detail: `al guion le faltan los tiempos ${faltan.join(', ')}` });
+      else if (beats[0].beat !== 'hook' || beats[beats.length - 1].beat !== 'closing') problems.push({ label: 'COPYLAB_SVT_SCRIPT_SHAPE', detail: 'el guion abre con hook y cierra con closing' });
+      hashtag('closing_vo', closing_vo); cifra('closing_vo', closing_vo);
+      const figures_used = (figsRaw as string[]).map(f => f.trim()).filter(Boolean);
+      for (const f of figures_used) cifra('figures_used', f);
+      output.script = { beats, closing_vo, figures_used };
+    }
+  }
+  return { output, problems };
+}
+
+/** La etiqueta del 422 cuando el reintento tampoco sirve: la cifra ajena manda sobre lo demás. PURO. */
+function svtFailureLabel(problems: SvtProblem[]): string {
+  return problems.some(p => p.label === 'COPYLAB_FIGURE_NOT_IN_SOURCES') ? 'COPYLAB_FIGURE_NOT_IN_SOURCES' : (problems[0]?.label ?? 'COPYLAB_SVT_UNPARSABLE');
+}
+
+function buildShortVideoTextRetryNote(problems: SvtProblem[]): string {
+  return `\n\nTU RESPUESTA ANTERIOR NO SIRVE: ${problems.map(p => p.detail).join('; ')}. Escribe de nuevo TODA la respuesta`
+    + ' cumpliendo las reglas duras. Responde SOLO con el objeto JSON.';
+}
+
+function svtPatternLines(ps: RetentionPattern[]): string {
+  return ps.map(p => `- ${p.pattern_key} — ${svtText(p.name)}: ${svtText(p.mechanism)} Límites: ${svtText(p.guardrails)}`).join('\n');
+}
+
+const SVT_GOAL_LABELS: Record<SvtGoal, string> = {
+  share: 'que el espectador reenvíe la pieza a otra persona',
+  comment: 'que el espectador comente',
+  follow: 'que el espectador siga la cuenta',
+  save: 'que el espectador guarde la pieza',
+};
+
+/**
+ * El prompt del modo. PURO. Los bloques de marca (voz, segmentos, idioma) llegan ya armados como dato;
+ * aquí sólo se colocan. El system no lleva nada de la pieza: la pieza va en el user.
+ */
+function buildShortVideoTextPrompt(
+  input: ShortVideoTextInput,
+  pats: { hook: RetentionPattern[]; share: RetentionPattern[]; script: RetentionPattern[] },
+  blocks: { brand: string; personas: string; idioma: string },
+): { system: string; user: string } {
+  const medio = input.medium === 'video' ? 'un video corto' : 'una imagen fija';
+  const reglas: string[] = [
+    'Toda cifra (dígitos, porcentajes o números escritos con letras) tiene que estar en las AFIRMACIONES o en el COPY de la pieza. No inventes, no redondees, no conviertas ni combines cifras. Si una cifra no está, no la uses.',
+    `hooks: exactamente ${SVT_HOOKS_COUNT} ganchos, distintos entre sí${input.current_hook ? ' y distintos del GANCHO ACTUAL' : ''}. Cada uno con ${SVT_HOOK_MAX_WORDS} palabras como máximo, sin hashtags, sin el nombre ni la firma de la marca y sin la fórmula vacía «¿Sabías que…?». Cada gancho lleva en pattern_key la clave de un PATRÓN DE GANCHO del catálogo (puedes repetir clave si hay menos patrones que ganchos) y en why una sola línea que explica por qué retiene. Los ganchos empujan hacia el objetivo de la pieza.`,
+  ];
+  if (input.wants.key_phrases) {
+    reglas.push(`key_phrases: entre ${SVT_KEY_PHRASES_MIN} y ${SVT_KEY_PHRASES_MAX} frases copiadas LETRA POR LETRA de una sola línea de ${input.script_lines ? 'LÍNEAS DEL GUION' : 'LÍNEAS DEL COPY'}, con el índice de esa línea en line_index. Elige las de más impacto: son las que se titulan en pantalla.`);
+  } else {
+    reglas.push('key_phrases: devuelve [].');
+  }
+  if (input.wants.share_ctas) {
+    reglas.push(`share_ctas: exactamente ${SVT_SHARE_CTAS_COUNT} llamadas al reenvío, distintas entre sí, cada una con la clave de un PATRÓN DE REENVÍO en pattern_key. Cada una anticipa lo que el espectador está pensando, le da permiso, nombra a QUIÉN reenviarla —un rol concreto de la audiencia de esta marca, tomado de los SEGMENTOS OBJETIVO o del contenido de la pieza— y cierra con un imperativo directo. Nunca una frase fija ni una plantilla: cada una nace de esta pieza. Sin hashtags ni firma de la marca.`);
+  } else {
+    reglas.push('share_ctas: devuelve [].');
+  }
+  if (input.wants.script) {
+    reglas.push(`script: un guion condensado en tiempos (${SVT_BEATS.join(', ')}), todos presentes, abriendo con hook y cerrando con closing. Usa SÓLO hechos y cifras de las AFIRMACIONES o del COPY: extrae lo MÁS RELEVANTE y lo de MÁS IMPACTO, sin relleno. speaker_role es ${SVT_SPEAKER_ROLES.join(' | ')} (usa los roles del REPARTO y de las LÍNEAS DEL GUION). closing_vo es la línea de voz en off del cierre. figures_used lista las cifras que usaste, escritas como aparecen en las fuentes.`);
+  } else {
+    reglas.push('script: devuelve null.');
+  }
+
+  const catalogo = [
+    '## CATÁLOGO DE PATRONES DE RETENCIÓN',
+    'Cada patrón describe un MECANISMO, no una frase: no copies su nombre ni su descripción como texto.',
+    `### Patrones de gancho (las únicas claves válidas en hooks[].pattern_key)\n${svtPatternLines(pats.hook)}`,
+  ];
+  if (input.wants.share_ctas) catalogo.push(`### Patrones de reenvío (las únicas claves válidas en share_ctas[].pattern_key)\n${svtPatternLines(pats.share)}`);
+  if (input.wants.script && pats.script.length) catalogo.push(`### Patrones para los demás tiempos del guion (guía, no clave obligatoria)\n${svtPatternLines(pats.script)}`);
+
+  const system = [
+    `Eres CopyLab en el modo TEXTO EN PANTALLA. Escribes el texto que se superpone a ${medio} ya publicado: no reescribes la pieza, la haces retener.`,
+    blocks.brand ? `## VOZ DE LA MARCA (manda en tono, léxico y exclusiones)\n\n${blocks.brand}` : '## VOZ DE LA MARCA\nNo hay contexto de marca disponible: tono neutro y sobrio.',
+    blocks.personas,
+    blocks.idioma,
+    catalogo.join('\n\n'),
+    `## REGLAS DURAS\n${reglas.map((r, i) => `${i + 1}. ${r}`).join('\n')}\nRespeta además el léxico prohibido, los registros prohibidos y las frases a evitar de la voz de la marca.`,
+    '## FORMATO DE SALIDA (JSON estricto, sin markdown ni preámbulo)\n'
+      + '{"hooks":[{"text":"…","pattern_key":"…","why":"…"}],'
+      + '"key_phrases":[{"text":"…","line_index":0}],'
+      + '"share_ctas":[{"text":"…","pattern_key":"…"}],'
+      + '"script":{"beats":[{"beat":"hook","speaker_role":"host","text":"…"}],"closing_vo":"…","figures_used":["…"]}}',
+  ].filter(Boolean).join('\n\n');
+
+  const user: string[] = [
+    '## PIEZA',
+    `Medio: ${input.medium === 'video' ? 'video' : 'imagen'}`,
+    `Objetivo: ${SVT_GOAL_LABELS[input.goal]}`,
+  ];
+  if (input.title) user.push(`Título: ${input.title}`);
+  user.push(`GANCHO ACTUAL: ${input.current_hook ?? '(ninguno)'}`);
+  if (input.copy) user.push(`\nCOPY PUBLICADO:\n${input.copy}`);
+  if (input.claims.length) user.push(`\nAFIRMACIONES (con su fuente):\n${input.claims.map((c, i) => `${i + 1}. ${c.text}${c.source_url ? ` (${c.source_url})` : ''}`).join('\n')}`);
+  if (input.wants.key_phrases) {
+    const lines = svtSourceLines(input);
+    const rotulo = input.script_lines ? 'LÍNEAS DEL GUION' : 'LÍNEAS DEL COPY';
+    user.push(`\n${rotulo} (índice · texto):\n${lines.map((t, i) => {
+      const l = input.script_lines?.[i];
+      return `[${i}]${l ? ` ${l.speaker_role}${l.speaker_name ? ` · ${l.speaker_name}` : ''}:` : ''} ${t}`;
+    }).join('\n')}`);
+  }
+  if (input.cast.length) user.push(`\nREPARTO:\n${input.cast.map(c => `- ${c.name}${c.role ? ` — ${c.role}` : ''}${c.title ? ` — ${c.title}` : ''}`).join('\n')}`);
+  return { system, user: user.join('\n') };
+}
+
 // ── CAPA 2 DEL APRENDIZAJE · CORRECCIONES APRENDIDAS DE ESTA VOZ (2026-10-02) ────────────────
 // El auto-fix del carril repara piezas con avisos del Watcher DESPUÉS de escritas. Esta capa es la
 // anterior: le enseña al ESCRITOR, antes de escribir, cómo se corrigió el mismo error en esta misma
@@ -4267,6 +4749,104 @@ Generate now.`;
   return { output, caption, hashtags, cache_mode };
 }
 
+// ── TEXTO EN PANTALLA · modo `short_video_text` — la parte con red (contrato v1 §2) ─────────────
+// Lo puro (validación, filtro N = 8, prompt, lectura) vive en el bloque COPYLAB_PURE. Aquí: leer el
+// catálogo de patrones, el cache de marca y la directiva de idioma; llamar a Claude; reintentar una vez.
+export class ShortVideoTextError extends Error {
+  readonly http_status: number;
+  readonly error_label: string;
+  readonly details: SvtProblem[];
+  constructor(http_status: number, error_label: string, message: string, details: SvtProblem[] = []) {
+    super(`${error_label}: ${message}`);
+    this.name = 'ShortVideoTextError';
+    this.http_status = http_status;
+    this.error_label = error_label;
+    this.details = details;
+  }
+}
+
+async function fetchRetentionPatterns(): Promise<RetentionPattern[]> {
+  try {
+    return await sbArray<RetentionPattern>('retention_patterns?status=neq.retired&select=pattern_key,beat,name,mechanism,guardrails,status&order=pattern_key.asc');
+  } catch (e) {
+    // Sin catálogo no hay patrones que citar: se corta, no se improvisa.
+    throw new ShortVideoTextError(503, 'COPYLAB_PATTERNS_UNAVAILABLE', `no se pudo leer retention_patterns (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
+export async function runShortVideoText(
+  brandId: string,
+  input: ShortVideoTextInput,
+  voiceId: string | null,
+  registro: { uso: ClaudeUsage | null },
+): Promise<{ output: SvtOutput; meta: Record<string, unknown> }> {
+  const patterns = await fetchRetentionPatterns();
+  if (!patterns.length) throw new ShortVideoTextError(503, 'COPYLAB_PATTERNS_EMPTY', 'retention_patterns no devolvió filas vigentes (status <> retired)');
+  const pats = applyN8Filter(patterns, input.recent_pattern_keys);
+  if (!pats.hook.length) {
+    throw new ShortVideoTextError(503, 'COPYLAB_PATTERNS_EMPTY', pats.n8_excluded.length
+      ? `todos los patrones de gancho están en recent_pattern_keys (regla N = 8): ${pats.n8_excluded.join(', ')}`
+      : 'el catálogo no tiene patrones de gancho vigentes');
+  }
+  if (input.wants.share_ctas && !pats.share.length) throw new ShortVideoTextError(503, 'COPYLAB_PATTERNS_EMPTY', 'el catálogo no tiene patrones share_prompt vigentes');
+
+  // La voz entra por la MISMA capa que el modo literal (contrato §2).
+  const { cache: nc } = normalizeCache(await fetchBrandCache(brandId));
+  const genomes = sliceOf(nc, 'brand_voice_genome') ?? [];
+  const voice = genomes.length ? selectGenome(genomes, voiceId, brandId) : null;
+  const profile = (sliceOf(nc, 'brand_copy_profiles') ?? [])[0] ?? null;
+  const { block: brandBlock } = buildLiteralBrandBlock(voice, profile, brandId);
+  const brandRow = (sliceOf(nc, 'brands') ?? [])[0] ?? null;
+  // La firma de la marca, como dato: su nombre visible, su id y sus frases firma.
+  const signatures: string[] = [brandId, brandRow?.display_name, ...(Array.isArray(profile?.style_signature_phrases) ? profile.style_signature_phrases : [])]
+    .filter((x: unknown): x is string => typeof x === 'string' && !!x.trim());
+  const { directive, source: languageSource } = resolveLanguageDirective(await fetchLanguageDirectives(), input.language);
+  if (languageSource === 'legacy_alias') console.warn(`[CopyLab short_video_text] directiva de idioma '${input.language}' desde el alias legacy`);
+
+  const { system, user } = buildShortVideoTextPrompt(input, pats, {
+    brand: brandBlock,
+    personas: buildPersonasBlock(sliceOf(nc, 'brand_personas')),
+    idioma: buildIdiomaBlock(directive),
+  });
+  const ctx = { hookKeys: pats.hook.map(p => p.pattern_key), shareKeys: pats.share.map(p => p.pattern_key), signatures };
+
+  let intentos = 0;
+  let leido: { output: SvtOutput; problems: SvtProblem[] } | null = null;
+  let nota = '';
+  while (intentos < 2) {
+    intentos++;
+    const r = await callClaude(system, user + nota, SVT_MAX_TOKENS);
+    registro.uso = registro.uso ? sumarUso(registro.uso, r.usage) : r.usage;
+    leido = readShortVideoTextResult(extractJsonObject(r.text), input, ctx);
+    if (!leido.problems.length) break;
+    console.warn(`[CopyLab short_video_text] intento ${intentos} no sirve: ${leido.problems.map(p => p.label).join(', ')}`);
+    nota = buildShortVideoTextRetryNote(leido.problems);
+  }
+  if (!leido || leido.problems.length) {
+    const problems = leido?.problems ?? [];
+    const label = svtFailureLabel(problems);
+    throw new ShortVideoTextError(422, label, problems.filter(p => p.label === label).map(p => p.detail).join('; ') || 'la respuesta del modelo no cumple el contrato', problems);
+  }
+  const patterns_used = [...new Set([...leido.output.hooks.map(h => h.pattern_key), ...leido.output.share_ctas.map(c => c.pattern_key)])];
+  return {
+    output: leido.output,
+    meta: {
+      mode: 'short_video_text',
+      patterns_used,
+      n8_filter: pats.n8_filter,
+      n8_excluded: pats.n8_excluded,
+      model: CLAUDE_MODEL,
+      task: input.task,
+      medium: input.medium,
+      language: input.language,
+      language_source: languageSource,
+      attempts: intentos,
+      cache_mode: brandBlock ? 'v2.0_brand_context' : 'no_cache',
+      usage: registro.uso,
+    },
+  };
+}
+
 // ── CLAUDE CALL ────────────────────────────────────────────────────────────
 
 // ECONOMÍA (2026-10-11) — la caché del proveedor viaja al carril, que la asienta a su tarifa (dato). Anthropic
@@ -4791,8 +5371,8 @@ async function responderTrasLaLlamada(
 // Claude por la petición principal: la llama el carril, en un lote. Sólo en modo carril (`builder_input`): el
 // modo UI, el literal y el asíncrono no tienen quien recoja un lote.
 async function responderLote(body: ExecuteRequest & { async?: boolean }, pedido: PedidoDeLote, res: VercelResponse) {
-  if (body.async === true || (body.params as any)?.mode === 'literal')
-    return res.status(400).json({ error: 'COPYLAB_LOTE_MODO_NO_ADMITIDO: el lote es sólo del modo carril, no del asíncrono ni del literal', status: 'error', ...failureLedgerFields(null, null) });
+  if (body.async === true || (body.params as any)?.mode === 'literal' || (body.params as any)?.mode === 'short_video_text')
+    return res.status(400).json({ error: 'COPYLAB_LOTE_MODO_NO_ADMITIDO: el lote es sólo del modo carril, no del asíncrono, del literal ni del texto en pantalla', status: 'error', ...failureLedgerFields(null, null) });
   const registro: { uso: ClaudeUsage | null } = { uso: null };
   try {
     if (pedido.modo === 'preparar') {
@@ -4869,8 +5449,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // ── LITERAL MODE v9.7 (teaser / announcement) ────────────────────────
   const params = body.params as any;
+
+  // ── TEXTO EN PANTALLA (contrato v1 §2, 2026-11-16) ───────────────────
+  if (params?.mode === 'short_video_text') {
+    const norm = normalizeShortVideoTextRequest(params);
+    if (norm.ok === false) {
+      const error = (norm as { error: string }).error;
+      return res.status(400).json({ success: false, status: 'error', error, error_label: 'COPYLAB_SVT_BAD_REQUEST', ...failureLedgerFields(null, null) });
+    }
+    const registro: { uso: ClaudeUsage | null } = { uso: null };
+    try {
+      console.log(`[CopyLab short_video_text] brand=${body.brandId} task=${norm.input.task} medium=${norm.input.medium} lang=${norm.input.language} goal=${norm.input.goal}`);
+      const voiceId = body.builder_input?.voice_id ?? body.meta?.voice_id ?? null;
+      const r = await runShortVideoText(String(body.brandId), norm.input, voiceId, registro);
+      return res.status(200).json({ success: true, status: 'ok', output: r.output, meta: r.meta });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[CopyLab short_video_text]', msg);
+      const svt = err instanceof ShortVideoTextError ? err : null;
+      return res.status(svt ? svt.http_status : 500).json({
+        success: false, status: 'error', error: msg,
+        error_label: svt ? svt.error_label : 'COPYLAB_SVT_FAILED',
+        ...(svt?.details.length ? { details: svt.details } : {}),
+        ...failureLedgerFields(err, registro.uso),
+      });
+    }
+  }
+
+  // ── LITERAL MODE v9.7 (teaser / announcement) ────────────────────────
   if (params?.mode === 'literal') {
     try {
       const literal_text = String(params?.literal_text ?? '').trim();
