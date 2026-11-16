@@ -4401,6 +4401,12 @@ async function run() {
     assert(v('twenty-one percent', ['en']).includes('21'), 'inglés con guion');
     assert(v('one percent', ['en']).includes('1'), '«one percent» = 1');
     eq(v('one of them', ['en']).length, 0, '«one» suelto no es cifra');
+    // La puntuación corta el número y «cien» no suma unidades (falso 101/201, 2026-11-16).
+    eq(JSON.stringify(v('El pequeño paga cien. Una vez cambie la ley, doscientos.')), JSON.stringify(['100', '200']), 'el punto corta: no es 101');
+    eq(JSON.stringify(v('Hoy paga doscientos, uno de cada cien lo sabe')), JSON.stringify(['200', '100']), 'la coma corta: no es 201');
+    eq(JSON.stringify(v('pagaría cien un mes y quinientos otro')), JSON.stringify(['100', '500']), '«cien» no suma «un»');
+    assert(v('ciento uno').includes('101') && v('doscientos uno').includes('201'), 'los compuestos de verdad se mantienen');
+    assert(v('uno con sesenta y siete').includes('67'), '«sesenta y siete» sigue siendo 67');
   });
 
   await test('SVT·pure normalizeShortVideoTextRequest: encargo válido, mal formado (400 con etiqueta) e imagen ⇒ sólo ganchos', () => {
@@ -4485,6 +4491,7 @@ async function run() {
     assert(/MÁS RELEVANTE/.test(system) && /MÁS IMPACTO/.test(system), 'el guion extrae lo más relevante');
     assert(user.includes('51 %') && user.includes('[1] guest · Luis:') && user.includes(SVT_SOURCE.current_hook), 'la pieza va en el user');
     assert(!system.includes('51 %'), 'el system no lleva la pieza');
+    assert(system.includes('10 palabras como máximo') && system.includes('más de 12 palabras se descarta'), 'se pide con margen (10) y se valida en 12');
     const img = PURE.buildShortVideoTextPrompt(svtInput({ medium: 'image' }), pats, { brand: '', personas: '', idioma: 'X' });
     assert(img.system.includes('key_phrases: devuelve []') && img.system.includes('script: devuelve null'), 'imagen ⇒ sólo ganchos');
   });
