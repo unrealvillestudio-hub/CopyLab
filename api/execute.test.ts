@@ -1038,6 +1038,50 @@ async function run() {
     } finally { fx.restore(); console.warn = realWarn; }
   });
 
+  // LITERAL-GENOMA (2026-11-18) — buildLiteralBrandBlock hacía `String(identity_anchors)` y
+  // `${emotional_register}` sobre objetos jsonb (9 de 10 voces) y `.join` sobre arrays de
+  // objetos: el system del modo literal llevaba «[object Object]». Forma REAL del genoma
+  // (GENOME_V1) más una variante con elementos-objeto en los arrays.
+  await test('LITERAL-GENOMA·literal: genoma con objetos ⇒ valores reales, NUNCA [object Object]', async () => {
+    const voz = {
+      ...GENOME_V1,
+      voice_id: 'v_obj',
+      lexicon_signature: {
+        signature_words: [{ word: 'sw-objeto' }, 'sw-texto'],
+        trademark_word: 'tm-firma',
+        signature_phrases: [{ phrase: 'sp-objeto' }],
+      },
+      lexicon_forbidden: ['prohibida-1', { term: 'prohibida-obj' }],
+      prohibited_registers: [{ register: 'reg-obj' }, 'reg-prohibido'],
+    };
+    const fx = installFetch({ snapshot: [{ cache_data: { brand_voice_genome: [voz] } }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'MarcaN1', 'v_obj');
+      const sys = sysText(fx.claudeBodies[0]);
+      assert(!sys.includes('[object Object]'), 'NUNCA [object Object] en el bloque literal');
+      for (const v of ['ia-tagline', 'ia-gravity', 'ia-authority', 'er-register', 'er-restraint',
+                       'sw-objeto', 'sw-texto', 'tm-firma', 'sp-objeto', 'prohibida-1', 'prohibida-obj',
+                       'reg-obj', 'reg-prohibido']) {
+        assert(sys.includes(v), `el valor del genoma llega al prompt: ${v}`);
+      }
+      assert(/IDENTITY ANCHORS:\n[^\n]*thematic_gravity: ia-gravity/.test(sys), 'identity_anchors serializado por clave');
+      assert(sys.includes('EMOTIONAL REGISTER: register: er-register · restraint: er-restraint'), 'emotional_register serializado por clave');
+    } finally { fx.restore(); }
+  });
+  await test('LITERAL-GENOMA·literal: identity_anchors se sigue recortando a 400 caracteres', async () => {
+    const largo = 'x'.repeat(900);
+    const voz = { voice_id: 'v_largo', identity_anchors: { tagline: largo } };
+    const fx = installFetch({ snapshot: [{ cache_data: { brand_voice_genome: [voz] } }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'MarcaN1', 'v_largo');
+      const sys = sysText(fx.claudeBodies[0]);
+      const m = sys.match(/IDENTITY ANCHORS:\n([^\n]*)/);
+      assert(m, 'la línea de anclas existe');
+      eq(m![1].length, 400, 'recorte a 400 caracteres');
+      assert(m![1].startsWith('tagline: xxx'), 'la clave real abre la línea');
+    } finally { fx.restore(); }
+  });
+
   // Case 5 — cache vacío (NeuroneSCF): creative_vectors [] → query directa, no vector=null mudo
   await test('5·cache vacío: creative_vectors [] ⇒ query directa, vector_id NO es null', async () => {
     const fx = installFetch({
