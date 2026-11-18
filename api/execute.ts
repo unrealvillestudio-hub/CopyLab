@@ -4659,24 +4659,34 @@ function buildLiteralBrandBlock(voice: any | null, profile: any | null, brandId:
   parts.push(`BRAND: ${brandId}`);
 
   // ── Voice genome ─────────────────────────────────────────────────────
+  // LITERAL-GENOMA (2026-11-18) — el bug del [object Object] que B0 corrigió en
+  // assembleVoiceGenomeLayer seguía vivo en este camino: `String(identity_anchors)` y
+  // `${emotional_register}` sobre objetos jsonb (9 de 10 voces) y `.join` sobre arrays
+  // cuyos elementos pueden ser objetos. Se serializa con el MISMO inyector de B0,
+  // renderGenomeInline: la forma la decide la fila, no el código. Un valor que no
+  // rinde texto omite su línea; nunca llega «[object Object]» al prompt.
   if (voice) {
-    if (voice.identity_anchors) {
-      parts.push(`IDENTITY ANCHORS:\n${String(voice.identity_anchors).slice(0, 400)}`);
-    }
+    const genomeList = (v: any): string[] => Array.isArray(v) ? v.map(renderGenomeInline).filter(Boolean) : [];
+
+    const anchors = renderGenomeInline(voice.identity_anchors);
+    if (anchors) parts.push(`IDENTITY ANCHORS:\n${anchors.slice(0, 400)}`);
+
     const sig = voice.lexicon_signature ?? {};
     const sigBits: string[] = [];
-    if (Array.isArray(sig.signature_words)   && sig.signature_words.length)   sigBits.push(`signature words: ${sig.signature_words.join(', ')}`);
-    if (sig.trademark_word)                                                   sigBits.push(`trademark: "${sig.trademark_word}"`);
-    if (Array.isArray(sig.signature_phrases) && sig.signature_phrases.length) sigBits.push(`signature phrases: ${sig.signature_phrases.join(' | ')}`);
+    const sigWords = genomeList(sig.signature_words);
+    if (sigWords.length)   sigBits.push(`signature words: ${sigWords.join(', ')}`);
+    const trademark = renderGenomeInline(sig.trademark_word);
+    if (trademark)         sigBits.push(`trademark: "${trademark}"`);
+    const sigPhrases = genomeList(sig.signature_phrases);
+    if (sigPhrases.length) sigBits.push(`signature phrases: ${sigPhrases.join(' | ')}`);
     if (sigBits.length) parts.push(`LEXICON SIGNATURE:\n${sigBits.join('\n')}`);
 
-    if (Array.isArray(voice.lexicon_forbidden) && voice.lexicon_forbidden.length) {
-      parts.push(`FORBIDDEN LEXICON: ${voice.lexicon_forbidden.join(', ')}`);
-    }
-    if (voice.emotional_register) parts.push(`EMOTIONAL REGISTER: ${voice.emotional_register}`);
-    if (Array.isArray(voice.prohibited_registers) && voice.prohibited_registers.length) {
-      parts.push(`PROHIBITED REGISTERS: ${voice.prohibited_registers.join(', ')}`);
-    }
+    const forbidden = genomeList(voice.lexicon_forbidden);
+    if (forbidden.length) parts.push(`FORBIDDEN LEXICON: ${forbidden.join(', ')}`);
+    const register = renderGenomeInline(voice.emotional_register);
+    if (register) parts.push(`EMOTIONAL REGISTER: ${register}`);
+    const prohibitedRegs = genomeList(voice.prohibited_registers);
+    if (prohibitedRegs.length) parts.push(`PROHIBITED REGISTERS: ${prohibitedRegs.join(', ')}`);
   }
 
   // ── Copy profile ─────────────────────────────────────────────────────
