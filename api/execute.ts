@@ -4671,9 +4671,15 @@ function buildLiteralBrandBlock(voice: any | null, profile: any | null, brandId:
     const anchors = renderGenomeInline(voice.identity_anchors);
     if (anchors) parts.push(`IDENTITY ANCHORS:\n${anchors.slice(0, 400)}`);
 
-    const sig = voice.lexicon_signature ?? {};
+    // LITERAL-LEXICON-LISTA (2026-11-21) — `lexicon_signature` tiene DOS formas en el dato
+    // [medido 2026-11-21: 13 voces objeto {signature_words, trademark_word, signature_phrases},
+    // 24 voces lista de palabras]. La forma lista se leía como objeto, sus claves no existían y la
+    // línea entera se omitía: 24 voces llegaban al modo literal sin su léxico firmado. La lista se
+    // trata como `signature_words`; la forma la decide la fila, no el código.
+    const rawSig = voice.lexicon_signature;
+    const sig = (rawSig && typeof rawSig === 'object' && !Array.isArray(rawSig)) ? rawSig : {};
     const sigBits: string[] = [];
-    const sigWords = genomeList(sig.signature_words);
+    const sigWords = Array.isArray(rawSig) ? genomeList(rawSig) : genomeList(sig.signature_words);
     if (sigWords.length)   sigBits.push(`signature words: ${sigWords.join(', ')}`);
     const trademark = renderGenomeInline(sig.trademark_word);
     if (trademark)         sigBits.push(`trademark: "${trademark}"`);
