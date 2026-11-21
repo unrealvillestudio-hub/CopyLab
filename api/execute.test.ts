@@ -1068,6 +1068,18 @@ async function run() {
       assert(sys.includes('EMOTIONAL REGISTER: register: er-register · restraint: er-restraint'), 'emotional_register serializado por clave');
     } finally { fx.restore(); }
   });
+  // LITERAL-LEXICON-LISTA (2026-11-21) — 24 de 37 voces guardan lexicon_signature como LISTA de
+  // palabras; antes se omitía entera en el modo literal.
+  await test('LITERAL-LEXICON-LISTA·literal: lexicon_signature en forma de lista llega como signature words', async () => {
+    const voz = { voice_id: 'v_lista', lexicon_signature: ['palabra-a', { word: 'palabra-obj' }, 'palabra-b'] };
+    const fx = installFetch({ snapshot: [{ cache_data: { brand_voice_genome: [voz] } }], claude: { content: [{ text: '{"caption":"x","hashtags":[]}' }], usage: {} } });
+    try {
+      await runLiteralCopy('hola', 'EN', 'MarcaN1', 'v_lista');
+      const sys = sysText(fx.claudeBodies[0]);
+      assert(sys.includes('LEXICON SIGNATURE:\nsignature words: palabra-a, word: palabra-obj, palabra-b'), 'la lista se rinde como signature words');
+      assert(!sys.includes('[object Object]'), 'NUNCA [object Object]');
+    } finally { fx.restore(); }
+  });
   await test('LITERAL-GENOMA·literal: identity_anchors se sigue recortando a 400 caracteres', async () => {
     const largo = 'x'.repeat(900);
     const voz = { voice_id: 'v_largo', identity_anchors: { tagline: largo } };
